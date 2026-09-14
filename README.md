@@ -10,7 +10,7 @@
 │
 ├── deployment/                 # Deployment-related files and configurations
 ├── docs/                       # Project documentation
-│   ├── report/                 # Ongoing project report. This folder will be built up over time with each assignment. 
+│   ├── report/                 # Ongoing project report. This folder will be built up over time with each assignment.
 │   └── submissions/            # Assignment submission snapshots
 │
 ├── logs/                       # Application and experiment logs
@@ -31,4 +31,19 @@
 ├── pyproject.toml              # Python project metadata and tool configuration
 ├── README.md                   # Project overview and documentation
 └── uv.lock                     # Locked Python dependency versions managed by uv
+```
+
+## Dependencies
+
+To work with the jupyter notebooks:
+
+```
+uv pip install -e ".[jupyter]"
+python -m ipykernel install --user --name floor-posture --display-name "floor-posture"
+```
+
+To use the custom `recorder` package by Valtes:
+
+```
+uv pip install -e ./data/raw/floor_posture_dataset/recorder
 ```
