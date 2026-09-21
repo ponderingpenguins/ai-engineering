@@ -1,0 +1,102 @@
+%%%%%%%%%%%%%%%
+% The style of this course project report is based on the thesis proposal template for the Master's thesis project in the Artificial Intelligence program.
+
+% Original work: AI-RUG Master's thesis template
+% Author: Manvi Agarwal
+% Modified by: J.D. Cardenas-Cartagena, M.B. Schippers
+% Last modified: 19 August 2026
+%%%%%%%%%%%%%%%
+
+% Libraries and style
+\input{header/header}
+
+\begin{document}
+\pagestyle{body}
+
+% Cover page
+% TODO: Fill with your information
+\title{
+    \vspace{5cm}
+           {\bf
+           {\Huge Technical Report: Contactless Sleep Detection Using mmWave Radar}}\\
+    \vspace{1cm}
+        {\bf
+        {\Large AI Engineering Practical}}\\
+        {\large WBAI080-10.2026-2027}
+}
+\date{}
+
+\maketitle
+\thispagestyle{titlepage}
+
+\vfill
+% TODO: Fill the following table with your information
+% TODO: Update this box for every submission
+\begin{table}[h]
+    \centering
+    \begin{tabular}{| >{\raggedright\arraybackslash}p{4cm} | >{\raggedright\arraybackslash}p{10cm} |}
+    \hline
+    \textbf{Title of Deliverable:}  & Assignment 1. Problem Formulation \\ \hline
+    \textbf{Version:}               & 00 \\ \hline
+    \textbf{Group Number:}          & 00 \\ \hline
+    \textbf{Author(s):}             & Will Meeus () \\
+                                    & Tijje Steeman () \\
+                                    & Efe Ozbal (S5996821)\\
+                                    & Haukur Sigurdur () \\ \hline
+    \textbf{Client:}                & Valtes \\ \hline
+    \textbf{Delivery Date:}         & 23/09/2026 \\ \hline
+    \textbf{Code Repository}        & https://github.com/ponderingpenguins/ai-engineering \\ \hline
+    \textbf{Updates:}               & One-line description of the last update \\ 
+                                    & Keep the last three updates \\ 
+                                    & Each line is an update \\ \hline
+    
+    \end{tabular}
+\end{table}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\newpage
+
+% Table of content
+\pagestyle{contents}
+\setlength{\headheight}{32pt}
+\include{chapters/contents}
+
+%%%%%%%%%%%%%%%
+% Remark 1: The subsections within each chapters-file are mandatory.
+%%%%%%%%%%%%%%%
+
+\pagestyle{body}
+
+% Assignments 1 and 2 (Mandatory): Introduction
+\include{chapters/01-introduction}
+
+% Assignment 1: Project formulation (Update subsections for next labs)
+\include{chapters/02-project}
+
+% % Assignment 2: Data collection and preprocessing
+% \input{chapters/03-data}
+% \newpage
+
+% % Assignment 3: Model training, testing, and validation
+% \input{chapters/04-development}
+% \newpage
+
+% % Assignment 4: Model deployment, monitoring, and maintenance
+% \input{chapters/05-deployment}
+% \newpage
+
+% % Assignment 3 and 4 (Mandatory): Conclusions
+% \include{chapters/06-conclusion}
+% \pagestyle{contents}
+% \newpage
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Bibliography
+\bibliographystyle{ieeetr}
+\bibliography{refs}
+\newpage
+
+% % Appendix - Optional
+% \include{appendix/appendix}
+
+\end{document}

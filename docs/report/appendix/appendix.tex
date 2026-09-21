@@ -1,0 +1,71 @@
+\pagestyle{appendix}
+\appendix
+\section*{Appendices}
+\addcontentsline{toc}{section}{Appendices}
+\renewcommand{\thesubsection}{\Alph{subsection}}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% Delete before submitting the report
+\subsection{Style Guidelines}
+
+\subsubsection{Images and Figures}
+
+\begin{figure}[htb]
+  \centering
+  \includegraphics[width=\linewidth]{example-image-a}
+  \caption{This is a sample image.}
+  \label{fig:sample}
+\end{figure}
+
+\subsubsection{Tables}
+\begin{table}[h]
+  \centering
+  \caption{This is a sample table.}
+  \label{tab:sample}
+  \begin{tabular}{lcr}
+    \hline
+    Column1 & Column2 & Column3 \\
+    \hline
+    1 & 2 & 3 \\
+    \hline
+  \end{tabular}
+\end{table}
+
+\subsubsection{Equations}
+An example of an equation can be found in \eqref{eq:sample}. Treat equations like phrases and use punctuation. Present the equation first, followed by the definitions of its variables.
+
+\begin{equation}
+{x}_{k + 1} = {A} {x}_k + {B} {u}_k, 
+\label{eq:sample}
+\end{equation}
+
+where ${x}_{k}$ denotes the system state at time $k$, ${u}_k$ represents the control variable, $A$ is the system matrix, and $B$ is the input matrix.
+
+\subsubsection{Algorithms}
+
+\begin{algorithm}
+\caption{An algorithm with caption}\label{alg:cap}
+\begin{algorithmic}
+\Require $n \geq 0$
+\Ensure $y = x^n$
+\State $y \gets 1$
+\State $X \gets x$
+\State $N \gets n$
+\While{$N \neq 0$}
+\If{$N$ is even}
+    \State $X \gets X \times X$
+    \State $N \gets \frac{N}{2}$  \Comment{This is a comment}
+\ElsIf{$N$ is odd}
+    \State $y \gets y \times X$
+    \State $N \gets N - 1$
+\EndIf
+\EndWhile
+\end{algorithmic}
+\end{algorithm}
+
+\subsubsection{References}
+You can use the \texttt{refs.bib} BibTex file to store your references. Use the command \texttt{\textbackslash cite\{reference-label\}} to cite, e.g., \cite{mlp-universal} or \cite{mlp-universal, rbf-universal}.
+
+\newpage
+\subsection{Second Appendix}
+
