@@ -11,6 +11,7 @@
 \input{header/header}
 
 \begin{document}
+\raggedbottom
 \pagestyle{body}
 
 % Cover page
@@ -25,7 +26,9 @@
         {\large WBAI080-10.2026-2027}
 }
 \date{}
+\author{Will Meeus, Tijje Steeman, Efe Ozbal, and Haukur Sigurdur}
 
+\setlength{\headheight}{78pt}
 \maketitle
 \thispagestyle{titlepage}
 
@@ -34,12 +37,12 @@
 % TODO: Update this box for every submission
 \begin{table}[h]
     \centering
-    \begin{tabular}{| >{\raggedright\arraybackslash}p{4cm} | >{\raggedright\arraybackslash}p{10cm} |}
+    \begin{tabularx}{\textwidth}{| >{\raggedright\arraybackslash}p{4cm} | >{\raggedright\arraybackslash}X |}
     \hline
     \textbf{Title of Deliverable:}  & Assignment 1. Problem Formulation \\ \hline
     \textbf{Version:}               & 00 \\ \hline
     \textbf{Group Number:}          & 00 \\ \hline
-    \textbf{Author(s):}             & Will Meeus () \\
+    \textbf{Author(s):}             & Will Meeus (S5863708) \\
                                     & Tijje Steeman () \\
                                     & Efe Ozbal (S5996821)\\
                                     & Haukur Sigurdur () \\ \hline
@@ -50,7 +53,7 @@
                                     & Keep the last three updates \\ 
                                     & Each line is an update \\ \hline
     
-    \end{tabular}
+    \end{tabularx}
 \end{table}
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -92,6 +95,7 @@
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Bibliography
+\nocite{*}
 \bibliographystyle{ieeetr}
 \bibliography{refs}
 \newpage
