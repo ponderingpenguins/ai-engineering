@@ -35,15 +35,14 @@
 
 ## Dependencies
 
-To work with the jupyter notebooks:
-
 ```
-uv pip install -e ".[jupyter]"
+uv sync --extra jupyter
 python -m ipykernel install --user --name floor-posture --display-name "floor-posture"
 ```
 
-To use the custom `recorder` package by Valtes:
-
-```
-uv pip install -e ./data/raw/floor_posture_dataset/recorder
-```
+`uv sync` also installs the custom `recorder` package by Valtes (declared as an
+editable path dependency in `pyproject.toml`, pinned to setuptools' `compat`
+editable mode via `config-settings-package` so `vt_radar` resolves for every
+editor's LSP/type checker, not just the one that installed it). Don't
+`pip install -e` it separately — that reinstalls it in setuptools' default
+mode and breaks import resolution again.

@@ -7,7 +7,9 @@ authors = [
     { name = "eZbal", email = "efeozbal1@gmail.com" }
 ]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "vt-radar-recorder",
+]
 
 [project.optional-dependencies]
 jupyter = [
@@ -24,3 +26,14 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.uv.sources]
+vt-radar-recorder = { path = "data/raw/floor_posture_dataset/recorder", editable = true }
+
+# setuptools' default editable-install mode (a MetaPathFinder import hook)
+# isn't understood by static analyzers (Pylance/Pyright, PyCharm, mypy...),
+# so vt_radar shows as unresolved even though it imports fine at runtime.
+# "compat" mode falls back to a plain .pth path entry, which every tool
+# resolves the same way `uv sync` does for the whole team.
+[tool.uv]
+config-settings-package = { vt-radar-recorder = { editable_mode = "compat" } }
