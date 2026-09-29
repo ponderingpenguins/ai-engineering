@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 REPO = Path(__file__).resolve().parent
 
-# per-recording sensor config, constant within a recording
+# per-recording sensor config (constant within a recording)
 CFG_COLUMNS = [
     "cfg_file",
     "range_resolution_m",
@@ -88,7 +88,7 @@ def run(cfg: Config) -> None:
     labels = [c for c in ds.column_names if c.startswith("label_") and not c.endswith("_confidence")]
     logger.info("label tracks: %s", labels)
 
-    rec = recs.recording.iloc[0]  # change this to explore another recording
+    rec = recs.recording.iloc[5]  # change this to explore another recording
     sub = ds.filter(lambda r: r == rec, input_columns="recording")
     logger.info("%s: %d frames", rec, len(sub))
 
