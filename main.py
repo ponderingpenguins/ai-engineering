@@ -1,16 +1,12 @@
-import os
 import sys
-import glob
-import inspect
 import logging
-import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
+from datasets import Dataset, load_from_disk
 from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
 
@@ -25,17 +21,18 @@ logger = logging.getLogger(__name__)
 
 REPO = Path(__file__).resolve().parent
 
-try:
-    from loguru import logger as loguru_logger
-    from vt_radar.data.dataset import TLVDataset
-    from vt_radar.data.rangedoppler import RangeDoppler
-    from vt_radar.config.ti_config import ConfigFile
-    loguru_logger.remove()  # the loader is chatty; silence it
-except ModuleNotFoundError:
-    raise SystemExit(
-        "Did you forget to activate your environment?\n\n"
-        "source .venv/bin/activate"
-    )
+# per-recording sensor config, constant within a recording
+CFG_COLUMNS = [
+    "cfg_file",
+    "range_resolution_m",
+    "range_max_m",
+    "num_range_bins",
+    "num_doppler_bins",
+    "doppler_resolution_m_s",
+    "max_velocity_m_s",
+    "num_tx",
+    "num_rx",
+]
 
 
 @dataclass
@@ -48,88 +45,63 @@ class Config:
             self.data = DataConfig(**self.data)
 
 
-def load_cfg(root: str, rec: str) -> tuple[ConfigFile, str]:
-    '''Parse the .cfg that shipped with a recording.'''
-    d = rec_dir(root, rec)
-    cfgs = sorted(glob.glob(os.path.join(d, "*.cfg")))
-    if not cfgs:
-        raise FileNotFoundError(f"no .cfg in {d}")
-    c = ConfigFile()
-    c.parseCfg(cfgs[0])
-    return c, os.path.basename(cfgs[0])
+def load_baked(path: Path) -> Dataset:
+    '''Memory-mapped baked dataset, see `python -m data.extract`.'''
+    if not path.is_dir():
+        logger.error(
+            "No baked dataset at %s.\n"
+            "Build it first with: python -m data.extract",
+            path,
+        )
+        sys.exit(1)
+    return cast(Dataset, load_from_disk(str(path)))
 
 
-def rec_dir(root: str, rec: str) -> str:
-    '''Directory for a recording name, whichever room it is in.'''
-    hits = glob.glob(os.path.join(root, "data", "*", rec))
-    if not hits:
-        raise FileNotFoundError(f"{rec} is not in this folder (another zip part?)")
-    return hits[0]
-
-
-def cfg_summary(root: str, rec: str) -> dict[str, Any]:
-    c, name = load_cfg(root, rec)
-    s = c.sensor()
-    return {
-        "recording": rec,
-        "cfg": name,
-        "range_res_m": round(s.range_resolution, 4),
-        "range_max_m": round(s.range_max, 2),
-        "range_bins": s.num_range_bins,
-        "doppler_bins": s.num_doppler_bins,
-        "doppler_res_m_s": round(s.doppler_resolution, 4),
-        "max_velocity_m_s": round(s.max_velocity, 3),
-        "tx": s.num_tx_antennas,
-        "rx": s.num_rx_antennas,
-    }
+def recording_summary(ds: Dataset) -> pd.DataFrame:
+    '''One row per recording: room, frame count, sensor config, heatmap validity.'''
+    # skip the heavy columns (image, payload, heatmap); this reads only the light ones
+    df = ds.select_columns(["recording", "room", *CFG_COLUMNS, "n_tracks", "heatmap_ok"]).to_pandas()
+    return (
+        df.groupby("recording", sort=False)
+        .agg(
+            room=("room", "first"),
+            frames=("recording", "size"),
+            bad_heatmaps=("heatmap_ok", lambda s: int((~s).sum())),
+            **{c: (c, "first") for c in CFG_COLUMNS},
+        )
+        .reset_index()
+    )
 
 
 def run(cfg: Config) -> None:
-    root = str(REPO / cfg.data.root)  # absolute paths pass through unchanged
-    if not os.path.isdir(os.path.join(root, "data")):
-        logger.error(
-            "No data/ folder under %s.\n"
-            "Set data.root in config/config.yaml to the folder that contains data/, recorder/ and previews/.",
-            root,
-        )
-        sys.exit(1)
+    path = REPO / cfg.data.out  # absolute paths pass through unchanged
+    ds = load_baked(path)
 
-    logger.info("bundle  : %s", root)
-    logger.info("python  : %s", sys.executable)
-    logger.info("reader  : %s", os.path.dirname(inspect.getfile(TLVDataset)))
+    logger.info("dataset : %s", path)
+    logger.info("rows    : %s", f"{len(ds):,}")
+    logger.info("columns : %s", ds.column_names)
 
-    man = pd.read_csv(os.path.join(root, "MANIFEST.csv"))
-    shapes = pd.read_csv(os.path.join(root, "HEATMAP_SHAPES.csv"))
-    man = man.merge(shapes[["rec", "heatmap", "cfg"]], left_on="dataset", right_on="rec", how="left")
+    recs = recording_summary(ds)
+    logger.info("%d recordings, %s frames", len(recs), f"{recs.frames.sum():,}")
+    logger.info("\n%s", recs.drop(columns=["cfg_file"]).head())
 
-    available: set[str] = {os.path.basename(p) for p in glob.glob(os.path.join(root, "data", "*", "*"))}
-    man["present"] = man.dataset.isin(available)
+    labels = [c for c in ds.column_names if c.startswith("label_") and not c.endswith("_confidence")]
+    logger.info("label tracks: %s", labels)
 
-    logger.info("%d of %d recordings present in this folder", man.present.sum(), len(man))
-    logger.info("%s frames, %.0f MB", f"{man.loc[man.present, 'frames'].sum():,}", man.loc[man.present, "size_mb"].sum())
-    logger.info("\n%s", man.loc[man.present, ["dataset", "room", "frames", "size_mb", "heatmap", "recorded", "has_labels"]])
+    rec = recs.recording.iloc[0]  # change this to explore another recording
+    sub = ds.filter(lambda r: r == rec, input_columns="recording")
+    logger.info("%s: %d frames", rec, len(sub))
 
-    rows: list[dict[str, Any]] = []
-    for rec in man.dataset:
-        try:
-            rows.append(cfg_summary(root, rec))
-        except Exception as e:
-            logger.warning("%s", e)
-            rows.append({"recording": rec, "cfg": f"<{type(e).__name__}>"})
-    cfgs = pd.DataFrame(rows)
-    logger.info("\n%s", cfgs.head())
-
-    REC = man.dataset.iloc[0]  # change this to explore another recording
-    ds = TLVDataset(rec_dir(root, REC))
-    frames = list(ds)
-    logger.info("%s: %d frames", REC, len(frames))
-
-    f = frames[len(frames) // 2]
-    logger.info("timestamp     : %s", f.timestamp)
-    logger.info("heatmap       : %s", np.asarray(f.output.range_doppler_heatmap).shape)
-    logger.info("point cloud   : %s (x, y, z, doppler, snr, noise, track)", np.asarray(f.output.pointcloud).shape)
-    logger.info("camera image  : %s", np.asarray(f.image).shape)
-    logger.info("tracks        : %s", f.output.num_detected_tracks)
+    f = sub[len(sub) // 2]
+    heatmap = np.asarray(f["heatmap"])
+    if heatmap.size:
+        # stored raw with zero velocity at doppler bin 0
+        heatmap = np.fft.fftshift(heatmap, axes=-1)
+    logger.info("timestamp     : %s", f["timestamp"])
+    logger.info("heatmap       : %s", heatmap.shape)
+    logger.info("point cloud   : %s (x, y, z, doppler, snr, noise, track)", np.asarray(f["pointcloud"]).shape)
+    logger.info("camera image  : %s", np.asarray(f["image"]).shape if f["image"] is not None else None)
+    logger.info("tracks        : %s", f["n_tracks"])
 
 
 def main() -> None:
@@ -143,7 +115,7 @@ def main() -> None:
         raw = cast(dict[str, Any], OmegaConf.to_container(merged, resolve=True))
         cfg = Config(**raw)
     except (TypeError, OmegaConfBaseException) as e:  # pylint: disable=broad-exception-raised
-        logger.error("Error: %s\n\nUsage: python main.py data.root=<path>", e)
+        logger.error("Error: %s\n\nUsage: python main.py [data.out=<path>]", e)
         sys.exit(1)
 
     run(cfg)
