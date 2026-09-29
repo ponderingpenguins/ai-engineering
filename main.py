@@ -21,6 +21,8 @@ from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
 
 from data.extract import split_paths
+from models.baseline import MajorityClass
+from utils.metrics import accuracy, macro_f1
 from utils.config import DataConfig
 
 logging.basicConfig(
@@ -72,12 +74,28 @@ def load_splits(path: Path) -> dict[str, DatasetDict]:
     return splits
 
 
+def run_baseline(split: DatasetDict, target: str = "label_pose") -> None:
+    """Fit the majority-class baseline on train, report accuracy and macro-F1 on val/test."""
+    labels = {name: [y for y in ds[target] if y is not None] for name, ds in split.items()}  # unlabelled frames dropped
+    model = MajorityClass().fit(labels["train"])
+    logger.info("baseline predicts %r for every frame (%s)", model.label_, target)
+    for name in ("val", "test"):
+        if not labels.get(name):
+            logger.info("%-5s: no labelled frames, skipped", name)
+            continue
+        y, pred = labels[name], model.predict(len(labels[name]))
+        logger.info("%-5s: n=%s accuracy=%.3f macro-F1=%.3f", name, f"{len(y):,}", accuracy(y, pred), macro_f1(y, pred))
+
+
 def run(cfg: Config) -> None:
     path = REPO / cfg.data.baked  # absolute paths pass through unchanged
     splits = load_splits(path)
     room_split, person_split = splits["room"], splits["person"]
 
-    breakpoint()
+    for name, split in splits.items():
+        logger.info("--- baseline, %s split ---", name)
+        run_baseline(split)
+
 
 def main() -> None:
     """main function"""
