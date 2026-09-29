@@ -69,12 +69,12 @@ Defaults come from `config/config.yaml`; `key=value` arguments on the command li
 
 | Parameter  | Default                        | Description                                                                             |
 | ---------- | ------------------------------ | --------------------------------------------------------------------------------------- |
-| `data.out` | `data/processed/floor_posture` | Baked dataset folder. Relative paths are resolved against the repo root.                |
+| `data.baked` | `data/processed/floor_posture` | Baked dataset folder. Relative paths are resolved against the repo root.                |
 
 Example:
 
 ```
-python main.py data.out=/path/to/floor_posture
+python main.py data.baked=/path/to/floor_posture
 ```
 
 ## Baking the dataset
@@ -82,7 +82,7 @@ python main.py data.out=/path/to/floor_posture
 `src/data/extract.py` reads every recording once through `vt_radar` and writes a single Hugging Face dataset (one row per frame) to `data/processed/floor_posture` (gitignored):
 
 ```
-python -m data.extract [data.root=...] [data.out=...] [num_proc=4] [overwrite=true] ['recordings=["a","b"]']
+python -m data.extract [data.root=...] [data.baked=...] [num_proc=4] [overwrite=true] ['recordings=["a","b"]']
 ```
 
 Quote recording names: YAML reads an unquoted `2311__20231120_144541` as a number. It takes about 20 s with `num_proc=6`, and the result is about 4.4 GB.

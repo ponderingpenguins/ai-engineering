@@ -2,7 +2,7 @@
 
 Run it:
 
-    python -m data.extract [data.root=...] [num_proc=4] [overwrite=true] ['recordings=["a","b"]']
+    python -m data.extract [data.root=...] [num_proc=4] [overwrite=true] [test_room=room2] ['test_persons=[Dave]'] ['val_persons=[Igor]'] ['recordings=["a","b"]']
 
 Usage:
     ds = load_from_disk("data/processed/floor_posture")
@@ -18,7 +18,7 @@ from typing import Any, Iterator, cast
 
 import numpy as np
 import pandas as pd
-from datasets import Dataset, Features, Image, Sequence, Value
+from datasets import Dataset, DatasetDict, Features, Image, Sequence, Value
 from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
 
@@ -42,6 +42,10 @@ class ExtractConfig:
     data: DataConfig = field(default_factory=DataConfig)
     num_proc: int = 4
     overwrite: bool = False
+    test_room: str = "room2"  # room held out for the room-wise split
+    # persons held out for the person-wise split; Bob has ~46% of the frames, so these two give ~10% each
+    test_persons: list[str] = field(default_factory=lambda: ["Dave"])
+    val_persons: list[str] = field(default_factory=lambda: ["Igor"])
     recordings: list[str] = field(default_factory=list)  # empty = every recording present
 
     def __post_init__(self) -> None:
@@ -229,6 +233,41 @@ def _add_person(ds: Dataset) -> Dataset:
     return ds.add_column("person", recs.map(lambda r: mapping.get(r, NO_PERSON)).tolist())
 
 
+def _split(ds: Dataset, is_test: np.ndarray, is_val: np.ndarray) -> DatasetDict:
+    train = ~(is_test | is_val)
+    return DatasetDict({
+        "train": ds.select(np.flatnonzero(train)),
+        "val": ds.select(np.flatnonzero(is_val)),
+        "test": ds.select(np.flatnonzero(is_test)),
+    })
+
+
+def _split_by_room(ds: Dataset, test_room: str) -> DatasetDict:
+    """Train/test only: with two rooms there is no room left over for val."""
+    rooms = np.asarray(ds["room"])
+    if test_room not in rooms:
+        raise ValueError(f"test_room {test_room!r} not in dataset rooms {sorted(set(rooms))}")
+    is_test = rooms == test_room
+    return DatasetDict({
+        "train": ds.select(np.flatnonzero(~is_test)),
+        "test": ds.select(np.flatnonzero(is_test)),
+    })
+
+
+def _split_by_person(ds: Dataset, test_persons: list[str], val_persons: list[str]) -> DatasetDict:
+    """Hold out whole persons. Unlabelled ("NA") recordings always stay in train."""
+    persons = np.asarray(ds["person"])
+    named = set(persons) - {NO_PERSON}
+    unknown = (set(test_persons) | set(val_persons)) - named
+    if unknown or set(test_persons) & set(val_persons):
+        raise ValueError(f"bad test/val persons {test_persons}/{val_persons}; have {sorted(named)}")
+    return _split(ds, np.isin(persons, test_persons), np.isin(persons, val_persons))
+
+
+def split_paths(out: Path) -> dict[str, Path]:
+    return {"room": out.with_name(out.name + "_room_split"), "person": out.with_name(out.name + "_person_split")}
+
+
 def _recordings(root: Path, only: list[str]) -> list[dict[str, Any]]:
     manifest = pd.read_csv(root / "MANIFEST.csv")
     if only:
@@ -248,12 +287,14 @@ def _recordings(root: Path, only: list[str]) -> list[dict[str, Any]]:
 
 def extract(cfg: ExtractConfig) -> None:
     root = REPO / cfg.data.root
-    out = REPO / cfg.data.out
+    out = REPO / cfg.data.baked
     if out.exists():
         if not cfg.overwrite:
             logger.error("%s already exists. Pass overwrite=true to rebuild it.", out)
             sys.exit(1)
         shutil.rmtree(out)
+        for path in split_paths(out).values():
+            shutil.rmtree(path, ignore_errors=True)
 
     recs = _recordings(root, cfg.recordings)
     if not recs:
@@ -272,6 +313,10 @@ def extract(cfg: ExtractConfig) -> None:
     )
     ds = _add_person(ds)
     ds.save_to_disk(str(out))
+    splits = {"room": _split_by_room(ds, cfg.test_room), "person": _split_by_person(ds, cfg.test_persons, cfg.val_persons)}
+    for name, path in split_paths(out).items():
+        splits[name].save_to_disk(str(path))
+        logger.info("%s split -> %s: %s", name, path, {k: len(v) for k, v in splits[name].items()})
     shutil.rmtree(cache, ignore_errors=True)
     logger.info("saved %d rows to %s", len(ds), out)
 

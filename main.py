@@ -1,15 +1,26 @@
+"""
+Loads both datasets
+
+TODO:
+- data preprocessing
+- Implement models
+- train models
+- evaluate models
+"""
+
 import sys
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
-import numpy as np
-import pandas as pd
-from datasets import Dataset, load_from_disk
+# import numpy as np
+# import pandas as pd
+from datasets import DatasetDict, load_from_disk
 from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
 
+from data.extract import split_paths
 from utils.config import DataConfig
 
 logging.basicConfig(
@@ -45,66 +56,28 @@ class Config:
             self.data = DataConfig(**self.data)
 
 
-def load_baked(path: Path) -> Dataset:
-    '''Memory-mapped baked dataset, see `python -m data.extract`.'''
-    if not path.is_dir():
-        logger.error(
-            "No baked dataset at %s.\n"
-            "Build it first with: python -m data.extract",
-            path,
-        )
-        sys.exit(1)
-    return cast(Dataset, load_from_disk(str(path)))
-
-
-def recording_summary(ds: Dataset) -> pd.DataFrame:
-    '''One row per recording: room, frame count, sensor config, heatmap validity.'''
-    # skip the heavy columns (image, payload, heatmap); this reads only the light ones
-    df = ds.select_columns(["recording", "room", *CFG_COLUMNS, "n_tracks", "heatmap_ok"]).to_pandas()
-    return (
-        df.groupby("recording", sort=False)
-        .agg(
-            room=("room", "first"),
-            frames=("recording", "size"),
-            bad_heatmaps=("heatmap_ok", lambda s: int((~s).sum())),
-            **{c: (c, "first") for c in CFG_COLUMNS},
-        )
-        .reset_index()
-    )
+def load_splits(path: Path) -> dict[str, DatasetDict]:
+    """Room-wise and person-wise train/test splits of the baked dataset, see `python -m data.extract`"""
+    splits = {}
+    for name, split_path in split_paths(path).items():
+        if not split_path.is_dir():
+            logger.error(
+                "No %s split at %s.\n"
+                "Rebuild with: python -m data.extract overwrite=true",
+                name,
+                split_path,
+            )
+            sys.exit(1)
+        splits[name] = cast(DatasetDict, load_from_disk(str(split_path)))
+    return splits
 
 
 def run(cfg: Config) -> None:
-    path = REPO / cfg.data.out  # absolute paths pass through unchanged
-    ds = load_baked(path)
+    path = REPO / cfg.data.baked  # absolute paths pass through unchanged
+    splits = load_splits(path)
+    room_split, person_split = splits["room"], splits["person"]
 
     breakpoint()
-
-    logger.info("dataset : %s", path)
-    logger.info("rows    : %s", f"{len(ds):,}")
-    logger.info("columns : %s", ds.column_names)
-
-    recs = recording_summary(ds)
-    logger.info("%d recordings, %s frames", len(recs), f"{recs.frames.sum():,}")
-    logger.info("\n%s", recs.drop(columns=["cfg_file"]).head())
-
-    labels = [c for c in ds.column_names if c.startswith("label_") and not c.endswith("_confidence")]
-    logger.info("label tracks: %s", labels)
-
-    rec = recs.recording.iloc[5]  # change this to explore another recording
-    sub = ds.filter(lambda r: r == rec, input_columns="recording")
-    logger.info("%s: %d frames", rec, len(sub))
-
-    f = sub[len(sub) // 2]
-    heatmap = np.asarray(f["heatmap"])
-    if heatmap.size:
-        # stored raw with zero velocity at doppler bin 0
-        heatmap = np.fft.fftshift(heatmap, axes=-1)
-    logger.info("timestamp     : %s", f["timestamp"])
-    logger.info("heatmap       : %s", heatmap.shape)
-    logger.info("point cloud   : %s (x, y, z, doppler, snr, noise, track)", np.asarray(f["pointcloud"]).shape)
-    logger.info("camera image  : %s", np.asarray(f["image"]).shape if f["image"] is not None else None)
-    logger.info("tracks        : %s", f["n_tracks"])
-
 
 def main() -> None:
     """main function"""
@@ -117,7 +90,7 @@ def main() -> None:
         raw = cast(dict[str, Any], OmegaConf.to_container(merged, resolve=True))
         cfg = Config(**raw)
     except (TypeError, OmegaConfBaseException) as e:  # pylint: disable=broad-exception-raised
-        logger.error("Error: %s\n\nUsage: python main.py [data.out=<path>]", e)
+        logger.error("Error: %s\n\nUsage: python main.py [data.baked=<path>]", e)
         sys.exit(1)
 
     run(cfg)
