@@ -142,6 +142,7 @@ def _features(kinds: dict[str, str]) -> Features:
         "image": Image(),  # camera JPEG, decoded lazily
         "radar_payload": Value("binary"),  # raw TLV bytes, enough to re-parse anything
         "heatmap": Sequence(Sequence(Value("uint16"))),  # (range_bins, doppler_bins), varies per recording
+        "heatmap_ok": Value("bool"),  # False for the few frames whose heatmap came back empty
         "pointcloud": Sequence(Sequence(Value("float32"))),  # (n, 7): x y z doppler snr noise track
         "n_points": Value("int32"),
         "n_tracks": Value("int32"),
@@ -189,6 +190,7 @@ def _rows(recordings: list[dict[str, Any]], kinds: dict[str, str]) -> Iterator[d
 
         for i, f in enumerate(frames):
             out = f.output
+            heatmap = np.asarray(out.range_doppler_heatmap)
             row: dict[str, Any] = {
                 "recording": rec["recording"],
                 "room": rec["room"],
@@ -197,7 +199,8 @@ def _rows(recordings: list[dict[str, Any]], kinds: dict[str, str]) -> Iterator[d
                 "radar_frame_num": out.frame_num,
                 "image": {"bytes": f.raw_image, "path": None} if f.raw_image else None,
                 "radar_payload": f.frame,
-                "heatmap": np.asarray(out.range_doppler_heatmap),
+                "heatmap": heatmap,
+                "heatmap_ok": heatmap.size > 0,
                 "pointcloud": np.asarray(out.pointcloud, dtype=np.float32).reshape(-1, 7),
                 "n_points": out.num_detected_points,
                 "n_tracks": out.num_detected_tracks,
