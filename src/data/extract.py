@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 
 REPO = Path(__file__).resolve().parents[2]
 ALIGN_TOLERANCE = pd.Timedelta("100ms")  # ~2 frames at 18 fps
+PERSON_MAP = REPO / "data" / "processed" / "person_map.csv"  # recording -> pseudonym, hand-labelled
+NO_PERSON = "NA"
 
 
 @dataclass
@@ -216,6 +218,17 @@ def _rows(recordings: list[dict[str, Any]], kinds: dict[str, str]) -> Iterator[d
             yield row
 
 
+def _add_person(ds: Dataset) -> Dataset:
+    """Add a `person` column from person_map.csv; unlabelled recordings get "NA"."""
+    df = pd.read_csv(PERSON_MAP, keep_default_na=False)  # keep_default_na: don't turn a name into NaN
+    mapping = {r: p.strip() or NO_PERSON for r, p in zip(df.recording, df.person)}
+    recs = ds.select_columns(["recording"]).to_pandas().recording
+    unlisted = sorted(set(recs) - set(mapping))
+    if unlisted:
+        logger.warning("not in %s, person set to %s: %s", PERSON_MAP.name, NO_PERSON, unlisted)
+    return ds.add_column("person", recs.map(lambda r: mapping.get(r, NO_PERSON)).tolist())
+
+
 def _recordings(root: Path, only: list[str]) -> list[dict[str, Any]]:
     manifest = pd.read_csv(root / "MANIFEST.csv")
     if only:
@@ -257,6 +270,7 @@ def extract(cfg: ExtractConfig) -> None:
         num_proc=min(cfg.num_proc, len(recs)) if cfg.num_proc > 1 else None,
         cache_dir=str(cache),
     )
+    ds = _add_person(ds)
     ds.save_to_disk(str(out))
     shutil.rmtree(cache, ignore_errors=True)
     logger.info("saved %d rows to %s", len(ds), out)

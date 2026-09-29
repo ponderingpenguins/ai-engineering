@@ -77,6 +77,8 @@ def run(cfg: Config) -> None:
     path = REPO / cfg.data.out  # absolute paths pass through unchanged
     ds = load_baked(path)
 
+    breakpoint()
+
     logger.info("dataset : %s", path)
     logger.info("rows    : %s", f"{len(ds):,}")
     logger.info("columns : %s", ds.column_names)
