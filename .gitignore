@@ -1,6 +1,9 @@
 # Enable docs/ tracking (Overrides global configs, I usually ignore docs/)
 !docs/
 
+# Emac lock files
+.#*
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -235,3 +238,6 @@ docs/report/*/*.aux
 docs/report/*/*.fdb_latexmk
 docs/report/*/*.fls
 docs/report/*/*.log
+
+# Baked datasets: contain identifiable camera frames and are LFS-tracked by data/** otherwise
+data/processed/
