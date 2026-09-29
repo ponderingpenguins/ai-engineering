@@ -1,47 +1,60 @@
 import os
 import sys
 import glob
+import inspect
+import logging
 import warnings
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from omegaconf import MISSING, OmegaConf
+from omegaconf.errors import OmegaConfBaseException
 
-warnings.filterwarnings("ignore")
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
-# Need this because were not in the same dir
-ROOT = "data/raw/floor_posture_dataset/"
-if not os.path.isdir(os.path.join(ROOT, "data")):
-    raise SystemExit(
-        f"No data/ folder under {os.path.abspath(ROOT)}.\n"
-        "Set ROOT to the folder that contains data/, recorder/ and previews/."
-    )
-
-RECORDER = os.path.abspath(os.path.join(ROOT, "recorder"))
+REPO = Path(__file__).resolve().parent
 
 try:
-    from loguru import logger
+    from loguru import logger as loguru_logger
     from vt_radar.data.dataset import TLVDataset
     from vt_radar.data.rangedoppler import RangeDoppler
     from vt_radar.config.ti_config import ConfigFile
-    logger.remove() # the loader is chatty; silence it
+    loguru_logger.remove()  # the loader is chatty; silence it
 except ModuleNotFoundError:
     raise SystemExit(
-        f"Did you forget to activate your environment?\n\n"
-        f"source .venv/bin/activate"
+        "Did you forget to activate your environment?\n\n"
+        "source .venv/bin/activate"
     )
-finally:
-
-    print("bundle  :", os.path.abspath(ROOT))
-    print("python  :", sys.executable)
-    print("reader  :", os.path.dirname(sys.modules["vt_radar.data.dataset"].__file__))
 
 
+@dataclass
+class DataConfig:
+    # relative paths are resolved against the repo root
+    root: str = MISSING
 
 
-def load_cfg(rec: str) -> tuple[ConfigFile, str]:
+@dataclass
+class Config:
+    data: DataConfig = field(default_factory=DataConfig)
+
+    def __post_init__(self) -> None:
+        # OmegaConf.to_container hands nested configs back as plain dicts
+        if isinstance(self.data, dict):
+            self.data = DataConfig(**self.data)
+
+
+def load_cfg(root: str, rec: str) -> tuple[ConfigFile, str]:
     '''Parse the .cfg that shipped with a recording.'''
-    d = rec_dir(rec)
+    d = rec_dir(root, rec)
     cfgs = sorted(glob.glob(os.path.join(d, "*.cfg")))
     if not cfgs:
         raise FileNotFoundError(f"no .cfg in {d}")
@@ -49,16 +62,17 @@ def load_cfg(rec: str) -> tuple[ConfigFile, str]:
     c.parseCfg(cfgs[0])
     return c, os.path.basename(cfgs[0])
 
-def rec_dir(rec):
+
+def rec_dir(root: str, rec: str) -> str:
     '''Directory for a recording name, whichever room it is in.'''
-    hits = glob.glob(os.path.join(ROOT, "data", "*", rec))
+    hits = glob.glob(os.path.join(root, "data", "*", rec))
     if not hits:
         raise FileNotFoundError(f"{rec} is not in this folder (another zip part?)")
     return hits[0]
 
 
-def cfg_summary(rec):
-    c, name = load_cfg(rec)
+def cfg_summary(root: str, rec: str) -> dict[str, Any]:
+    c, name = load_cfg(root, rec)
     s = c.sensor()
     return {
         "recording": rec,
@@ -74,56 +88,70 @@ def cfg_summary(rec):
     }
 
 
-def main() -> None:
+def run(cfg: Config) -> None:
+    root = str(REPO / cfg.data.root)  # absolute paths pass through unchanged
+    if not os.path.isdir(os.path.join(root, "data")):
+        logger.error(
+            "No data/ folder under %s.\n"
+            "Set data.root in config/config.yaml to the folder that contains data/, recorder/ and previews/.",
+            root,
+        )
+        sys.exit(1)
 
-    man = pd.read_csv(os.path.join(ROOT, "MANIFEST.csv"))
-    shapes = pd.read_csv(os.path.join(ROOT, "HEATMAP_SHAPES.csv"))
+    logger.info("bundle  : %s", root)
+    logger.info("python  : %s", sys.executable)
+    logger.info("reader  : %s", os.path.dirname(inspect.getfile(TLVDataset)))
+
+    man = pd.read_csv(os.path.join(root, "MANIFEST.csv"))
+    shapes = pd.read_csv(os.path.join(root, "HEATMAP_SHAPES.csv"))
     man = man.merge(shapes[["rec", "heatmap", "cfg"]], left_on="dataset", right_on="rec", how="left")
 
-    available = {os.path.basename(p) for p in glob.glob(os.path.join(ROOT, "data", "*", "*"))}
+    available: set[str] = {os.path.basename(p) for p in glob.glob(os.path.join(root, "data", "*", "*"))}
     man["present"] = man.dataset.isin(available)
 
-    print(f"{man.present.sum()} of {len(man)} recordings present in this folder")
-    print(f"{man.loc[man.present, 'frames'].sum():,} frames, {man.loc[man.present, 'size_mb'].sum():.0f} MB")
-    print(man.loc[man.present, ["dataset", "room", "frames", "size_mb", "heatmap", "recorded", "has_labels"]])
-    print()
+    logger.info("%d of %d recordings present in this folder", man.present.sum(), len(man))
+    logger.info("%s frames, %.0f MB", f"{man.loc[man.present, 'frames'].sum():,}", man.loc[man.present, "size_mb"].sum())
+    logger.info("\n%s", man.loc[man.present, ["dataset", "room", "frames", "size_mb", "heatmap", "recorded", "has_labels"]])
 
-    rows = []
+    rows: list[dict[str, Any]] = []
     for rec in man.dataset:
         try:
-            rows.append(cfg_summary(rec))
+            rows.append(cfg_summary(root, rec))
         except Exception as e:
-            print(e)
+            logger.warning("%s", e)
             rows.append({"recording": rec, "cfg": f"<{type(e).__name__}>"})
     cfgs = pd.DataFrame(rows)
-    print(cfgs.head())
+    logger.info("\n%s", cfgs.head())
 
-
-    REC = man.dataset.iloc[0]          # change this to explore another recording
-    ds = TLVDataset(rec_dir(REC))
+    REC = man.dataset.iloc[0]  # change this to explore another recording
+    ds = TLVDataset(rec_dir(root, REC))
     frames = list(ds)
-    print(f"{REC}: {len(frames)} frames")
+    logger.info("%s: %d frames", REC, len(frames))
 
     f = frames[len(frames) // 2]
-    print("timestamp     :", f.timestamp)
-    print("heatmap       :", np.asarray(f.output.range_doppler_heatmap).shape)
-    print("point cloud   :", np.asarray(f.output.pointcloud).shape, "(x, y, z, doppler, snr, noise, track)")
-    print("camera image  :", np.asarray(f.image).shape)
-    print("tracks        :", f.output.num_detected_tracks)
+    logger.info("timestamp     : %s", f.timestamp)
+    logger.info("heatmap       : %s", np.asarray(f.output.range_doppler_heatmap).shape)
+    logger.info("point cloud   : %s (x, y, z, doppler, snr, noise, track)", np.asarray(f.output.pointcloud).shape)
+    logger.info("camera image  : %s", np.asarray(f.image).shape)
+    logger.info("tracks        : %s", f.output.num_detected_tracks)
+
+
+def main() -> None:
+    """main function"""
+    schema = OmegaConf.structured(Config)
+    file_cfg = OmegaConf.load(REPO / "config" / "config.yaml")
+    cli_cfg = OmegaConf.from_cli()
+    try:
+        # unknown keys fail the merge (ConfigKeyError), bad fields fail Config(**raw)
+        merged = OmegaConf.merge(schema, file_cfg, cli_cfg)
+        raw = cast(dict[str, Any], OmegaConf.to_container(merged, resolve=True))
+        cfg = Config(**raw)
+    except (TypeError, OmegaConfBaseException) as e:  # pylint: disable=broad-exception-raised
+        logger.error("Error: %s\n\nUsage: python main.py data.root=<path>", e)
+        sys.exit(1)
+
+    run(cfg)
 
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-
-
-
-
-
-

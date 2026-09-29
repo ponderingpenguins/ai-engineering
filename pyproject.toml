@@ -7,7 +7,9 @@ authors = [
     { name = "eZbal", email = "efeozbal1@gmail.com" }
 ]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "omegaconf>=2.3.1",
+]
 
 [project.optional-dependencies]
 jupyter = [
@@ -24,3 +26,8 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[dependency-groups]
+dev = [
+    "mypy>=2.3.1",
+]
