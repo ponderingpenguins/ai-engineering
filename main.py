@@ -11,8 +11,10 @@ from typing import Any, cast
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from omegaconf import MISSING, OmegaConf
+from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
+
+from utils.config import DataConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,12 +36,6 @@ except ModuleNotFoundError:
         "Did you forget to activate your environment?\n\n"
         "source .venv/bin/activate"
     )
-
-
-@dataclass
-class DataConfig:
-    # relative paths are resolved against the repo root
-    root: str = MISSING
 
 
 @dataclass

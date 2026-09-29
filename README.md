@@ -77,9 +77,36 @@ Example:
 python main.py data.root=/path/to/floor_posture_dataset
 ```
 
+## Baking the dataset
+
+`src/data/extract.py` reads every recording once through `vt_radar` and writes a single Hugging Face dataset (one row per frame) to `data/processed/floor_posture` (gitignored):
+
+```
+python -m data.extract [data.root=...] [data.out=...] [num_proc=4] [overwrite=true] ['recordings=["a","b"]']
+```
+
+Quote recording names: YAML reads an unquoted `2311__20231120_144541` as a number. It takes about 20 s with `num_proc=6`, and the result is about 4.4 GB.
+
+To use the processed dataset:
+
+```python
+from datasets import load_from_disk
+
+ds = load_from_disk("data/processed/floor_posture")
+ds = ds.select_columns(["recording", "heatmap", "label_pose"])   # or ds.remove_columns([...])
+```
+
+Columns: `recording`, `room`, `frame_idx`, `timestamp`, `radar_frame_num`, `image` (camera JPEG), `radar_payload` (raw TLV bytes), `heatmap` (range x doppler, its size varies per recording), `pointcloud`, `n_points`/`n_tracks`/`n_heights`, the sensor config (`range_resolution_m`, `num_range_bins`, ...), and `label_<track>` plus `label_<track>_confidence` for every label track found. Tracks a recording doesn't have are null.
+
+Two things to know about `heatmap`. It is stored raw, with zero velocity at doppler bin 0, so apply `np.fft.fftshift(heatmap, axes=-1)` to centre it (see the notebook). And 8 frames across 7 recordings have an empty heatmap (`[]`, and `heatmap_ok` is `False`), so filter on `heatmap_ok` before stacking.
+
+`notebooks/explore_baked_dataset.ipynb` loads the dataset and plots a frame (camera, heatmap, point cloud), the heatmap over time with a label track, and label distributions.
+
+Keep in mind that the baked data contains identifiable feeds.
+
 ## Type checking
 
-Type hints are checked with [mypy](https://mypy-lang.org/), which is a dev dependency (installed by `uv sync`):
+Type hints are checked with [mypy](https://mypy-lang.org/), a dev dependency (installed by `uv sync`):
 
 ```
 uv run mypy main.py --ignore-missing-imports
