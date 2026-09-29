@@ -1,6 +1,9 @@
 # Enable docs/ tracking (Overrides global configs, I usually ignore docs/)
 !docs/
 
+# Don't ignore label_person.csv
+!data/processed/person_map.csv
+
 # Emac lock files
 .#*
 
@@ -240,4 +243,6 @@ docs/report/*/*.fls
 docs/report/*/*.log
 
 # Baked datasets: contain identifiable camera frames and are LFS-tracked by data/** otherwise
-data/processed/
+data/processed/*
+# recording -> pseudonym map, small and worth versioning
+!data/processed/person_map.csv
