@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
-# import numpy as np
+import numpy as np
 # import pandas as pd
 from datasets import DatasetDict, load_from_disk
 from omegaconf import OmegaConf
@@ -77,13 +77,14 @@ def load_splits(path: Path) -> dict[str, DatasetDict]:
 def run_baseline(split: DatasetDict, target: str = "label_pose") -> None:
     """Fit the majority-class baseline on train, report accuracy and macro-F1 on val/test."""
     labels = {name: [y for y in ds[target] if y is not None] for name, ds in split.items()}  # unlabelled frames dropped
-    model = MajorityClass().fit(labels["train"])
+    model = MajorityClass().fit(x=np.zeros(len(labels["train"])), y=np.asarray(labels["train"], dtype="str"))
     logger.info("baseline predicts %r for every frame (%s)", model.label_, target)
     for name in ("val", "test"):
         if not labels.get(name):
             logger.info("%-5s: no labelled frames, skipped", name)
             continue
-        y, pred = labels[name], model.predict(len(labels[name]))
+        breakpoint()
+        y, pred = labels[name], model.predict(x=np.ndarray(labels[name], dtype="str"))
         logger.info("%-5s: n=%s accuracy=%.3f macro-F1=%.3f", name, f"{len(y):,}", accuracy(y, pred), macro_f1(y, pred))
 
 
