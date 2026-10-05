@@ -49,6 +49,7 @@ class ExtractConfig:
     recordings: list[str] = field(default_factory=list)  # empty = every recording present
 
     def __post_init__(self) -> None:
+        """Turns a plain dict `data` (as loaded from YAML) into a DataConfig."""
         if isinstance(self.data, dict):
             self.data = DataConfig(**self.data)
 
@@ -61,10 +62,26 @@ class ExtractConfig:
 # fall back to timestamps for partial tracks.
 
 def _label_files(rec_dir: Path) -> list[Path]:
+    """Lists the label CSV files of a recording.
+
+    Args:
+        rec_dir: Directory of one recording.
+
+    Returns:
+        The paths of `labels/*.csv`, sorted by name.
+    """
     return sorted((rec_dir / "labels").glob("*.csv"))
 
 
 def _kind(labels: pd.Series) -> str | None:
+    """Classifies a label track as boolean, numeric or string.
+
+    Args:
+        labels: The values of one label track, possibly containing missing values.
+
+    Returns:
+        "bool", "float" or "str", or None if every value is missing.
+    """
     values = labels.dropna()
     if values.empty:
         return None
@@ -125,6 +142,15 @@ def _align_labels(rec_dir: Path, frame_ts: pd.Series) -> dict[str, pd.DataFrame]
 
 
 def _cast(value: Any, kind: str) -> Any:
+    """Converts a label value to the Python type of its track.
+
+    Args:
+        value: A single label value, possibly missing.
+        kind: One of "bool", "float" or "str", as returned by `_kind`.
+
+    Returns:
+        The converted value, or None if `value` is missing.
+    """
     if pd.isna(value):
         return None
     return {"bool": bool, "float": float, "str": str}[kind](value)
@@ -133,6 +159,14 @@ def _cast(value: Any, kind: str) -> Any:
 # --- frames ---------------------------------------------------------------
 
 def _features(kinds: dict[str, str]) -> Features:
+    """Builds the Hugging Face schema of the baked dataset.
+
+    Args:
+        kinds: Maps each label track name to its kind ("bool", "float" or "str").
+
+    Returns:
+        The features, with a label column and a confidence column per track.
+    """
     columns: dict[str, Any] = {
         "recording": Value("string"),
         "room": Value("string"),
@@ -237,6 +271,16 @@ def _add_person(ds: Dataset) -> Dataset:
 
 
 def _split(ds: Dataset, is_test: np.ndarray, is_val: np.ndarray) -> DatasetDict:
+    """Splits a dataset into train, val and test.
+
+    Args:
+        ds: The dataset to split.
+        is_test: Boolean mask over the rows of `ds`, True for test rows.
+        is_val: Boolean mask over the rows of `ds`, True for validation rows.
+
+    Returns:
+        A DatasetDict where every row not in test or val goes to train.
+    """
     train = ~(is_test | is_val)
     return DatasetDict({
         "train": ds.select(np.flatnonzero(train)),
@@ -268,10 +312,31 @@ def _split_by_person(ds: Dataset, test_persons: list[str], val_persons: list[str
 
 
 def split_paths(out: Path) -> dict[str, Path]:
+    """Gives the output paths of the room-wise and person-wise splits.
+
+    Args:
+        out: Path of the full baked dataset.
+
+    Returns:
+        Maps "room" and "person" to the path the split is saved at, next to `out`.
+    """
     return {"room": out.with_name(out.name + "_room_split"), "person": out.with_name(out.name + "_person_split")}
 
 
 def _recordings(root: Path, only: list[str]) -> list[dict[str, Any]]:
+    """Lists the recordings that are present on disk.
+
+    Args:
+        root: Root of the raw dataset, containing MANIFEST.csv and `data/`.
+        only: Recording names to keep. Empty means every recording.
+
+    Returns:
+        One dict per recording with its name, room, path and frame count. Recordings
+        whose folder is missing (for example in another zip part) are skipped.
+
+    Raises:
+        ValueError: If a name in `only` is not in MANIFEST.csv.
+    """
     manifest = pd.read_csv(root / "MANIFEST.csv")
     if only:
         unknown = set(only) - set(manifest.dataset)
@@ -289,6 +354,17 @@ def _recordings(root: Path, only: list[str]) -> list[dict[str, Any]]:
 
 
 def extract(cfg: ExtractConfig) -> None:
+    """Bakes the raw recordings into a Hugging Face dataset and its splits.
+
+    Saves the full dataset plus a room-wise and a person-wise split to disk.
+
+    Args:
+        cfg: The extraction configuration.
+
+    Raises:
+        SystemExit: If the output exists and `cfg.overwrite` is False, or no
+            recordings are found.
+    """
     root = REPO / cfg.data.root
     out = REPO / cfg.data.baked
     if out.exists():

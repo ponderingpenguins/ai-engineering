@@ -1,29 +1,31 @@
 """
-Loads both datasets
+Loads the baked dataset, cuts it into windows and cross-validates a model, person by person.
+
+Everything is configured in config/config.yaml and can be overridden from the command line:
+
+    python main.py model.name=baseline
+    python main.py model.rnn.epochs=5 eval.folds=3 eval.collapse_lying=false
 
 TODO:
 - data preprocessing
-- Implement models
-- train models
-- evaluate models
 """
 
 import sys
 import logging
-from dataclasses import dataclass, field
+from collections import Counter
+from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
-from datasets import DatasetDict, load_from_disk
+from datasets import Dataset, load_from_disk
 from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
 
-from data.extract import split_paths
-from models.baseline import MajorityClass
-from models.model import BaseModel
-from models.rnn import RNN
-from utils.config import DataConfig
 from data.windows import make_windows, collapse_lying
+from models.factory import MODELS, build_model
+from models.model import BaseModel
+from utils.config import Config
 from utils.trainer import Trainer
 
 logging.basicConfig(
@@ -35,61 +37,46 @@ logger = logging.getLogger(__name__)
 
 REPO = Path(__file__).resolve().parent
 
-# per-recording sensor config (constant within a recording)
-CFG_COLUMNS = [
-    "cfg_file",
-    "range_resolution_m",
-    "range_max_m",
-    "num_range_bins",
-    "num_doppler_bins",
-    "doppler_resolution_m_s",
-    "max_velocity_m_s",
-    "num_tx",
-    "num_rx",
-]
-
-
-@dataclass
-class Config:
-    data: DataConfig = field(default_factory=DataConfig)
-
-    def __post_init__(self) -> None:
-        # OmegaConf.to_container hands nested configs back as plain dicts
-        if isinstance(self.data, dict):
-            self.data = DataConfig(**self.data)
-
-
-def load_splits(path: Path) -> dict[str, DatasetDict]:
-    """Room-wise and person-wise train/test splits of the baked dataset, see `python -m data.extract`"""
-    splits = {}
-    for name, split_path in split_paths(path).items():
-        if not split_path.is_dir():
-            logger.error(
-                "No %s split at %s.\n"
-                "Rebuild with: python -m data.extract overwrite=true",
-                name,
-                split_path,
-            )
-            sys.exit(1)
-        splits[name] = cast(DatasetDict, load_from_disk(str(split_path)))
-    return splits
-
-def run_model(model:BaseModel, split:DatasetDict, heatmaps:bool, target:str = "label_pose") -> dict:
-    # data = {n: make_windows(ds, target, heatmaps=heatmaps, relabel=collapse_lying) for n, ds in split.items()}
-    data = {str(n): make_windows(ds, target, heatmaps=heatmaps)  for n, ds in split.items()}
-    evals = {n: d for n, d in data.items() if n != "train"}
-    return Trainer(model).run(data["train"], evals)
 
 def run(cfg: Config) -> None:
-    path = REPO / cfg.data.baked  # absolute paths pass through unchanged
-    splits = load_splits(path)
-    room_split, person_split = splits["room"], splits["person"]
-    model = RNN()
+    """Cross-validates the configured model on the baked dataset.
 
-    for name, split in splits.items():
-        logger.info("--- baseline, %s split ---", name)
-        # run_model(MajorityClass(), split, heatmaps=False)
-        run_model(model, split, heatmaps=True)
+    Args:
+        cfg: The full run configuration.
+
+    Raises:
+        SystemExit: If the baked dataset is missing or `eval.folds` is out of range.
+    """
+    path = REPO / cfg.data.baked  # absolute paths pass through unchanged
+    if not path.is_dir():
+        logger.error("No baked dataset at %s.\nBuild it with: python -m data.extract", path)
+        sys.exit(1)
+    ds = cast(Dataset, load_from_disk(str(path)))
+
+    def make_model() -> BaseModel:
+        """Builds a fresh, untrained model, so every fold starts from scratch.
+
+        Returns:
+            A new model as configured by `cfg.model`.
+        """
+        return build_model(cfg.model)
+
+    x, y, groups = make_windows(
+        ds,
+        cfg.eval.target,
+        window_len=cfg.eval.window_len,
+        stride=cfg.eval.stride,
+        heatmaps=make_model().needs_heatmaps,
+        relabel=collapse_lying if cfg.eval.collapse_lying else None,
+    )
+    logger.info("%d windows from %d groups, classes: %s", len(y), len(set(groups)), dict(Counter(y.tolist())))
+    if not 2 <= cfg.eval.folds <= len(set(groups)):
+        logger.error("eval.folds must be between 2 and the number of groups (%d), got %d", len(set(groups)), cfg.eval.folds)
+        sys.exit(1)
+
+    out_dir = REPO / cfg.eval.out_dir / f"{datetime.now():%Y%m%d-%H%M%S}_{cfg.model.name}"
+    trainer = Trainer(make_model, out_dir=out_dir, config=asdict(cfg))
+    trainer.cross_validate(x, y, groups, cfg.eval.folds)
 
 
 def main() -> None:
@@ -98,12 +85,18 @@ def main() -> None:
     file_cfg = OmegaConf.load(REPO / "config" / "config.yaml")
     cli_cfg = OmegaConf.from_cli()
     try:
-        # unknown keys fail the merge (ConfigKeyError), bad fields fail Config(**raw)
+        # unknown keys fail the merge (ConfigKeyError), bad types fail to_object
         merged = OmegaConf.merge(schema, file_cfg, cli_cfg)
-        raw = cast(dict[str, Any], OmegaConf.to_container(merged, resolve=True))
-        cfg = Config(**raw)
-    except (TypeError, OmegaConfBaseException) as e:  # pylint: disable=broad-exception-raised
-        logger.error("Error: %s\n\nUsage: python main.py [data.baked=<path>]", e)
+        cfg = cast(Config, OmegaConf.to_object(merged))
+        if cfg.model.name not in MODELS:
+            raise ValueError(f"model.name must be one of {MODELS}, got {cfg.model.name!r}")
+    except (TypeError, ValueError, OmegaConfBaseException) as e:  # pylint: disable=broad-exception-raised
+        logger.error(
+            "Error: %s\n\nUsage: python main.py [data.baked=<path>] [model.name=%s] "
+            "[model.rnn.epochs=<n>] [eval.folds=<k>] [eval.collapse_lying=true|false]",
+            e,
+            "|".join(MODELS),
+        )
         sys.exit(1)
 
     run(cfg)

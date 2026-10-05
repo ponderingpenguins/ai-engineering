@@ -15,6 +15,11 @@ logger = logging.getLogger(__name__)
 
 
 def _pick_device() -> torch.device:
+    """Picks the fastest available device.
+
+    Returns:
+        CUDA if available, else MPS, else CPU.
+    """
     if torch.cuda.is_available():
         return torch.device("cuda")
     if torch.backends.mps.is_available():
@@ -23,6 +28,16 @@ def _pick_device() -> torch.device:
 
 
 def _conv_block(c_in: int, c_out: int, pool: tuple[int, int]) -> list[nn.Module]:
+    """Builds a conv, batch norm, ReLU, max pool block.
+
+    Args:
+        c_in: Number of input channels.
+        c_out: Number of output channels.
+        pool: Max pooling window over (range, Doppler).
+
+    Returns:
+        The layers of the block, in order.
+    """
     return [nn.Conv2d(c_in, c_out, kernel_size=3, padding=1), nn.BatchNorm2d(c_out), nn.ReLU(), nn.MaxPool2d(pool)]
 
 
@@ -37,6 +52,11 @@ class HeatmapEncoder(nn.Module):
     input_std: torch.Tensor
 
     def __init__(self, feat_dim: int = 64) -> None:
+        """Initializes the encoder.
+
+        Args:
+            feat_dim: Size of the feature vector per frame.
+        """
         super().__init__()
         self.conv = nn.Sequential(
             *_conv_block(1, 16, (2, 1)),  # (16, 128, 16)
@@ -51,6 +71,14 @@ class HeatmapEncoder(nn.Module):
         self.register_buffer("input_std", torch.ones(1))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Encodes every frame of every window.
+
+        Args:
+            x: Heatmaps of shape (B, T, 1, R, D).
+
+        Returns:
+            Features of shape (B, T, feat_dim).
+        """
         B, T = x.shape[:2]
         x = (x - self.input_mean) / self.input_std
         z = self.conv(x.flatten(0, 1))  # all B*T frames go through the same CNN
@@ -59,6 +87,15 @@ class HeatmapEncoder(nn.Module):
 
 class HeatmapGRU(nn.Module):
     def __init__(self, n_classes:int, feat_dim:int=64, hidden:int=128, *args: Any, **kwargs: Any) -> None:
+        """Initializes the encoder, the GRU and the classification head.
+
+        Args:
+            n_classes: Number of output classes.
+            feat_dim: Size of the feature vector per frame.
+            hidden: Size of the GRU hidden state.
+            *args: Unused.
+            **kwargs: Unused.
+        """
         super().__init__()
         # encoder
         self.encoder = HeatmapEncoder(feat_dim)
@@ -68,6 +105,14 @@ class HeatmapGRU(nn.Module):
         self.pose = nn.Linear(hidden, n_classes)
 
     def forward(self, x):
+        """Classifies a window from its last GRU state.
+
+        Args:
+            x: Heatmaps of shape (B, T, 1, R, D).
+
+        Returns:
+            Class logits of shape (B, n_classes).
+        """
         # (B, T, 1, R, D)
         z = self.encoder(x)
         return self.pose(self.gru(z)[0][:, -1])
@@ -86,6 +131,17 @@ class RNN(BaseModel):
         batch_size: int = 32,
         seed: int = 0,
     ) -> None:
+        """Stores the hyperparameters. The network is built in `fit`.
+
+        Args:
+            hidden: Size of the GRU hidden state.
+            feat_dim: Size of the feature vector per frame.
+            lr: Adam learning rate.
+            weight_decay: Adam weight decay.
+            epochs: Number of passes over the training data.
+            batch_size: Batch size for training and prediction.
+            seed: Torch seed, set at the start of `fit`.
+        """
         self.hidden = hidden
         self.feat_dim = feat_dim
         self.lr = lr
@@ -96,6 +152,16 @@ class RNN(BaseModel):
         self.device = _pick_device()
 
     def fit(self, x: np.ndarray, y: np.ndarray, val: tuple[np.ndarray, np.ndarray] | None = None) -> None:
+        """Trains a new network on windows of heatmaps.
+
+        Classes are weighted by inverse frequency. If `val` is given, the weights of the
+        epoch with the best validation macro F1 are kept, otherwise those of the last epoch.
+
+        Args:
+            x: Heatmaps of shape (N, T, 1, R, D).
+            y: String labels of shape (N,).
+            val: Optional (x, y) validation data, used to choose the best epoch.
+        """
         torch.manual_seed(self.seed)
 
         # labels -> integers 0..K-1, classes_ remembers which name is which
@@ -148,6 +214,14 @@ class RNN(BaseModel):
 
     @torch.no_grad()
     def predict(self, x: np.ndarray) -> np.ndarray:
+        """Predicts a label for each window.
+
+        Args:
+            x: Heatmaps of shape (N, T, 1, R, D).
+
+        Returns:
+            String labels of shape (N,).
+        """
         self.net.eval()
         predictions = []
         for start in range(0, len(x), self.batch_size):  # in batches, so a big test set fits in memory
