@@ -14,8 +14,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
-import numpy as np
-# import pandas as pd
 from datasets import DatasetDict, load_from_disk
 from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
@@ -23,7 +21,7 @@ from omegaconf.errors import OmegaConfBaseException
 from data.extract import split_paths
 from models.baseline import MajorityClass
 from models.model import BaseModel
-from utils.metrics import accuracy, macro_f1
+from models.rnn import RNN
 from utils.config import DataConfig
 from data.windows import make_windows, collapse_lying
 from utils.trainer import Trainer
@@ -85,10 +83,12 @@ def run(cfg: Config) -> None:
     path = REPO / cfg.data.baked  # absolute paths pass through unchanged
     splits = load_splits(path)
     room_split, person_split = splits["room"], splits["person"]
+    model = RNN()
 
     for name, split in splits.items():
         logger.info("--- baseline, %s split ---", name)
-        run_model(MajorityClass(), split, heatmaps=False)
+        # run_model(MajorityClass(), split, heatmaps=False)
+        run_model(model, split, heatmaps=True)
 
 
 def main() -> None:
