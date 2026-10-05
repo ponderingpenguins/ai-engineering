@@ -75,7 +75,8 @@ def load_splits(path: Path) -> dict[str, DatasetDict]:
     return splits
 
 def run_model(model:BaseModel, split:DatasetDict, heatmaps:bool, target:str = "label_pose") -> dict:
-    data = {n: make_windows(ds, target, heatmaps=heatmaps, relabel=collapse_lying) for n, ds in split.items()}
+    # data = {n: make_windows(ds, target, heatmaps=heatmaps, relabel=collapse_lying) for n, ds in split.items()}
+    data = {str(n): make_windows(ds, target, heatmaps=heatmaps)  for n, ds in split.items()}
     evals = {n: d for n, d in data.items() if n != "train"}
     return Trainer(model).run(data["train"], evals)
 

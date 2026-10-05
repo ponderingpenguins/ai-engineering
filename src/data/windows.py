@@ -1,6 +1,7 @@
-from typing import Callable
+from typing import Callable, cast
 
 import numpy as np
+import pandas as pd
 from datasets import Dataset
 
 # Every labelled recording is Config_4: 256 range bins x 16 Doppler bins. Other sensor
@@ -39,10 +40,10 @@ def make_windows(
     has_label = np.array([label is not None for label in ds[target]])
     right_shape = (np.asarray(ds["num_range_bins"]) == shape[0]) & (np.asarray(ds["num_doppler_bins"]) == shape[1])
     frames_ds = ds.select(np.flatnonzero(has_heatmap & has_label & right_shape))
-    meta = frames_ds.select_columns(["recording", "frame_idx", target]).to_pandas()
+    meta = cast(pd.DataFrame, frames_ds.select_columns(["recording", "frame_idx", target]).to_pandas())
 
     # 2. slide a window over each recording, and remember which frames it covers
-    window_frames = []  # for each window: positions of its frames in frames_ds
+    frames_per_window = []  # for each window: positions of its frames in frames_ds
     window_labels = []
     for _, rec in meta.groupby("recording", sort=False):
         rec = rec.sort_values("frame_idx")
@@ -55,10 +56,10 @@ def make_windows(
             has_gap = frame_nums[last] - frame_nums[start] != window_len - 1
             if has_gap:  # frames were dropped in between, so skip this window
                 continue
-            window_frames.append(positions[start : last + 1])
+            frames_per_window.append(positions[start : last + 1])
             window_labels.append(labels[last])
 
-    window_frames = np.asarray(window_frames, dtype=int).reshape(-1, window_len)
+    window_frames = np.asarray(frames_per_window, dtype=int).reshape(-1, window_len)
     y = np.asarray(window_labels, dtype=str)
     if relabel is not None:
         y = relabel(y)
@@ -69,5 +70,7 @@ def make_windows(
     if not heatmaps:
         return np.zeros((len(window_frames), window_len), dtype=np.float32), y
     heatmap_batches = frames_ds.select_columns(["heatmap"]).iter(256)
-    all_frames = np.concatenate([np.stack([_prep(h, shape) for h in batch["heatmap"]]) for batch in heatmap_batches])
+    all_frames = np.concatenate(
+        [np.stack([_prep(h, shape) for h in cast(dict, batch)["heatmap"]]) for batch in heatmap_batches]
+    )
     return all_frames[window_frames], y

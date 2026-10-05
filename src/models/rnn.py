@@ -32,6 +32,10 @@ class HeatmapEncoder(nn.Module):
     R = 256 range bins, D = 16 Doppler bins. Only range is pooled hard, Doppler is already short.
     """
 
+    # registered as buffers below, declared here so type checkers know they are tensors
+    input_mean: torch.Tensor
+    input_std: torch.Tensor
+
     def __init__(self, feat_dim: int = 64) -> None:
         super().__init__()
         self.conv = nn.Sequential(
@@ -131,7 +135,7 @@ class RNN(BaseModel):
     def _train_epoch(self, loader: DataLoader, optimizer: torch.optim.Optimizer, loss_fn: nn.Module) -> float:
         """One pass over the training data, returns the mean loss."""
         self.net.train()
-        total_loss = 0.0
+        total_loss, n_samples = 0.0, 0
         for xb, yb in loader:
             xb, yb = xb.to(self.device), yb.to(self.device)
             optimizer.zero_grad()
@@ -139,7 +143,8 @@ class RNN(BaseModel):
             loss.backward()
             optimizer.step()
             total_loss += loss.item() * len(xb)
-        return total_loss / len(loader.dataset)
+            n_samples += len(xb)
+        return total_loss / n_samples
 
     @torch.no_grad()
     def predict(self, x: np.ndarray) -> np.ndarray:

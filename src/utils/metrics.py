@@ -1,9 +1,13 @@
 """Classification metrics."""
 
+from collections.abc import Sequence
+
 import numpy as np
 
+Labels = Sequence[str] | np.ndarray
 
-def macro_f1(y_true: list[str], y_pred: list[str]) -> float:
+
+def macro_f1(y_true: Labels, y_pred: Labels) -> float:
     true, pred = np.asarray(y_true), np.asarray(y_pred)
     scores = []
     for c in np.unique(true):
@@ -14,5 +18,5 @@ def macro_f1(y_true: list[str], y_pred: list[str]) -> float:
     return float(np.mean(scores))
 
 
-def accuracy(y_true: list[str], y_pred: list[str]) -> float:
+def accuracy(y_true: Labels, y_pred: Labels) -> float:
     return float(np.mean(np.asarray(y_true) == np.asarray(y_pred)))
