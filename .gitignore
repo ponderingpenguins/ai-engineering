@@ -4,6 +4,10 @@
 # Don't ignore label_person.csv
 !data/processed/person_map.csv
 
+# Ignore results (text heavy)
+results/
+
+
 # Emac lock files
 .#*
 
