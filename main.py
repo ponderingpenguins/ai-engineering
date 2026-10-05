@@ -22,8 +22,11 @@ from omegaconf.errors import OmegaConfBaseException
 
 from data.extract import split_paths
 from models.baseline import MajorityClass
+from models.model import BaseModel
 from utils.metrics import accuracy, macro_f1
 from utils.config import DataConfig
+from data.windows import make_windows, collapse_lying
+from utils.trainer import Trainer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -73,20 +76,10 @@ def load_splits(path: Path) -> dict[str, DatasetDict]:
         splits[name] = cast(DatasetDict, load_from_disk(str(split_path)))
     return splits
 
-
-def run_baseline(split: DatasetDict, target: str = "label_pose") -> None:
-    """Fit the majority-class baseline on train, report accuracy and macro-F1 on val/test."""
-    labels = {name: [y for y in ds[target] if y is not None] for name, ds in split.items()}  # unlabelled frames dropped
-    model = MajorityClass().fit(x=np.zeros(len(labels["train"])), y=np.asarray(labels["train"], dtype="str"))
-    logger.info("baseline predicts %r for every frame (%s)", model.label_, target)
-    for name in ("val", "test"):
-        if not labels.get(name):
-            logger.info("%-5s: no labelled frames, skipped", name)
-            continue
-        breakpoint()
-        y, pred = labels[name], model.predict(x=np.ndarray(labels[name], dtype="str"))
-        logger.info("%-5s: n=%s accuracy=%.3f macro-F1=%.3f", name, f"{len(y):,}", accuracy(y, pred), macro_f1(y, pred))
-
+def run_model(model:BaseModel, split:DatasetDict, heatmaps:bool, target:str = "label_pose") -> dict:
+    data = {n: make_windows(ds, target, heatmaps=heatmaps, relabel=collapse_lying) for n, ds in split.items()}
+    evals = {n: d for n, d in data.items() if n != "train"}
+    return Trainer(model).run(data["train"], evals)
 
 def run(cfg: Config) -> None:
     path = REPO / cfg.data.baked  # absolute paths pass through unchanged
@@ -95,7 +88,7 @@ def run(cfg: Config) -> None:
 
     for name, split in splits.items():
         logger.info("--- baseline, %s split ---", name)
-        run_baseline(split)
+        run_model(MajorityClass(), split, heatmaps=False)
 
 
 def main() -> None:

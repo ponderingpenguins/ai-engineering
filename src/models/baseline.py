@@ -6,10 +6,9 @@ import numpy as np
 
 
 class MajorityClass(BaseModel):
-    def fit(self, x: np.ndarray, y: np.ndarray) -> "MajorityClass":
+    def fit(self, x: np.ndarray, y: np.ndarray, val:tuple[np.ndarray, np.ndarray] | None=None) -> None:
         self.label_ = Counter(y).most_common(1)[0][0]
-        return self
 
-    def predict(self, x: np.ndarray) -> list[str]:
+    def predict(self, x: np.ndarray) -> np.ndarray:
         n = len(x)
-        return [self.label_] * n
+        return np.asarray([self.label_] * n)
