@@ -1,6 +1,12 @@
 # Enable docs/ tracking (Overrides global configs, I usually ignore docs/)
 !docs/
 
+# Don't ignore label_person.csv
+!data/processed/person_map.csv
+
+# Emac lock files
+.#*
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -219,3 +225,24 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# LaTeX build artifacts
+docs/report/*.aux
+docs/report/*.bbl
+docs/report/*.blg
+docs/report/*.fdb_latexmk
+docs/report/*.fls
+docs/report/*.log
+docs/report/*.out
+docs/report/*.pdf
+docs/report/*.synctex.gz
+docs/report/*.toc
+docs/report/*/*.aux
+docs/report/*/*.fdb_latexmk
+docs/report/*/*.fls
+docs/report/*/*.log
+
+# Baked datasets: contain identifiable camera frames and are LFS-tracked by data/** otherwise
+data/processed/*
+# recording -> pseudonym map, small and worth versioning
+!data/processed/person_map.csv

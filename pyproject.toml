@@ -9,6 +9,9 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "vt-radar-recorder",
+    "datasets>=5.0.1",
+    "omegaconf>=2.3.1",
+    "ultralytics>=8.4.165",
 ]
 
 [project.optional-dependencies]
@@ -35,5 +38,11 @@ vt-radar-recorder = { path = "data/raw/floor_posture_dataset/recorder", editable
 # so vt_radar shows as unresolved even though it imports fine at runtime.
 # "compat" mode falls back to a plain .pth path entry, which every tool
 # resolves the same way `uv sync` does for the whole team.
+
 [tool.uv]
 config-settings-package = { vt-radar-recorder = { editable_mode = "compat" } }
+
+[dependency-groups]
+dev = [
+    "mypy>=2.3.1",
+]
