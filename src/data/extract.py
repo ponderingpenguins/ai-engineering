@@ -1,5 +1,8 @@
 """Bake the raw floor-posture recordings into one Hugging Face dataset.
 
+Besides the raw labels, hand annotations are joined in: `person` (data/processed/person_map.csv)
+and `person_present` (data/processed/presence_events.csv, from notebooks/label_presence.ipynb).
+
 Run it:
 
     python -m data.extract [data.root=...] [num_proc=4] [overwrite=true] [test_room=room2] ['test_persons=[Dave]'] ['val_persons=[Igor]'] ['recordings=["a","b"]']
@@ -35,6 +38,7 @@ REPO = Path(__file__).resolve().parents[2]
 ALIGN_TOLERANCE = pd.Timedelta("100ms")  # ~2 frames at 18 fps
 PERSON_MAP = REPO / "data" / "processed" / "person_map.csv"  # recording -> pseudonym, hand-labelled
 NO_PERSON = "NA"
+PRESENCE_EVENTS = REPO / "data" / "processed" / "presence_events.csv"  # recording, frame_idx, event; hand-labelled
 
 
 @dataclass
@@ -270,6 +274,36 @@ def _add_person(ds: Dataset) -> Dataset:
     return ds.add_column("person", recs.map(lambda r: mapping.get(r, NO_PERSON)).tolist())
 
 
+def _add_presence(ds: Dataset) -> Dataset:
+    """Add a `person_present` column from presence_events.csv.
+
+    A person is present from each "enter" event until the next "leave" event (or the end of
+    the recording). Recordings without any events are unannotated and get None, so they are
+    not mistaken for empty rooms.
+    """
+    events = pd.read_csv(PRESENCE_EVENTS) if PRESENCE_EVENTS.exists() else pd.DataFrame(columns=["recording", "frame_idx", "event"])
+    if events.empty:
+        logger.warning("no events in %s, person_present is None everywhere", PRESENCE_EVENTS.name)
+    meta = ds.select_columns(["recording", "frame_idx"]).to_pandas()
+    present = np.full(len(meta), None, dtype=object)
+    for rec, evs in events.sort_values("frame_idx").groupby("recording"):
+        rows = np.flatnonzero(meta.recording == rec)
+        if rows.size == 0:
+            logger.warning("%s in %s but not in the dataset", rec, PRESENCE_EVENTS.name)
+            continue
+        state, last = False, 0
+        flags = np.zeros(rows.size, dtype=bool)
+        for frame, event in zip(evs.frame_idx, evs.event):
+            flags[last:frame] = state
+            state, last = event == "enter", int(frame)
+        flags[last:] = state
+        present[rows[np.argsort(meta.frame_idx.values[rows])]] = flags  # rows ordered by frame_idx
+    unannotated = sorted(set(meta.recording) - set(events.recording))
+    if unannotated:
+        logger.warning("not in %s, person_present set to None: %s", PRESENCE_EVENTS.name, unannotated)
+    return ds.add_column("person_present", present.tolist()).cast_column("person_present", Value("bool"))
+
+
 def _split(ds: Dataset, is_test: np.ndarray, is_val: np.ndarray) -> DatasetDict:
     """Splits a dataset into train, val and test.
 
@@ -391,6 +425,7 @@ def extract(cfg: ExtractConfig) -> None:
         cache_dir=str(cache),
     )
     ds = _add_person(ds)
+    ds = _add_presence(ds)
     ds.save_to_disk(str(out))
     splits = {"room": _split_by_room(ds, cfg.test_room), "person": _split_by_person(ds, cfg.test_persons, cfg.val_persons)}
     for name, path in split_paths(out).items():
