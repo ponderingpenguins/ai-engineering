@@ -248,5 +248,7 @@ docs/report/*/*.log
 
 # Baked datasets: contain identifiable camera frames and are LFS-tracked by data/** otherwise
 data/processed/*
-# recording -> pseudonym map, small and worth versioning
+# recording -> pseudonym map and hand annotations, small and worth versioning
 !data/processed/person_map.csv
+!data/processed/presence_events.csv
+!data/processed/clothing.csv

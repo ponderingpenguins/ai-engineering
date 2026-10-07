@@ -104,6 +104,18 @@ Two things to know about `heatmap`. It is stored raw, with zero velocity at dopp
 
 Keep in mind that the baked data contains identifiable feeds.
 
+## Manual annotations
+
+Two columns of the baked dataset are not in the raw data: they were annotated by hand and are joined in by `src/data/extract.py`. The source CSVs are small and tracked in git (see `.gitignore`), so rebuild the dataset (`overwrite=true`) after changing them.
+
+| Column | Source file | Made with | Meaning |
+| ------ | ----------- | --------- | ------- |
+| `person` | `data/processed/person_map.csv` (`recording, person`) | `notebooks/label_persons.ipynb` | Pseudonym of the participant in the recording (for example `Bob`), so splits can be made by person. Recordings that are not labelled get `"NA"`. |
+| `person_present` | `data/processed/presence_events.csv` (`recording, frame_idx, event`) | `notebooks/label_presence.ipynb` | `True` while someone is in view of the camera, `False` for an empty scene. |
+
+- **`person`** is one value per recording. The notebook shows the best face crops of each recording and you pick a name from a fixed list of pseudonyms. Unlabelled recordings always stay in the train set of the person-wise split.
+- **`person_present`** is stored as `enter` and `leave` events on frame indices. A person is present from each `enter` until the next `leave` (or the end of the recording), so a recording that starts with someone already in view needs an `enter` on frame 0. Recordings without any events get `None`, not `False`, so filter on `person_present.notna()` before training on it. This is separate from the raw `label_presence` track, which is not reliable (it is `False` wherever it exists).
+
 ## Type checking
 
 Type hints are checked with [mypy](https://mypy-lang.org/), a dev dependency (installed by `uv sync`):
