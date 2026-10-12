@@ -116,6 +116,23 @@ Two columns of the baked dataset are not in the raw data: they were annotated by
 - **`person`** is one value per recording. The notebook shows the best face crops of each recording and you pick a name from a fixed list of pseudonyms. Unlabelled recordings always stay in the train set of the person-wise split.
 - **`person_present`** is stored as `enter` and `leave` events on frame indices. A person is present from each `enter` until the next `leave` (or the end of the recording), so a recording that starts with someone already in view needs an `enter` on frame 0. Recordings without any events get `None`, not `False`, so filter on `person_present.notna()` before training on it. This is separate from the raw `label_presence` track, which is not reliable (it is `False` wherever it exists).
 
+## Comparing models
+
+```bash
+python compare.py models=baseline,rnn model.rnn.epochs=20
+python compare.py models=baseline eval.folds=3
+```
+
+Models share the same windows and participant folds. Unknown participants are grouped by
+recording. Defaults evaluate lying versus not lying; use `eval.collapse_lying=false` for
+the original posture classes. Rebuild the prepared dataset after changing extraction or annotations.
+
+Each run writes `results/comparisons/<timestamp>/comparison.md` with PNG graphs in `figures/`.
+Keep the report and figures together. `predictions.csv` includes held-out predictions, timestamps,
+and the exact ordered frame IDs for each window; `failures.csv` contains only mistakes.
+`participants.csv`, `metrics.json`, and `config.json` contain detailed scores and run settings.
+Scores describe windows, not distinct events. Training and prediction times total all folds.
+
 ## Type checking
 
 Type hints are checked with [mypy](https://mypy-lang.org/), a dev dependency (installed by `uv sync`):
