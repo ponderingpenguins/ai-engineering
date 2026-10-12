@@ -49,9 +49,6 @@ def per_class(y_true: Labels, y_pred: Labels) -> dict[str, dict[str, float | int
         n_true, n_pred = int(np.sum(true == c)), int(np.sum(pred == c))
         precision = tp / n_pred if n_pred else None
         recall = tp / n_true if n_true else None
-        if precision is None or recall is None:
-            f1 = None
-        else:
-            f1 = 0.0 if tp == 0 else 2 * precision * recall / (precision + recall)
+        f1 = 2 * tp / (n_true + n_pred) if n_true + n_pred else None
         report[str(c)] = {"precision": precision, "recall": recall, "f1": f1, "support": n_true}
     return report
