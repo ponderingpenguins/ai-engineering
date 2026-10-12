@@ -43,17 +43,24 @@ def make_windows(
     has_heatmap = np.asarray(ds["heatmap_ok"], dtype=bool)
     has_label = np.array([label is not None for label in ds[target]])
     right_shape = (np.asarray(ds["num_range_bins"]) == shape[0]) & (np.asarray(ds["num_doppler_bins"]) == shape[1])
-    frames_ds = ds.select(np.flatnonzero(has_heatmap & has_label & right_shape))
-    meta = cast(pd.DataFrame, frames_ds.select_columns(["recording", "person", "frame_idx", target]).to_pandas())
+    keep = has_heatmap & has_label & right_shape
+    # Use capture order without changing the frame_idx used by hand annotations.
+    meta_all = cast(pd.DataFrame, ds.select_columns(
+        ["recording", "person", "frame_idx", "timestamp", target]
+    ).to_pandas())
+    chronological = meta_all.sort_values(["recording", "timestamp", "frame_idx"], kind="stable")
+    meta_all["capture_idx"] = chronological.groupby("recording", sort=False).cumcount()
+    frames_ds = ds.select(np.flatnonzero(keep))
+    meta = meta_all.loc[keep].reset_index(drop=True)
 
     # 2. slide a window over each recording, and remember which frames it covers
     frames_per_window = []  # for each window: positions of its frames in frames_ds
     window_labels = []
     window_groups = []
     for recording, rec in meta.groupby("recording", sort=False):
-        rec = rec.sort_values("frame_idx")
+        rec = rec.sort_values("capture_idx")
         positions = rec.index.to_numpy()
-        frame_nums = rec.frame_idx.to_numpy()
+        frame_nums = rec.capture_idx.to_numpy()
         labels = rec[target].to_numpy()
         person = rec.person.iloc[0]
         group = str(recording) if person == NO_PERSON else str(person)
