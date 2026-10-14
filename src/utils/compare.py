@@ -1,15 +1,17 @@
 """Compare registered models and write a Markdown report with PNG figures.
 
-    python compare.py models=baseline,rnn model.rnn.epochs=20
+    python -m utils.compare 'checkpoints=["results/training/<timestamp>/rnn.pt"]'
 """
 
 import json
 import logging
 import subprocess
 from collections import Counter
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
+from time import perf_counter
+import hashlib
 
 import matplotlib
 
@@ -17,24 +19,25 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from datasets import load_from_disk
+from datasets import DatasetDict, load_from_disk
 from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
 
 from data.extract import NO_PERSON
 from data.windows import HEATMAP_SHAPE, collapse_lying, make_windows
-from models.factory import MODELS, build_model
-from utils.config import Config, ModelConfig
-from utils.trainer import Trainer, group_folds
+from models.baseline import MajorityClass
+from models.model import BaseModel
+from utils.config import Config
 
-REPO = Path(__file__).resolve().parent
+REPO = Path(__file__).resolve().parents[2]
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class CompareConfig(Config):
-    models: str = "baseline,rnn"
+    checkpoints: list[str] = field(default_factory=list)
     failure_timelines: int = 3
+    partitions: str = "data/processed/floor_posture_person_split"
 
 
 def scores(true, pred, classes):
@@ -93,7 +96,7 @@ def preflight(ds, cfg, path):
         raise ValueError("No usable frames for the selected target and radar geometry.")
     unknown = meta.loc[eligible & (meta.person == NO_PERSON), "recording"].nunique()
     if unknown:
-        notes.append(f"Unknown participants: {unknown} recordings grouped by recording; participant independence is unverified.")
+        notes.append(f"Unknown participants: {unknown} recordings available for training only.")
     sources = [
         REPO / "src/data/extract.py",
         REPO / "data/processed/person_map.csv",
@@ -224,12 +227,12 @@ def report(out, results, predictions, classes, checks, cfg, provenance):
     metrics = ["macro_f1", "accuracy"]
     if "lying" in classes:
         metrics += ["lying_precision", "lying_recall"]
-    lines = ["# Model comparison", "", "| Model | " + " | ".join(metrics) + " | Train s | Predict s |",
-             "|---|" + "---|" * (len(metrics) + 2)]
+    lines = ["# Model comparison", "", "| Model | " + " | ".join(metrics) + " | Predict s |",
+             "|---|" + "---|" * (len(metrics) + 1)]
     for name, entry in results.items():
         lines.append(f"| {name} | " + " | ".join(display(entry["scores"][m]) for m in metrics)
-                     + f" | {entry['train_seconds']:.2f} | {entry['predict_seconds']:.2f} |")
-    lines += ["", "Scores apply to windows; N/A means undefined. Times total all folds.", ""]
+                     + f" | {entry['predict_seconds']:.2f} |")
+    lines += ["", "Scores apply to test windows; N/A means undefined.", ""]
     score_graph = plot_scores(results, metrics, figures)
     lines += [score_graph, "", "## Confusion matrices", ""]
     lines += plot_confusion_matrices(results, predictions, classes, figures)
@@ -250,7 +253,8 @@ def report(out, results, predictions, classes, checks, cfg, provenance):
     lines += ["", "[All predictions](predictions.csv) · [Failures](failures.csv) · [Participant metrics](participants.csv)",
               "", "## Data checks", ""] + [f"- {note}" for note in checks]
     lines += ["", "## Run", "", f"- Task: `{cfg.eval.target}`; collapse lying: `{cfg.eval.collapse_lying}`.",
-              f"- Windows: {cfg.eval.window_len} frames; stride: {cfg.eval.stride}; folds: {cfg.eval.folds}.",
+              f"- Windows: {cfg.eval.window_len} frames; stride: {cfg.eval.stride}.",
+              f"- Prepared partitions: `{cfg.partitions}`. Train: baseline label; test: scores. No model training.",
               f"- Classes: `{dict(Counter(predictions[predictions.model == next(iter(results))].true_label))}`.",
               f"- Commit: `{provenance['commit']}`; uncommitted changes: `{provenance['dirty']}`.",
               "- [Settings and dataset identity](config.json) · [Metrics](metrics.json)", ""]
@@ -268,38 +272,33 @@ def error_type(actual_label, predicted_label):
     return "misclassified"
 
 
-def evaluate_model(name, cfg, x, y, groups, metadata, classes):
-    """Evaluate one model and attach recording references to its predictions."""
-    model_cfg = ModelConfig(name=name, rnn=cfg.model.rnn)
-
-    def make_model():
-        # Each fold must start with a fresh model.
-        return build_model(model_cfg)
-
-    trainer = Trainer(make_model)
-    result = trainer.cross_validate(
-        x, y, groups, cfg.eval.folds, collect_predictions=True,
-    )
+def evaluate_model(name, model, windows, classes):
+    """Predict test windows with an already prepared model; never call fit."""
+    x_test, y_test, _, metadata = windows["test"]
+    started = perf_counter()
+    predicted_labels = model.predict(x_test)
+    predict_seconds = perf_counter() - started
+    if len(predicted_labels) != len(y_test):
+        raise ValueError(f"{name}: expected one prediction per test window.")
 
     rows = []
-    for prediction in result.pop("predictions"):
-        sample_metadata = metadata[prediction["sample_id"]]
-        row = {"model": name, **prediction, **sample_metadata}
+    for sample_id, (actual, predicted) in enumerate(zip(y_test, predicted_labels)):
+        row = {
+            "model": name, "sample_id": sample_id, "split": "test",
+            "true_label": str(actual), "predicted_label": str(predicted),
+            **metadata[sample_id],
+        }
         row["is_error"] = row["true_label"] != row["predicted_label"]
         row["error_type"] = error_type(row["true_label"], row["predicted_label"])
         row["frame_ids"] = json.dumps(row["frame_ids"])
         rows.append(row)
 
     predictions = pd.DataFrame(rows)
-    result["scores"] = scores(predictions.true_label, predictions.predicted_label, classes)
-    for fold in result["folds"]:
-        fold_predictions = predictions[predictions.fold == fold["fold"]]
-        fold["metrics"] = scores(
-            fold_predictions.true_label, fold_predictions.predicted_label, classes,
-        )
-    result["pooled"]["metrics"] = result["scores"]
-    result["train_seconds"] = sum(fold["train_seconds"] for fold in result["folds"])
-    result["predict_seconds"] = sum(fold["predict_seconds"] for fold in result["folds"])
+    result = {
+        "scores": scores(y_test, predicted_labels, classes),
+        "n_test": len(y_test),
+        "predict_seconds": predict_seconds,
+    }
 
     participant_rows = []
     for group, group_predictions in predictions.groupby("group"):
@@ -318,57 +317,115 @@ def run_git(*arguments):
 
 
 def run(cfg):
-    """Check the data, evaluate selected models, then save the comparison."""
-    names = [n.strip() for n in cfg.models.split(",") if n.strip()]
-    if not names or len(set(names)) != len(names) or set(names) - set(MODELS):
-        raise ValueError(f"Choose unique models from {MODELS}, separated by commas.")
+    """Load saved models and compare their predictions on the supplied test set."""
     if cfg.failure_timelines < 0:
         raise ValueError("failure_timelines cannot be negative.")
-    path = REPO / cfg.data.baked
-    ds = load_from_disk(str(path))
-    checks = preflight(ds, cfg, path)
+    models = {"baseline": MajorityClass()}
+    checkpoint_info = {}
+    saved_task = None
+    for filename in cfg.checkpoints:
+        checkpoint_path = REPO / filename
+        name = checkpoint_path.stem
+        if name in models:
+            raise ValueError(f"Duplicate model name {name!r}; checkpoint filenames must be unique and not baseline.")
+        model, task = BaseModel.load(checkpoint_path)
+        if saved_task is not None and task != saved_task:
+            raise ValueError("Compared checkpoints must use the same target, label conversion and window length.")
+        saved_task = task
+        models[name] = model
+        checkpoint_info[name] = {
+            "path": str(checkpoint_path.resolve()),
+            "sha256": hashlib.sha256(checkpoint_path.read_bytes()).hexdigest(),
+            "evaluation": task,
+        }
+    # Task settings come from training, not from guesses at comparison time.
+    if saved_task is not None:
+        for key, value in saved_task.items():
+            setattr(cfg.eval, key, value)
+
+    path = REPO / cfg.partitions
+    partitions = load_from_disk(str(path))
+    if not isinstance(partitions, DatasetDict) or not {"train", "test"} <= set(partitions):
+        raise ValueError("partitions must point to a prepared DatasetDict with train and test splits.")
+
+    # The supplied partitions define membership; never create folds or move rows.
+    checks = []
+    recordings_seen = set()
+    participants_seen = set()
+    heatmaps = any(model.needs_heatmaps for model in models.values())
+    windows = {}
+    for split in ["train", "test"]:
+        if split not in partitions:
+            continue
+        dataset = partitions[split]
+        if len(dataset) == 0:
+            raise ValueError(f"{split}: the supplied partition is empty.")
+        checks.extend(f"{split}: {note}" for note in preflight(dataset, cfg, path / split))
+        recordings = set(dataset["recording"])
+        participants = set(dataset["person"])
+        if split != "train" and NO_PERSON in participants:
+            raise ValueError(f"{split}: unknown participants must already be in the prepared train split.")
+        known_participants = participants - {NO_PERSON}
+        if recordings & recordings_seen or known_participants & participants_seen:
+            raise ValueError(f"{split}: recording or known participant overlaps another partition.")
+        recordings_seen.update(recordings)
+        participants_seen.update(known_participants)
+
+        windows[split] = make_windows(
+            dataset,
+            cfg.eval.target,
+            window_len=cfg.eval.window_len,
+            stride=cfg.eval.stride,
+            heatmaps=heatmaps and split == "test",
+            relabel=collapse_lying if cfg.eval.collapse_lying else None,
+            return_metadata=True,
+        )
+        _, labels, _, metadata = windows[split]
+        if not len(labels):
+            raise ValueError(f"{split}: no usable windows for the selected task.")
+        checks.append(f"{split}: {len(labels)} windows; classes: {dict(Counter(labels.tolist()))}.")
+        if split == "train":
+            unknown_windows = sum(row["person"] == NO_PERSON for row in metadata)
+            checks.append(f"train: {unknown_windows} unknown-participant windows retained.")
+
+    # The baseline needs only the majority training label; no radar is fitted.
+    models["baseline"].label_ = Counter(windows["train"][1]).most_common(1)[0][0]
+    # Include saved model classes even when the supplied test set lacks one.
+    classes = set(windows["train"][1]) | set(windows["test"][1])
+    for name, model in models.items():
+        if name != "baseline":
+            classes.update(getattr(model, "classes_", []))
+    classes = sorted(classes)
+    for split, (_, labels, _, _) in windows.items():
+        missing = set(classes) - set(labels)
+        if missing:
+            checks.append(f"{split}: missing classes: {', '.join(sorted(missing))}.")
     for note in checks:
         logger.info(note)
-    # Load radar arrays only if at least one selected model uses them.
-    heatmaps = any(
-        build_model(ModelConfig(name=name, rnn=cfg.model.rnn)).needs_heatmaps
-        for name in names
-    )
-    x, y, groups, metadata = make_windows(
-        ds,
-        cfg.eval.target,
-        window_len=cfg.eval.window_len,
-        stride=cfg.eval.stride,
-        heatmaps=heatmaps,
-        relabel=collapse_lying if cfg.eval.collapse_lying else None,
-        return_metadata=True,
-    )
-    classes = sorted(set(y))
-    if len(classes) < 2:
-        raise ValueError("Evaluation requires at least two classes after windowing.")
-    for i, held_out in enumerate(group_folds(groups, cfg.eval.folds), 1):
-        test = np.isin(groups, held_out)
-        for label, selected in [("training", ~test), ("test", test)]:
-            absent = set(classes) - set(y[selected])
-            if absent:
-                checks.append(f"Fold {i} {label} missing classes: {', '.join(sorted(absent))}.")
+
     out = REPO / cfg.eval.out_dir / "comparisons" / datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     out.mkdir(parents=True)
     provenance = {
         "commit": run_git("rev-parse", "HEAD"),
         "dirty": bool(run_git("status", "--porcelain")),
         "dataset": str(path.resolve()),
-        "dataset_fingerprint": ds._fingerprint,
-        "dataset_state": json.loads((path / "state.json").read_text()),
+        "checkpoints": checkpoint_info,
+        "partitions": {
+            split: {
+                "fingerprint": dataset._fingerprint,
+                "state": json.loads((path / split / "state.json").read_text()),
+            }
+            for split, dataset in partitions.items()
+        },
     }
     (out / "config.json").write_text(json.dumps({"settings": asdict(cfg), **provenance}, indent=2))
     results = {}
     all_predictions = []
     participant_rows = []
-    for name in names:
+    for name, model in models.items():
         logger.info("Evaluating %s", name)
         result, rows, model_participants = evaluate_model(
-            name, cfg, x, y, groups, metadata, classes,
+            name, model, windows, classes,
         )
         all_predictions.extend(rows)
         results[name] = result
