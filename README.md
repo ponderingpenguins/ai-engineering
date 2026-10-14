@@ -119,19 +119,43 @@ Two columns of the baked dataset are not in the raw data: they were annotated by
 ## Comparing models
 
 ```bash
-python compare.py models=baseline,rnn model.rnn.epochs=20
-python compare.py models=baseline eval.folds=3
+python -m utils.compare 'checkpoints=["results/rnn.pt"]'
+python -m utils.compare 'checkpoints=["results/rnn_a.pt","results/rnn_b.pt"]'
+python -m utils.compare  # baseline only
 ```
 
-Models share the same windows and participant folds. Unknown participants are grouped by
-recording. Defaults evaluate lying versus not lying; use `eval.collapse_lying=false` for
-the original posture classes. Rebuild the prepared dataset after changing extraction or annotations.
+Loads saved models and evaluates them on the prepared test partition. The majority-class
+baseline is always included. No models are trained.
+
+Test set defaults to `data/processed/floor_posture_person_split`; override it with `partitions=/path/to/split`.
+Unknown participants stay in the training partition and are not evaluated.
+
+After training a model, save it with the task settings used for that run:
+
+```python
+model.save("results/rnn.pt", evaluation={
+    "target": cfg.eval.target,
+    "collapse_lying": cfg.eval.collapse_lying,
+    "window_len": cfg.eval.window_len,
+})
+```
+
+To load a saved model:
+
+```python
+from models.model import BaseModel
+
+model, evaluation = BaseModel.load("results/rnn.pt")
+```
+
+RNN checkpoints include weights, normalization, class labels, and model settings.
+Existing training entry points do not save checkpoints automatically (possible TODO).
 
 Each run writes `results/comparisons/<timestamp>/comparison.md` with PNG graphs in `figures/`.
 Keep the report and figures together. `predictions.csv` includes held-out predictions, timestamps,
 and the exact ordered frame IDs for each window; `failures.csv` contains only mistakes.
 `participants.csv`, `metrics.json`, and `config.json` contain detailed scores and run settings.
-Scores describe windows, not distinct events. Training and prediction times total all folds.
+Scores describe test windows, not distinct events. Times cover test prediction only.
 
 ## Type checking
 
