@@ -1,12 +1,27 @@
 """Majority-class baseline: always predict the most common training label."""
 
 from collections import Counter
-from .model import BaseModel
+from typing import Any, Self
+
 import numpy as np
+
+from .model import BaseModel
 
 
 class MajorityClass(BaseModel):
     needs_heatmaps = False
+    model_name = "baseline"
+
+    def _checkpoint_state(self) -> dict[str, Any]:
+        if not hasattr(self, "label_"):
+            raise ValueError("Set the majority label before saving the baseline.")
+        return {"label": str(self.label_)}
+
+    @classmethod
+    def _from_checkpoint(cls, checkpoint: dict[str, Any]) -> Self:
+        model = cls()
+        model.label_ = checkpoint["label"]
+        return model
 
     def fit(self, x: np.ndarray, y: np.ndarray, val:tuple[np.ndarray, np.ndarray] | None=None) -> None:
         """Remembers the most common label.
