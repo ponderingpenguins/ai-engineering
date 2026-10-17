@@ -1,15 +1,16 @@
 import copy
 import logging
-from typing import Any
+from typing import Any, Self
 
 import numpy as np
 import torch
-import torch.nn as nn
+from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
+from tqdm import tqdm
 
 from utils.metrics import macro_f1
+
 from .model import BaseModel
-from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +122,8 @@ class HeatmapGRU(nn.Module):
 class RNN(BaseModel):
     """CNN + GRU classifier on windows of heatmaps. x: (N, T, 1, R, D), y: (N,) string labels."""
 
+    model_name = "rnn"
+
     def __init__(
         self,
         hidden: int = 128,
@@ -150,6 +153,35 @@ class RNN(BaseModel):
         self.batch_size = batch_size
         self.seed = seed
         self.device = _pick_device()
+
+    def _checkpoint_state(self) -> dict[str, Any]:
+        """Include normalization buffers along with weights and class names."""
+        if not hasattr(self, "net"):
+            raise ValueError("Train the model before saving it.")
+        return {
+            "parameters": {
+                "hidden": self.hidden, "feat_dim": self.feat_dim,
+                "lr": self.lr, "weight_decay": self.weight_decay,
+                "epochs": self.epochs, "batch_size": self.batch_size, "seed": self.seed,
+            },
+            "classes": self.classes_.tolist(),
+            "state_dict": self.net.state_dict(),
+            "preprocessing": "log1p_raw_heatmap_v1",
+        }
+
+    @classmethod
+    def _from_checkpoint(cls, checkpoint: dict[str, Any]) -> Self:
+        """Restore the RNN architecture, normalization and learned weights."""
+        if checkpoint.get("preprocessing") != "log1p_raw_heatmap_v1":
+            raise ValueError("Checkpoint preprocessing does not match the current pipeline.")
+        model = cls(**checkpoint["parameters"])
+        model.classes_ = np.asarray(checkpoint["classes"], dtype=str)
+        if len(model.classes_) == 0:
+            raise ValueError("Checkpoint has no class labels.")
+        model.net = HeatmapGRU(len(model.classes_), model.feat_dim, model.hidden).to(model.device)
+        model.net.load_state_dict(checkpoint["state_dict"])
+        model.net.eval()
+        return model
 
     def fit(self, x: np.ndarray, y: np.ndarray, val: tuple[np.ndarray, np.ndarray] | None = None) -> None:
         """Trains a new network on windows of heatmaps.

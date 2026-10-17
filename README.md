@@ -116,6 +116,47 @@ Two columns of the baked dataset are not in the raw data: they were annotated by
 - **`person`** is one value per recording. The notebook shows the best face crops of each recording and you pick a name from a fixed list of pseudonyms. Unlabelled recordings always stay in the train set of the person-wise split.
 - **`person_present`** is stored as `enter` and `leave` events on frame indices. A person is present from each `enter` until the next `leave` (or the end of the recording), so a recording that starts with someone already in view needs an `enter` on frame 0. Recordings without any events get `None`, not `False`, so filter on `person_present.notna()` before training on it. This is separate from the raw `label_presence` track, which is not reliable (it is `False` wherever it exists).
 
+## Comparing models
+
+```bash
+python -m utils.compare 'checkpoints=["results/rnn.pt"]'
+python -m utils.compare 'checkpoints=["results/rnn_a.pt","results/rnn_b.pt"]'
+python -m utils.compare  # baseline only
+```
+
+Loads saved models and evaluates them on the prepared test partition. The majority-class
+baseline is always included. No models are trained.
+
+Test set defaults to `data/processed/floor_posture_person_split`; override it with `partitions=/path/to/split`.
+Unknown participants stay in the training partition and are not evaluated.
+
+After training a model, save it with the task settings used for that run:
+
+```python
+model.save("results/rnn.pt", evaluation={
+    "target": cfg.eval.target,
+    "collapse_lying": cfg.eval.collapse_lying,
+    "window_len": cfg.eval.window_len,
+})
+```
+
+To load a saved model:
+
+```python
+from models.model import BaseModel
+
+model, evaluation = BaseModel.load("results/rnn.pt")
+```
+
+RNN checkpoints include weights, normalization, class labels, and model settings.
+Existing training entry points do not save checkpoints automatically (possible TODO).
+
+Each run writes `results/comparisons/<timestamp>/comparison.md` with PNG graphs in `figures/`.
+Keep the report and figures together. `predictions.csv` includes held-out predictions, timestamps,
+and the exact ordered frame IDs for each window; `failures.csv` contains only mistakes.
+`participants.csv`, `metrics.json`, and `config.json` contain detailed scores and run settings.
+Scores describe test windows, not distinct events. Times cover test prediction only.
+
 ## Type checking
 
 Type hints are checked with [mypy](https://mypy-lang.org/), a dev dependency (installed by `uv sync`):

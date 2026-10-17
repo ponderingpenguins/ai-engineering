@@ -3,11 +3,13 @@
 from dataclasses import asdict
 
 from utils.config import ModelConfig
+
 from .baseline import MajorityClass
 from .model import BaseModel
 from .rnn import RNN
 
-MODELS = ("baseline", "rnn")
+MODEL_CLASSES: dict[str, type[BaseModel]] = {"baseline": MajorityClass, "rnn": RNN}
+MODELS = tuple(MODEL_CLASSES)
 
 
 def build_model(cfg: ModelConfig) -> BaseModel:
