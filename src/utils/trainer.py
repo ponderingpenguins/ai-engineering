@@ -3,9 +3,11 @@
 import json
 import logging
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from time import perf_counter
+from typing import Any
 
 import numpy as np
 
@@ -33,19 +35,29 @@ class Trainer:
     out_dir: Path | None = None  # results are saved here when set
     config: dict[str, Any] | None = None  # saved together with the results
 
-    def cross_validate(self, x: np.ndarray, y: np.ndarray, groups: np.ndarray, k: int) -> dict[str, Any]:
+    def cross_validate(self, x: np.ndarray, y: np.ndarray, groups: np.ndarray, k: int,
+                       collect_predictions: bool = False) -> dict[str, Any]:
         """Each fold is held out once as test data. Returns per-fold and pooled results."""
         folds = group_folds(groups, k)
         all_true, all_pred = [], []
         fold_results = []
+        predictions = []
 
         for i, held_out in enumerate(folds, start=1):
             test = np.isin(groups, held_out)
             logger.info("fold %d/%d: test on %s", i, k, ", ".join(sorted(held_out)))
 
             model = self.make_model()
+            started = perf_counter()
             model.fit(x[~test], y[~test])  # no val data: the test fold must not pick the best epoch
+            train_seconds = perf_counter() - started
+            started = perf_counter()
             pred = model.predict(x[test])
+            predict_seconds = perf_counter() - started
+            if collect_predictions:
+                predictions.extend({"sample_id": int(j), "fold": i,
+                                    "true_label": str(y[j]), "predicted_label": str(p)}
+                                   for j, p in zip(np.flatnonzero(test), pred))
 
             scores = {name: fn(y[test], pred) for name, fn in self.metrics.items()}
             logger.info("fold %d/%d: n=%d %s", i, k, test.sum(),
@@ -57,6 +69,8 @@ class Trainer:
                 "n_test": int(test.sum()),
                 "test_classes": dict(Counter(y[test].tolist())),
                 "metrics": scores,
+                "train_seconds": train_seconds,
+                "predict_seconds": predict_seconds,
             })
             all_true.append(y[test])
             all_pred.append(pred)
@@ -74,6 +88,8 @@ class Trainer:
             logger.info("  %-12s %s", name, row)
 
         results = {"config": self.config, "folds": fold_results, "pooled": pooled}
+        if collect_predictions:
+            results["predictions"] = predictions
         self._save(results)
         return results
 

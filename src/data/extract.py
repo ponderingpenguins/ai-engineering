@@ -35,7 +35,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 REPO = Path(__file__).resolve().parents[2]
-ALIGN_TOLERANCE = pd.Timedelta("100ms")  # ~2 frames at 18 fps
+ALIGN_TOLERANCE = pd.Timedelta("2us")  # CSV rounding
 PERSON_MAP = REPO / "data" / "processed" / "person_map.csv"  # recording -> pseudonym, hand-labelled
 NO_PERSON = "NA"
 PRESENCE_EVENTS = REPO / "data" / "processed" / "presence_events.csv"  # recording, frame_idx, event; hand-labelled
@@ -62,8 +62,7 @@ class ExtractConfig:
 # Label CSVs are messy: each recording ships a different set of tracks, the
 # manifest.json only lists some of them, and timestamps come in three flavours
 # (ISO strings, epoch-ns of local wall-clock, epoch-seconds shifted by the
-# timezone). Rows are one-per-frame in order, so we align by position and only
-# fall back to timestamps for partial tracks.
+# timezone). Align by timestamp because frame and label row orders can differ.
 
 def _label_files(rec_dir: Path) -> list[Path]:
     """Lists the label CSV files of a recording.
@@ -123,25 +122,31 @@ def _local_time(timestamps: pd.Series) -> pd.Series | None:
 def _align_labels(rec_dir: Path, frame_ts: pd.Series) -> dict[str, pd.DataFrame]:
     """Each track as a DataFrame(label, confidence) with one row per frame."""
     aligned: dict[str, pd.DataFrame] = {}
+    frame_ts = pd.to_datetime(frame_ts).astype("datetime64[ns]")
+    left = pd.DataFrame({"t": frame_ts.values, "i": np.arange(len(frame_ts))})
     for path in _label_files(rec_dir):
         df = pd.read_csv(path)
         label_ts = _local_time(df["timestamp"]) if "timestamp" in df else None
-        if len(df) == len(frame_ts):
-            if label_ts is not None and np.abs(label_ts.values - frame_ts.values).max() > np.timedelta64(1, "s"):
-                logger.warning("%s/%s: labels drift from frame timestamps by >1s", rec_dir.name, path.stem)
-            aligned[path.stem] = df
-        elif label_ts is None:
-            logger.warning("%s/%s: %d rows for %d frames and no usable timestamps, skipped",
-                           rec_dir.name, path.stem, len(df), len(frame_ts))
-        else:
-            left = pd.DataFrame({"t": frame_ts.values, "i": np.arange(len(frame_ts))}).sort_values("t")
-            right = pd.DataFrame({
-                "t": label_ts.values,
-                "label": df["label"].values,
-                "confidence": df["confidence"].values if "confidence" in df else np.nan,
-            }).sort_values("t")
-            merged = pd.merge_asof(left, right, on="t", direction="nearest", tolerance=ALIGN_TOLERANCE)
-            aligned[path.stem] = merged.sort_values("i").reset_index(drop=True)
+        if label_ts is None:
+            logger.warning("%s/%s: no usable timestamps, skipped", rec_dir.name, path.stem)
+            continue
+        if label_ts.isna().any() or label_ts.duplicated().any():
+            raise ValueError(f"{rec_dir.name}/{path.stem}: missing or duplicate label timestamps")
+        right = pd.DataFrame({
+            "t": label_ts.values,
+            "label": df["label"].values,
+            "confidence": df["confidence"].values if "confidence" in df else np.nan,
+            "matched": True,
+        })
+        merged = pd.merge_asof(
+            left.sort_values("t"), right.sort_values("t"), on="t",
+            direction="nearest", tolerance=ALIGN_TOLERANCE,
+        ).sort_values("i").reset_index(drop=True)
+        unmatched = int(merged["matched"].isna().sum())
+        if unmatched:
+            logger.warning("%s/%s: %d/%d frames have no matching label timestamp",
+                           rec_dir.name, path.stem, unmatched, len(frame_ts))
+        aligned[path.stem] = merged[["label", "confidence"]]
     return aligned
 
 
