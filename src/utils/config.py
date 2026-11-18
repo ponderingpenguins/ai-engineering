@@ -47,6 +47,13 @@ class ModelConfig:
 
 
 @dataclass
+class TrainConfig:
+    # None: off. A ratio in (0, 1] repeats training windows of the rarer classes until each reaches
+    # that share of the largest class (1.0 = balanced). Training data only, see data/resample.py.
+    oversample: Optional[float] = None
+
+
+@dataclass
 class EvalConfig:
     folds: Optional[int] = None  # k for person-wise k-fold cross-validation; None = one fold per person
     seed: int = 0  # shuffles the fold assignment
@@ -62,4 +69,5 @@ class EvalConfig:
 class Config:
     data: DataConfig = field(default_factory=DataConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
+    train: TrainConfig = field(default_factory=TrainConfig)
     eval: EvalConfig = field(default_factory=EvalConfig)

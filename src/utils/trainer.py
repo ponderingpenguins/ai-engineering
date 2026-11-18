@@ -11,6 +11,7 @@ from typing import Any
 
 import numpy as np
 
+from data.resample import RandomOversampler
 from models.model import BaseModel
 from utils.metrics import accuracy, macro_f1, per_class, scores
 from utils.run_report import write_report
@@ -35,6 +36,7 @@ class Trainer:
     config: dict[str, Any] | None = None  # saved together with the results
     task: dict[str, Any] | None = None  # evaluation settings stored in each checkpoint (target, window_len, ...)
     seed: int = 0  # picks the validation person of each fold
+    resampler: RandomOversampler | None = None  # applied to each fold's training windows only
 
     def cross_validate(self, x: np.ndarray, y: np.ndarray, groups: np.ndarray,
                        collect_predictions: bool = False) -> dict[str, Any]:
@@ -62,9 +64,15 @@ class Trainer:
             else:
                 logger.info("fold %d/%d: validate on %s", i, k, ", ".join(val_people))
 
+            train_idx = fit_idx
+            if self.resampler is not None:  # repeats training windows; validation and test data are untouched
+                train_idx = fit_idx[self.resampler.indices(y[fit_idx])]
+                logger.info("fold %d/%d: oversampled training windows %s -> %s", i, k,
+                            dict(Counter(y[fit_idx].tolist())), dict(Counter(y[train_idx].tolist())))
+
             model = self.make_model()
             started = perf_counter()
-            history = model.fit(x[fit_idx], y[fit_idx], val=None if val_idx is None else (x[val_idx], y[val_idx]))
+            history = model.fit(x[train_idx], y[train_idx], val=None if val_idx is None else (x[val_idx], y[val_idx]))
             train_seconds = perf_counter() - started
             checkpoint = self._save_checkpoint(model, i, held_out)
             started = perf_counter()
@@ -83,6 +91,8 @@ class Trainer:
                 "test_groups": sorted(held_out),
                 "val_groups": val_people,
                 "n_train": len(fit_idx),
+                "n_train_after_resampling": len(train_idx),
+                "train_classes": dict(Counter(y[train_idx].tolist())),
                 "n_val": 0 if val_idx is None else len(val_idx),
                 "n_test": len(test),
                 "test_classes": dict(Counter(y[test].tolist())),

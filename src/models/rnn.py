@@ -192,7 +192,8 @@ class RNN(BaseModel):
     def fit(self, x: np.ndarray, y: np.ndarray, val: tuple[np.ndarray, np.ndarray] | None = None) -> History:
         """Trains a new network on windows of heatmaps.
 
-        Classes are weighted by inverse frequency. If `val` is given, the validation loss is computed
+        Classes are weighted by inverse frequency of the training windows (a balanced training set gets weight 1
+        each). The validation loss is class-balanced on the validation set. If `val` is given, the validation loss is computed
         `evals_per_epoch` times per epoch. Training stops when it has not improved for `patience`
         evaluations in a row, and the weights with the lowest validation loss are kept. Without `val`
         the network trains for all epochs and the last weights are kept.
@@ -228,6 +229,7 @@ class RNN(BaseModel):
         eval_every = max(1, steps_per_epoch // self.evals_per_epoch)
         history = History(steps_per_epoch=steps_per_epoch)
         val_data = self._val_tensors(val)
+        val_weights = None if val_data is None else self._balanced_weights(val_data[1], n_classes)
 
         best_loss, best_state, stale_evals, step = float("inf"), None, 0, 0
         for epoch in tqdm(range(1, self.epochs + 1)):
@@ -244,7 +246,7 @@ class RNN(BaseModel):
 
                 if val_data is None or step % eval_every:
                     continue
-                val_loss = self._val_loss(*val_data, weights)
+                val_loss = self._val_loss(*val_data, val_weights)
                 history.val_steps.append(step)
                 history.val_loss.append(val_loss)
                 self.net.train()  # _val_loss switched to eval mode
@@ -281,9 +283,22 @@ class RNN(BaseModel):
         y_int = np.searchsorted(self.classes_, yv[known])
         return torch.as_tensor(xv[known], dtype=torch.float32), torch.as_tensor(y_int, dtype=torch.long)
 
+    def _balanced_weights(self, y_int: torch.Tensor, n_classes: int) -> torch.Tensor:
+        """Inverse-frequency class weights from `y_int`; classes that do not occur get weight 0."""
+        counts = torch.bincount(y_int, minlength=n_classes).float()
+        present = counts > 0
+        weights = torch.zeros(n_classes)
+        weights[present] = len(y_int) / (int(present.sum()) * counts[present])
+        return weights.to(self.device)
+
     @torch.no_grad()
     def _val_loss(self, xv: torch.Tensor, yv: torch.Tensor, weights: torch.Tensor) -> float:
-        """Class-weighted cross-entropy over all validation windows, on the same scale as the train loss."""
+        """Class-balanced cross-entropy over all validation windows.
+
+        Weights are the inverse class frequencies of the validation set itself, so this is the mean of the
+        per-class mean losses: a model that predicts 50/50 scores ln 2 whatever the class sizes. It does not
+        depend on how the training data was weighted or resampled.
+        """
         self.net.eval()
         total, weight_sum = 0.0, 0.0
         for start in range(0, len(yv), self.batch_size):

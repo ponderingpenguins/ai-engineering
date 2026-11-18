@@ -24,6 +24,7 @@ from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
 
 from data.preprocess import build_pipeline
+from data.resample import RandomOversampler
 from data.windows import collapse_lying, make_windows, window_timing
 from models.factory import MODELS, build_model
 from models.model import BaseModel
@@ -89,7 +90,9 @@ def run(cfg: Config) -> None:
 
     out_dir = REPO / cfg.eval.out_dir / f"{datetime.now():%Y%m%d-%H%M%S}_{cfg.model.name}"
     task = {key: getattr(cfg.eval, key) for key in ("target", "collapse_lying", "window_len", "label_rule")}
+    resampler = None if cfg.train.oversample is None else RandomOversampler(cfg.train.oversample, cfg.eval.seed)
     trainer = Trainer(make_model, splitter=splitter, out_dir=out_dir, task=task, seed=cfg.eval.seed,
+                      resampler=resampler,
                       config={**asdict(cfg), "window_timing": timing})
     trainer.cross_validate(x, y, groups)
 
@@ -108,7 +111,7 @@ def main() -> None:
     except (TypeError, ValueError, OmegaConfBaseException) as e:  # pylint: disable=broad-exception-raised
         logger.error(
             "Error: %s\n\nUsage: python main.py [data.baked=<path>] [model.name=%s] "
-            "[model.rnn.epochs=<n>] [eval.folds=<k>] [eval.collapse_lying=true|false]",
+            "[model.rnn.epochs=<n>] [train.oversample=<ratio>] [eval.folds=<k>] [eval.collapse_lying=true|false]",
             e,
             "|".join(MODELS),
         )
