@@ -140,7 +140,8 @@ Loads saved models and evaluates them on the prepared test partition. The majori
 baseline is always included. No models are trained.
 
 Test set defaults to `data/processed/floor_posture_person_split`; override it with `partitions=/path/to/split`.
-Unknown participants stay in the training partition and are not evaluated.
+Recordings from sensor configs other than Config 4, and recordings without a known participant, are dropped
+by the preprocessing pipeline (`data.preprocess` in the config) before windowing, in both training and comparison.
 
 After training a model, save it with the task settings used for that run:
 

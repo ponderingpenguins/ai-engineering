@@ -23,11 +23,12 @@ from datasets import DatasetDict, load_from_disk
 from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
 
-from data.extract import NO_PERSON
+from data.preprocess import build_pipeline
 from data.windows import HEATMAP_SHAPE, collapse_lying, make_windows
 from models.baseline import MajorityClass
 from models.model import BaseModel
 from utils.config import Config
+from utils.metrics import scores
 
 REPO = Path(__file__).resolve().parents[2]
 logger = logging.getLogger(__name__)
@@ -38,29 +39,6 @@ class CompareConfig(Config):
     checkpoints: list[str] = field(default_factory=list)
     failure_timelines: int = 3
     partitions: str = "data/processed/floor_posture_person_split"
-
-
-def scores(true, pred, classes):
-    """Use a fixed class set; missing denominators are reported as undefined."""
-    actual_labels = np.asarray(true)
-    predicted_labels = np.asarray(pred)
-    result = {"accuracy": float(np.mean(actual_labels == predicted_labels))}
-    class_f1_scores = []
-    for label in classes:
-        true_positives = int(np.sum((actual_labels == label) & (predicted_labels == label)))
-        actual_count = int(np.sum(actual_labels == label))
-        predicted_count = int(np.sum(predicted_labels == label))
-        precision = true_positives / predicted_count if predicted_count else None
-        recall = true_positives / actual_count if actual_count else None
-        total_count = actual_count + predicted_count
-        f1 = 2 * true_positives / total_count if total_count else None
-        result[f"{label}_precision"] = precision
-        result[f"{label}_recall"] = recall
-        result[f"{label}_support"] = actual_count
-        if f1 is not None:
-            class_f1_scores.append(f1)
-    result["macro_f1"] = float(np.mean(class_f1_scores)) if class_f1_scores else None
-    return result
 
 
 def preflight(ds, cfg, path):
@@ -94,9 +72,6 @@ def preflight(ds, cfg, path):
     ]
     if not eligible.any():
         raise ValueError("No usable frames for the selected target and radar geometry.")
-    unknown = meta.loc[eligible & (meta.person == NO_PERSON), "recording"].nunique()
-    if unknown:
-        notes.append(f"Unknown participants: {unknown} recordings available for training only.")
     sources = [
         REPO / "src/data/extract.py",
         REPO / "data/processed/person_map.csv",
@@ -354,22 +329,22 @@ def run(cfg):
     participants_seen = set()
     heatmaps = any(model.needs_heatmaps for model in models.values())
     windows = {}
+    pipeline = build_pipeline(cfg.data.preprocess)
     for split in ["train", "test"]:
         if split not in partitions:
             continue
-        dataset = partitions[split]
+        raw_size = len(partitions[split])
+        dataset = pipeline(partitions[split])  # same filters as training: Config 4, known participants
+        checks.append(f"{split}: preprocessing kept {len(dataset)} of {raw_size} frames.")
         if len(dataset) == 0:
-            raise ValueError(f"{split}: the supplied partition is empty.")
+            raise ValueError(f"{split}: the supplied partition is empty after preprocessing.")
         checks.extend(f"{split}: {note}" for note in preflight(dataset, cfg, path / split))
         recordings = set(dataset["recording"])
         participants = set(dataset["person"])
-        if split != "train" and NO_PERSON in participants:
-            raise ValueError(f"{split}: unknown participants must already be in the prepared train split.")
-        known_participants = participants - {NO_PERSON}
-        if recordings & recordings_seen or known_participants & participants_seen:
-            raise ValueError(f"{split}: recording or known participant overlaps another partition.")
+        if recordings & recordings_seen or participants & participants_seen:
+            raise ValueError(f"{split}: recording or participant overlaps another partition.")
         recordings_seen.update(recordings)
-        participants_seen.update(known_participants)
+        participants_seen.update(participants)
 
         windows[split] = make_windows(
             dataset,
@@ -380,13 +355,10 @@ def run(cfg):
             relabel=collapse_lying if cfg.eval.collapse_lying else None,
             return_metadata=True,
         )
-        _, labels, _, metadata = windows[split]
+        _, labels, _, _ = windows[split]
         if not len(labels):
             raise ValueError(f"{split}: no usable windows for the selected task.")
         checks.append(f"{split}: {len(labels)} windows; classes: {dict(Counter(labels.tolist()))}.")
-        if split == "train":
-            unknown_windows = sum(row["person"] == NO_PERSON for row in metadata)
-            checks.append(f"train: {unknown_windows} unknown-participant windows retained.")
 
     # The baseline needs only the majority training label; no radar is fitted.
     models["baseline"].label_ = Counter(windows["train"][1]).most_common(1)[0][0]

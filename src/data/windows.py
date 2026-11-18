@@ -4,8 +4,6 @@ import numpy as np
 import pandas as pd
 from datasets import Dataset
 
-from data.extract import NO_PERSON
-
 # Every labelled recording is Config_4: 256 range bins x 16 Doppler bins. Other sensor
 # configs (64/128 range bins) carry no pose labels, so they are dropped.
 HEATMAP_SHAPE = (256, 16)  # (range_bins, doppler_bins)
@@ -37,8 +35,8 @@ def make_windows(
     """Cut each recording into windows of `window_len` frames.
 
     Returns x (N, window_len, 1, *shape), y (N,) and groups (N,). A window gets the label of its
-    last frame. The group is the person, or the recording when the person is unknown (the windows
-    of one group must not be split between train and test).
+    last frame. The group is the person (the windows of one group must not be split between train and
+    test). Run the preprocessing pipeline first to drop recordings without a known person.
 
     With return_metadata=True, also returns one metadata dict per window, including
     ordered original frame IDs and capture timestamps for investigating predictions.
@@ -68,7 +66,7 @@ def make_windows(
         frame_nums = rec.capture_idx.to_numpy()
         labels = rec[target].to_numpy()
         person = rec.person.iloc[0]
-        group = str(recording) if person == NO_PERSON else str(person)
+        group = str(person)
 
         for start in range(0, len(rec) - window_len + 1, stride):
             last = start + window_len - 1

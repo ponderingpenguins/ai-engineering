@@ -1,7 +1,8 @@
 """
 Loads the baked dataset, cuts it into windows and cross-validates a model, person by person.
 
-Everything is configured in config/config.yaml and can be overridden from the command line:
+Everything is configured in config/config.yaml and can be overridden from the command line.
+By default there is one fold per person; set eval.folds=<k> for k-fold instead:
 
     python main.py model.name=baseline
     python main.py model.rnn.epochs=5 eval.folds=3 eval.collapse_lying=false
@@ -22,10 +23,12 @@ from datasets import Dataset, load_from_disk
 from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
 
+from data.preprocess import build_pipeline
 from data.windows import make_windows, collapse_lying
 from models.factory import MODELS, build_model
 from models.model import BaseModel
 from utils.config import Config
+from utils.splitter import GroupKFoldSplitter
 from utils.trainer import Trainer
 
 logging.basicConfig(
@@ -51,7 +54,7 @@ def run(cfg: Config) -> None:
     if not path.is_dir():
         logger.error("No baked dataset at %s.\nBuild it with: python -m data.extract", path)
         sys.exit(1)
-    ds = cast(Dataset, load_from_disk(str(path)))
+    ds = build_pipeline(cfg.data.preprocess)(cast(Dataset, load_from_disk(str(path))))
 
     def make_model() -> BaseModel:
         """Builds a fresh, untrained model, so every fold starts from scratch.
@@ -70,13 +73,16 @@ def run(cfg: Config) -> None:
         relabel=collapse_lying if cfg.eval.collapse_lying else None,
     )
     logger.info("%d windows from %d groups, classes: %s", len(y), len(set(groups)), dict(Counter(y.tolist())))
-    if not 2 <= cfg.eval.folds <= len(set(groups)):
-        logger.error("eval.folds must be between 2 and the number of groups (%d), got %d", len(set(groups)), cfg.eval.folds)
+    splitter = GroupKFoldSplitter(cfg.eval.folds, cfg.eval.seed)
+    try:
+        splitter.n_splits(groups)
+    except ValueError as e:
+        logger.error("%s", e)
         sys.exit(1)
 
     out_dir = REPO / cfg.eval.out_dir / f"{datetime.now():%Y%m%d-%H%M%S}_{cfg.model.name}"
-    trainer = Trainer(make_model, out_dir=out_dir, config=asdict(cfg))
-    trainer.cross_validate(x, y, groups, cfg.eval.folds)
+    trainer = Trainer(make_model, splitter=splitter, out_dir=out_dir, config=asdict(cfg))
+    trainer.cross_validate(x, y, groups)
 
 
 def main() -> None:
