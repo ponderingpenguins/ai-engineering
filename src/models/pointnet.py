@@ -6,6 +6,8 @@ import numpy as np
 import torch
 from torch import nn
 
+from data.augment import PointAugment
+
 from .torch_classifier import TorchClassifier
 
 N_STANDARDISED = 5  # x, y, z, doppler, snr are standardised; time and the validity flag are used as they are
@@ -82,6 +84,7 @@ class PointNet(TorchClassifier):
         seed: int = 0,
         patience: int = 5,
         evals_per_epoch: int = 1,
+        augment: dict[str, Any] | None = None,
     ) -> None:
         """Stores the hyperparameters. The network is built in `fit`.
 
@@ -92,8 +95,13 @@ class PointNet(TorchClassifier):
             point_drop: Probability of dropping each point while training (augmentation).
             jitter: Std of Gaussian noise added to the standardised point features while training (augmentation).
             lr, weight_decay, epochs, batch_size, seed, patience, evals_per_epoch: see `TorchClassifier`.
+            augment: Settings of `data.augment.PointAugment` (moves, rotations, ghost points), applied to training
+                batches only. None or all off means no geometric augmentation.
         """
         super().__init__(lr, weight_decay, epochs, batch_size, seed, patience, evals_per_epoch)
+        self.augment_settings = augment
+        point_augment = PointAugment(**augment) if augment else None
+        self.augment = point_augment if point_augment is not None and point_augment.active else None
         self.width = width
         self.dropout = dropout
         self.point_dropout = point_dropout
@@ -120,6 +128,7 @@ class PointNet(TorchClassifier):
                 "point_drop": self.point_drop, "jitter": self.jitter, "lr": self.lr, "weight_decay": self.weight_decay,
                 "epochs": self.epochs, "batch_size": self.batch_size, "seed": self.seed,
                 "patience": self.patience, "evals_per_epoch": self.evals_per_epoch,
+                "augment": self.augment_settings,
             },
             "classes": self.classes_.tolist(),
             "state_dict": self.net.state_dict(),

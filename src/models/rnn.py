@@ -5,6 +5,8 @@ import numpy as np
 import torch
 from torch import nn
 
+from data.augment import HeatmapAugment
+
 from .torch_classifier import TorchClassifier
 
 logger = logging.getLogger(__name__)
@@ -132,6 +134,7 @@ class RNN(TorchClassifier):
         seed: int = 0,
         patience: int = 5,
         evals_per_epoch: int = 1,
+        augment: dict[str, Any] | None = None,
     ) -> None:
         """Stores the hyperparameters. The network is built in `fit`.
 
@@ -149,8 +152,13 @@ class RNN(TorchClassifier):
             patience: Stop after this many validation evaluations in a row without a lower
                 validation loss. Only applies when `fit` gets validation data.
             evals_per_epoch: How often the validation loss is computed, per epoch.
+            augment: Settings of `data.augment.HeatmapAugment`, applied to training batches only.
+                None or all off means no augmentation.
         """
         super().__init__(lr, weight_decay, epochs, batch_size, seed, patience, evals_per_epoch)
+        self.augment_settings = augment
+        heatmap_augment = HeatmapAugment(**augment) if augment else None
+        self.augment = heatmap_augment if heatmap_augment is not None and heatmap_augment.active else None
         self.hidden = hidden
         self.feat_dim = feat_dim
         self.dropout = dropout
@@ -177,6 +185,7 @@ class RNN(TorchClassifier):
                 "lr": self.lr, "weight_decay": self.weight_decay,
                 "epochs": self.epochs, "batch_size": self.batch_size, "seed": self.seed,
                 "patience": self.patience, "evals_per_epoch": self.evals_per_epoch,
+                "augment": self.augment_settings,
             },
             "classes": self.classes_.tolist(),
             "state_dict": self.net.state_dict(),
