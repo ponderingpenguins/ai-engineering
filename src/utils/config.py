@@ -33,9 +33,11 @@ class RNNConfig:
     feat_dim: int = 64  # size of the per-frame feature vector from the CNN
     lr: float = 1e-3
     weight_decay: float = 1e-4
-    epochs: int = 1
+    epochs: int = 30  # upper limit; early stopping usually ends training sooner
     batch_size: int = 32
     seed: int = 0
+    patience: int = 5  # stop after this many validation evaluations without improvement
+    evals_per_epoch: int = 1  # validation loss evaluations per epoch; patience counts these
 
 
 @dataclass

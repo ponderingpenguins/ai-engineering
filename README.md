@@ -104,6 +104,28 @@ Consequences to keep in mind when reading scores:
 - Windows are cut after the preprocessing filters, so recordings without a known person are never windowed.
 - Checkpoints record the label rule. Checkpoints saved before the rule existed are treated as `last`.
 
+### Training logs, early stopping and checkpoints
+
+Every `python main.py` run writes a folder `results/<timestamp>_<model>/` containing:
+
+| File | What it is |
+| --- | --- |
+| `report.md` | Short report: settings, pooled results, per-fold and per-person tables, the loss figures and checkpoint paths. |
+| `loss_per_fold.png` | One panel per fold: train loss at every step, validation loss at every evaluation, the step whose weights were kept, and where early stopping fired. |
+| `loss_mean.png` | Train and validation loss against epochs as the mean over folds, with a shaded band of ±1 standard deviation across folds. A point needs at least two folds still training. |
+| `results.json` | Everything above in machine-readable form, including the full per-step loss history of each fold. |
+| `checkpoints/fold<k>_<test person>.pt` | The best weights of each fold (the ones kept after early stopping). |
+
+Rebuild the report and figures of an old run with `python -m utils.run_report results/<run>`. The checkpoints load with `BaseModel.load` and can go straight into `python -m utils.compare`.
+
+How training works for the `rnn` model:
+
+- **Validation person:** in every fold, one of the training people is held out as validation data (chosen with `eval.seed`), so the validation loss measures generalisation to an unseen person. The test person is never used for validation. The model therefore trains on one person fewer than the fold's training set, which with 4 people is a real cost. With fewer than two training people there is no validation and the model trains for all epochs.
+- **Early stopping:** `model.rnn.patience` (default 5). Training stops after that many validation evaluations in a row without a lower validation loss, and the weights with the lowest validation loss are restored. `model.rnn.epochs` (default 30) is only the upper limit.
+- **When validation runs:** `model.rnn.evals_per_epoch` times per epoch (default 1, so patience 5 means 5 epochs). With about 10 to 30 steps per epoch, raising this makes patience cover very few steps; the train loss is always recorded at every step.
+- **The loss** in the figures is class-weighted cross-entropy (rare classes weigh more), for both train and validation, so the two curves are comparable. It is not the evaluation metric.
+- Models that do not train iteratively (`baseline`) have no loss curves; their report just omits that section.
+
 ## Baking the dataset
 
 `src/data/extract.py` reads every recording once through `vt_radar` and writes a single Hugging Face dataset (one row per frame) to `data/processed/floor_posture` (gitignored):

@@ -88,7 +88,9 @@ def run(cfg: Config) -> None:
         sys.exit(1)
 
     out_dir = REPO / cfg.eval.out_dir / f"{datetime.now():%Y%m%d-%H%M%S}_{cfg.model.name}"
-    trainer = Trainer(make_model, splitter=splitter, out_dir=out_dir, config={**asdict(cfg), "window_timing": timing})
+    task = {key: getattr(cfg.eval, key) for key in ("target", "collapse_lying", "window_len", "label_rule")}
+    trainer = Trainer(make_model, splitter=splitter, out_dir=out_dir, task=task, seed=cfg.eval.seed,
+                      config={**asdict(cfg), "window_timing": timing})
     trainer.cross_validate(x, y, groups)
 
 

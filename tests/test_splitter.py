@@ -3,8 +3,8 @@ import pytest
 
 from utils.splitter import GroupKFoldSplitter
 
-PEOPLE = {"Bob": 40, "Dave": 30, "Frank": 60, "Igor": 70}
-LYING = {"Bob": 1, "Dave": 1, "Frank": 3, "Igor": 2}
+PEOPLE = {"Bob": 40, "Dave": 30, "Frank": 60, "Ian": 70}
+LYING = {"Bob": 1, "Dave": 1, "Frank": 3, "Ian": 2}
 
 
 @pytest.fixture

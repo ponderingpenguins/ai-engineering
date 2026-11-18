@@ -13,7 +13,8 @@ import numpy as np
 
 from models.model import BaseModel
 from utils.metrics import accuracy, macro_f1, per_class, scores
-from utils.splitter import GroupKFoldSplitter
+from utils.run_report import write_report
+from utils.splitter import GroupKFoldSplitter, validation_split
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +31,10 @@ class Trainer:
     make_model: Callable[[], BaseModel]  # called once per fold, so every fold starts from scratch
     splitter: GroupKFoldSplitter = field(default_factory=GroupKFoldSplitter)
     metrics: dict[str, Metric] = field(default_factory=lambda: {"accuracy": accuracy, "macro_f1": macro_f1})
-    out_dir: Path | None = None  # results are saved here when set
+    out_dir: Path | None = None  # results, checkpoints, loss curves and the report are saved here when set
     config: dict[str, Any] | None = None  # saved together with the results
+    task: dict[str, Any] | None = None  # evaluation settings stored in each checkpoint (target, window_len, ...)
+    seed: int = 0  # picks the validation person of each fold
 
     def cross_validate(self, x: np.ndarray, y: np.ndarray, groups: np.ndarray,
                        collect_predictions: bool = False) -> dict[str, Any]:
@@ -51,10 +54,19 @@ class Trainer:
             held_out = np.unique(groups[test])
             logger.info("fold %d/%d: test on %s", i, k, ", ".join(sorted(held_out)))
 
+            # one training person is held out for early stopping; the test person is never used for that
+            fit_idx, val_idx = validation_split(train, groups, self.seed + i)
+            val_people = [] if val_idx is None else sorted(np.unique(groups[val_idx]))
+            if val_idx is None:
+                logger.warning("fold %d/%d: fewer than two training people, no validation data", i, k)
+            else:
+                logger.info("fold %d/%d: validate on %s", i, k, ", ".join(val_people))
+
             model = self.make_model()
             started = perf_counter()
-            model.fit(x[train], y[train])  # no val data: the test fold must not pick the best epoch
+            history = model.fit(x[fit_idx], y[fit_idx], val=None if val_idx is None else (x[val_idx], y[val_idx]))
             train_seconds = perf_counter() - started
+            checkpoint = self._save_checkpoint(model, i, held_out)
             started = perf_counter()
             pred = model.predict(x[test])
             predict_seconds = perf_counter() - started
@@ -69,10 +81,15 @@ class Trainer:
             fold_results.append({
                 "fold": i,
                 "test_groups": sorted(held_out),
-                "n_train": len(train),
+                "val_groups": val_people,
+                "n_train": len(fit_idx),
+                "n_val": 0 if val_idx is None else len(val_idx),
                 "n_test": len(test),
                 "test_classes": dict(Counter(y[test].tolist())),
                 "metrics": fold_scores,
+                "per_class": per_class(y[test], pred, classes),
+                "history": None if history is None else history.to_dict(),
+                "checkpoint": checkpoint,
                 "train_seconds": train_seconds,
                 "predict_seconds": predict_seconds,
             })
@@ -107,8 +124,20 @@ class Trainer:
         self._save(results)
         return results
 
+    def _save_checkpoint(self, model: BaseModel, fold: int, held_out: np.ndarray) -> str | None:
+        """Saves the fold's trained model (its best weights) under `out_dir/checkpoints`.
+
+        Returns the path relative to `out_dir`, or None if nothing is saved. Load it with
+        `BaseModel.load`, or compare it with `python -m utils.compare`.
+        """
+        if self.out_dir is None or self.task is None:
+            return None
+        relative = Path("checkpoints") / f"fold{fold}_{'+'.join(sorted(held_out))}.pt"
+        model.save(self.out_dir / relative, evaluation=self.task)
+        return str(relative)
+
     def _save(self, results: dict[str, Any]) -> None:
-        """Writes the results to `out_dir/results.json`, if `out_dir` is set.
+        """Writes `results.json`, the loss curves and the report to `out_dir`, if it is set.
 
         Args:
             results: The JSON-serializable results.
@@ -118,3 +147,5 @@ class Trainer:
         self.out_dir.mkdir(parents=True, exist_ok=True)
         (self.out_dir / "results.json").write_text(json.dumps(results, indent=2))
         logger.info("saved results to %s", self.out_dir)
+        report = write_report(results, self.out_dir)
+        logger.info("report: %s", report)

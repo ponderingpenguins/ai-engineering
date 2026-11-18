@@ -10,7 +10,7 @@ def ds():
     return Dataset.from_dict({
         "recording": ["r1", "r2", "r3", "r4"],
         "cfg_file": [CONFIG_4, CONFIG_4, "Config_3.cfg", CONFIG_4],
-        "person": ["Bob", NO_PERSON, "Dave", "Igor"],
+        "person": ["Bob", NO_PERSON, "Dave", "Ian"],
         "heatmap": [[0.0], [0.0], [0.0], [0.0]],
     })
 

@@ -5,7 +5,7 @@ and `person_present` (data/processed/presence_events.csv, from notebooks/label_p
 
 Run it:
 
-    python -m data.extract [data.root=...] [num_proc=4] [overwrite=true] [test_room=room2] ['test_persons=[Dave]'] ['val_persons=[Igor]'] ['recordings=["a","b"]']
+    python -m data.extract [data.root=...] [num_proc=4] [overwrite=true] [test_room=room2] ['test_persons=[Dave]'] ['val_persons=[Ian]'] ['recordings=["a","b"]']
 
 Usage:
     ds = load_from_disk("data/processed/floor_posture")
@@ -49,7 +49,7 @@ class ExtractConfig:
     test_room: str = "room2"  # room held out for the room-wise split
     # persons held out for the person-wise split; Bob has ~46% of the frames, so these two give ~10% each
     test_persons: list[str] = field(default_factory=lambda: ["Dave"])
-    val_persons: list[str] = field(default_factory=lambda: ["Igor"])
+    val_persons: list[str] = field(default_factory=lambda: ["Ian"])
     recordings: list[str] = field(default_factory=list)  # empty = every recording present
 
     def __post_init__(self) -> None:

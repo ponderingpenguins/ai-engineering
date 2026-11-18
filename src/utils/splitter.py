@@ -48,3 +48,26 @@ class GroupKFoldSplitter:
         if sum(len(group_set) for group_set in tested) != len(set(groups)):
             raise ValueError("a group is in more than one test fold")
         return folds
+
+
+def validation_split(train: np.ndarray, groups: np.ndarray, seed: int) -> tuple[np.ndarray, np.ndarray | None]:
+    """Splits a training fold into fit and validation indices by holding out one whole person.
+
+    A person is never in both parts, so the validation loss measures generalisation to a new person
+    (as the test fold does) and early stopping is not tuned on someone the model has trained on.
+
+    Args:
+        train: Indices of the training fold.
+        groups: The person of every window, indexed like the full dataset.
+        seed: Chooses which person is held out.
+
+    Returns:
+        `(fit_idx, val_idx)`, or `(train, None)` if the fold has fewer than two people, in which case
+        there is nothing to validate on.
+    """
+    people = np.unique(groups[train])
+    if len(people) < 2:
+        return train, None
+    held_out = np.random.default_rng(seed).choice(people)
+    is_val = groups[train] == held_out
+    return train[~is_val], train[is_val]
