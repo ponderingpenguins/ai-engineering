@@ -124,8 +124,34 @@ How training works for the `rnn` model:
 - **Early stopping:** `model.rnn.patience` (default 5). Training stops after that many validation evaluations in a row without a lower validation loss, and the weights with the lowest validation loss are restored. `model.rnn.epochs` (default 30) is only the upper limit.
 - **When validation runs:** `model.rnn.evals_per_epoch` times per epoch (default 1, so patience 5 means 5 epochs). With about 10 to 30 steps per epoch, raising this makes patience cover very few steps; the train loss is always recorded at every step.
 - **The loss** in the figures is cross-entropy that treats the classes equally, not the evaluation metric. The train loss weights each class by the inverse of its frequency in the training windows (so it is plain cross-entropy once the training data is balanced). The validation loss is class-balanced on the validation set itself: the mean of the per-class mean losses. A model that always predicts 50/50 scores ln 2 = 0.693 on it, whatever the class sizes, and that is the level to compare against. A validation loss hovering around 0.69 means the model has learned nothing that carries over to a new person, and early stopping is then only picking noise.
+- **Fixed epochs, no validation** (`train.validation=false`): every fold trains for exactly `model.rnn.epochs` epochs on all its training people, keeps the last weights, and the figures show the train loss only. Use it when one validation person is too noisy to decide anything (with 4 people it is). The epoch count must come from earlier validation curves, never from test scores. Example: `python main.py train.validation=false model.rnn.epochs=3`.
 - **Oversampling** (`train.oversample`, default off): repeats randomly chosen training windows of the rarer class until each reaches that fraction of the largest class (`1.0` = balanced, `0.5` = half). It is applied to the training part of each fold only; the validation person and the test person keep their real class balance. It repeats existing windows and adds no new information, so it can make the model memorise the few lying windows. The report's per-fold results and `results.json` record the class counts after resampling.
 - Models that do not train iteratively (`baseline`) have no loss curves; their report just omits that section.
+
+## Running on the PC
+
+Training runs on `haukurs_pc` (a Windows machine with an RTX 3070, reached over Tailscale; commands run inside its WSL). Helper scripts in `scripts/pc/` wrap the SSH details. They need Tailscale running on this machine and the PC switched on.
+
+| Script | What it does |
+| --- | --- |
+| `status.sh` | Reachability, GPU, disk, running jobs, newest log and result folder, and whether the dataset and torch are ready. |
+| `setup.sh` | One-time: installs `uv` on the PC and runs `uv sync` there (run `push-code.sh` first). |
+| `push-code.sh [-n]` | Copies the code to the PC (not `.git`, notebooks, results or the big data folders). `-n` is a dry run. |
+| `push-data.sh [folder]` | Copies the baked dataset (about 3 GB, resumable) to the PC. |
+| `train.sh <main.py args>` | Starts `python main.py <args>` as a background job, e.g. `train.sh train.validation=false model.rnn.epochs=3`. |
+| `job.sh '<command line>'` | Starts any command line as a background job, e.g. a loop over seeds. `JOB_NAME=name` names the log. |
+| `logs.sh [-f] [file]` | Shows the newest log on the PC (`-f` follows it). |
+| `run.sh <command>` | Runs one command on the PC in the project folder and streams the output. |
+| `stop.sh` | Stops the background jobs (asks first). |
+| `fetch-results.sh [-n]` | Copies the result folders back into `./results` here. Never deletes anything locally. |
+
+Typical run: `scripts/pc/push-code.sh`, then `scripts/pc/train.sh ...`, `scripts/pc/logs.sh -f`, and finally `scripts/pc/fetch-results.sh`.
+
+Things worth knowing:
+
+- The PC's ssh config logs you straight into WSL, which blocks `ssh host '<command>'`. The scripts override that per call and pipe the script into `bash` in WSL, so `~/.ssh/config` is untouched. `PC_HOST` and `PC_DIR` (default `/home/haukur/rug/ai-engineering`) can be overridden in the environment.
+- WSL shuts the whole Linux instance down about 15 seconds after the last SSH session closes, which kills every process, including `nohup`, `setsid`, `tmux` and systemd services (all tested). So `job.sh` leaves one SSH session open in the background on this machine for exactly as long as the job runs (it ends by itself with the job). **The Mac must stay awake and connected (Tailscale on) until the job finishes**; the scripts deliberately do not stop it from sleeping, so if it sleeps or the connection drops, the job dies about 15 seconds later. Jobs run as `systemd-run --user` units so that `status.sh` and `stop.sh` can see and stop them. A permanent fix would be on the PC itself (Windows side), for example an idle-timeout setting in `.wslconfig` or a keep-alive task; the scripts do not change anything there.
+- The code copy has no `.git`, so `python -m utils.compare` cannot record a commit there. `main.py` does not need it.
 
 ## Baking the dataset
 

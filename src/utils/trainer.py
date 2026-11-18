@@ -37,6 +37,7 @@ class Trainer:
     task: dict[str, Any] | None = None  # evaluation settings stored in each checkpoint (target, window_len, ...)
     seed: int = 0  # picks the validation person of each fold
     resampler: RandomOversampler | None = None  # applied to each fold's training windows only
+    validate: bool = True  # False: no validation person, the model trains on all training people for its epochs
 
     def cross_validate(self, x: np.ndarray, y: np.ndarray, groups: np.ndarray,
                        collect_predictions: bool = False) -> dict[str, Any]:
@@ -57,11 +58,11 @@ class Trainer:
             logger.info("fold %d/%d: test on %s", i, k, ", ".join(sorted(held_out)))
 
             # one training person is held out for early stopping; the test person is never used for that
-            fit_idx, val_idx = validation_split(train, groups, self.seed + i)
+            fit_idx, val_idx = validation_split(train, groups, self.seed + i) if self.validate else (train, None)
             val_people = [] if val_idx is None else sorted(np.unique(groups[val_idx]))
-            if val_idx is None:
+            if val_idx is None and self.validate:
                 logger.warning("fold %d/%d: fewer than two training people, no validation data", i, k)
-            else:
+            elif val_idx is not None:
                 logger.info("fold %d/%d: validate on %s", i, k, ", ".join(val_people))
 
             train_idx = fit_idx

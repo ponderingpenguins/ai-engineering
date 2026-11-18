@@ -181,3 +181,38 @@ def test_report_embeds_both_figures_when_there_are_histories(tmp_path):
     assert "![Loss per fold](loss_per_fold.png)" in report and "![Loss across folds](loss_mean.png)" in report
     assert "3.2 s" in report and "patience 5" in report and "early" in report
     assert (tmp_path / "loss_per_fold.png").exists() and (tmp_path / "loss_mean.png").exists()
+
+
+# ---- fixed epochs without validation -------------------------------------------------------------
+
+def test_without_validation_every_fold_trains_on_all_its_training_people():
+    x, y, groups = make_cv_data()
+    seen = []
+
+    class Recorder(MajorityClass):
+        def fit(self, x, y, val=None):
+            seen.append(val)
+            return super().fit(x, y, val)
+
+    results = Trainer(Recorder, splitter=GroupKFoldSplitter(), validate=False).cross_validate(x, y, groups)
+    assert all(val is None for val in seen)
+    assert all(fold["val_groups"] == [] and fold["n_val"] == 0 for fold in results["folds"])
+    assert all(fold["n_train"] == 18 for fold in results["folds"])  # 3 of 4 people, 6 windows each
+
+
+def test_report_and_figures_work_without_validation_loss(tmp_path):
+    folds = []
+    for f in fake_folds():
+        h = dict(f["history"], val_steps=[], val_loss=[], best_step=None, stopped_early=False)
+        folds.append(dict(f, val_groups=[], history=h, n_test=5, metrics={"accuracy": 0.9, "macro_f1": 0.5},
+                          per_class={"lying": {"recall": 0.5, "support": 2}}, checkpoint=None))
+    results = {"config": {"model": {"name": "rnn", "rnn": {"epochs": 3, "batch_size": 32, "lr": 0.001, "seed": 0}},
+                          "train": {"validation": False}, "eval": {"folds": None, "seed": 0}},
+               "folds": folds,
+               "pooled": {"n": 15, "metrics": {"accuracy": 0.9, "macro_f1": 0.5},
+                          "per_class": {"lying": {"precision": 0.5, "recall": 0.5, "f1": 0.5, "support": 6}}},
+               "per_person": {}}
+    report = write_report(results, tmp_path).read_text()
+    assert "exactly 3 epochs" in report and "No validation data and no early stopping" in report
+    assert "Every fold trains on all its training people" in report
+    assert (tmp_path / "loss_per_fold.png").exists() and (tmp_path / "loss_mean.png").exists()

@@ -51,6 +51,9 @@ class TrainConfig:
     # None: off. A ratio in (0, 1] repeats training windows of the rarer classes until each reaches
     # that share of the largest class (1.0 = balanced). Training data only, see data/resample.py.
     oversample: Optional[float] = None
+    # True: each fold holds out one training person for validation (early stopping, best weights).
+    # False: no validation; every fold trains for exactly model.rnn.epochs on all its training people.
+    validation: bool = True
 
 
 @dataclass

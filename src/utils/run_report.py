@@ -26,16 +26,23 @@ def _settings(results: dict[str, Any]) -> list[str]:
     config = results.get("config") or {}
     model, evaluation = config.get("model", {}), config.get("eval", {})
     timing = config.get("window_timing")
+    validation = (config.get("train") or {}).get("validation", True)
     lines = [f"- Model: `{model.get('name', 'unknown')}`."]
     if model.get("name") == "rnn":
         rnn = model.get("rnn", {})
-        lines.append(f"- Training: up to {rnn.get('epochs')} epochs, batch {rnn.get('batch_size')}, lr {rnn.get('lr')}; "
-                     f"early stopping on validation loss with patience {rnn.get('patience')} "
-                     f"(validation loss evaluated {rnn.get('evals_per_epoch')}x per epoch).")
+        if validation:
+            lines.append(f"- Training: up to {rnn.get('epochs')} epochs, batch {rnn.get('batch_size')}, lr {rnn.get('lr')}; "
+                         f"early stopping on validation loss with patience {rnn.get('patience')} "
+                         f"(validation loss evaluated {rnn.get('evals_per_epoch')}x per epoch).")
+        else:
+            lines.append(f"- Training: exactly {rnn.get('epochs')} epochs, batch {rnn.get('batch_size')}, lr {rnn.get('lr')}, "
+                         "seed " + str(rnn.get('seed')) + ". No validation data and no early stopping: the epoch count was fixed "
+                         "beforehand, and the weights after the last epoch are kept.")
     folds = evaluation.get("folds")
     lines.append(f"- Cross-validation: {len(results['folds'])} folds, "
                  f"{'one fold per person' if folds is None else 'stratified, people kept together'}; seed {evaluation.get('seed')}. "
-                 "Each fold also holds out one training person for validation.")
+                 + ("Each fold also holds out one training person for validation." if validation
+                    else "Every fold trains on all its training people."))
     if evaluation:
         window = f"{evaluation.get('window_len')} frames"
         if timing:
