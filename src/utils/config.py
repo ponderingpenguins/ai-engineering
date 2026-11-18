@@ -49,8 +49,9 @@ class EvalConfig:
     folds: Optional[int] = None  # k for person-wise k-fold cross-validation; None = one fold per person
     seed: int = 0  # shuffles the fold assignment
     target: str = "label_pose"  # label column to predict
-    collapse_lying: bool = True  # True: lying vs. not lying, False: the original pose classes
+    collapse_lying: bool = True  # True: lying occurred vs. not (with any_lying), False: the original pose classes
     window_len: int = 16  # frames per window
+    label_rule: str = "any_lying"  # "any_lying": predict whether lying occurred within the window; "last": label of its last frame
     stride: int = 8  # frames between window starts
     out_dir: str = "results"  # each run gets its own folder in here
 

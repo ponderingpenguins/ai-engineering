@@ -24,7 +24,7 @@ from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
 
 from data.preprocess import build_pipeline
-from data.windows import HEATMAP_SHAPE, collapse_lying, make_windows
+from data.windows import HEATMAP_SHAPE, collapse_lying, make_windows, window_timing
 from models.baseline import MajorityClass
 from models.model import BaseModel
 from utils.config import Config
@@ -195,7 +195,7 @@ def plot_failure_timelines(results, predictions, classes, figures, limit):
     return lines
 
 
-def report(out, results, predictions, classes, checks, cfg, provenance):
+def report(out, results, predictions, classes, checks, cfg, provenance, timing):
     """Generate fixed Markdown tables and plots"""
     figures = out / "figures"
     figures.mkdir(exist_ok=True)
@@ -228,7 +228,12 @@ def report(out, results, predictions, classes, checks, cfg, provenance):
     lines += ["", "[All predictions](predictions.csv) · [Failures](failures.csv) · [Participant metrics](participants.csv)",
               "", "## Data checks", ""] + [f"- {note}" for note in checks]
     lines += ["", "## Run", "", f"- Task: `{cfg.eval.target}`; collapse lying: `{cfg.eval.collapse_lying}`.",
-              f"- Windows: {cfg.eval.window_len} frames; stride: {cfg.eval.stride}.",
+              f"- Windows: {cfg.eval.window_len} frames = {timing['window_s']:.1f} s; "
+              f"stride: {cfg.eval.stride} frames = {timing['stride_s']:.1f} s "
+              f"({timing['frame_period_s']:.2f} s per frame).",
+              f"- Window label rule: `{cfg.eval.label_rule}`"
+              + (" (the classifier predicts whether lying occurred within the window; a positive window need not be lying throughout)." if cfg.eval.label_rule == "any_lying"
+                 else " (the label of its last frame)."),
               f"- Prepared partitions: `{cfg.partitions}`. Train: baseline label; test: scores. No model training.",
               f"- Classes: `{dict(Counter(predictions[predictions.model == next(iter(results))].true_label))}`.",
               f"- Commit: `{provenance['commit']}`; uncommitted changes: `{provenance['dirty']}`.",
@@ -354,8 +359,11 @@ def run(cfg):
             heatmaps=heatmaps and split == "test",
             relabel=collapse_lying if cfg.eval.collapse_lying else None,
             return_metadata=True,
+            label_rule=cfg.eval.label_rule,
         )
         _, labels, _, _ = windows[split]
+        if split == "test":
+            timing = window_timing(dataset, cfg.eval.window_len, cfg.eval.stride)
         if not len(labels):
             raise ValueError(f"{split}: no usable windows for the selected task.")
         checks.append(f"{split}: {len(labels)} windows; classes: {dict(Counter(labels.tolist()))}.")
@@ -408,7 +416,7 @@ def run(cfg):
     predictions = pd.DataFrame(all_predictions)
     predictions[predictions.is_error].to_csv(out / "failures.csv", index=False)
     pd.DataFrame(participant_rows).to_csv(out / "participants.csv", index=False)
-    report(out, results, predictions, classes, checks, cfg, provenance)
+    report(out, results, predictions, classes, checks, cfg, provenance, timing)
     logger.info("Report: %s", out / "comparison.md")
     return out
 

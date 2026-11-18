@@ -76,11 +76,34 @@ Defaults come from `config/config.yaml`; `key=value` arguments on the command li
 | ---------- | ------------------------------ | --------------------------------------------------------------------------------------- |
 | `data.baked` | `data/processed/floor_posture` | Baked dataset folder. Relative paths are resolved against the repo root.                |
 
+| `data.preprocess` | `[config_4, known_person]` | Frame filters run once after loading, before windowing (`src/data/preprocess.py`). |
+| `eval.folds` | `null` | Cross-validation folds over people. `null` is one fold per person; an integer `k` gives stratified k-fold. |
+| `eval.window_len` / `eval.stride` | `16` / `8` | Window length and step in frames. One frame is about 0.2 s, so this is 3.2 s windows every 1.6 s. The run logs the exact seconds. |
+| `eval.label_rule` | `any_lying` | How a window gets its label, see below. |
+
 Example:
 
 ```
 python main.py data.baked=/path/to/floor_posture
+python main.py model.name=baseline eval.folds=2 eval.label_rule=last
 ```
+
+### How windows are labelled
+
+Frames are cut into windows of `eval.window_len` frames (about 0.2 s each, measured from the capture timestamps). Windows that span a gap of dropped frames are skipped.
+
+- **`any_lying` (default):** the classifier predicts whether lying **occurred** within the window's 3.2 s. A window is labelled lying if at least one of its frames is lying, and not lying if none is. If the window has several lying frames, the last one decides between `lying_left` and `lying_right` (when `eval.collapse_lying=false`).
+- **`last`:** a window takes the label of its last frame.
+
+Why `any_lying`: in the labelled data, lying is annotated in short runs of 1 to 5 frames (0.2 to 1 s), scattered through recordings that last about 6 minutes. With `last`, a window is only positive when it happens to end on one of those frames: with 16-frame windows and stride 8, that kept 7 lying windows out of 1450. Requiring most of the window to be lying (majority) kept none. With `any_lying`, the same data gives 37 lying windows, and each person has some.
+
+Consequences to keep in mind when reading scores:
+
+- **What a positive means:** lying occurred at least once in the window's 3.2 s. It does not mean the person was lying for the whole window, and a positive window may contain 15 non-lying frames. Do not read lying recall or precision as "how long someone lay" or "how well a lying posture is held". They measure detection of lying occurring.
+- **What a negative means:** none of the window's frames is lying. A window is not-lying only if lying never occurred in it, so a window next to a lying episode can be a negative.
+- Windows overlap by half, so one lying frame can label two neighbouring windows. The 37 lying windows come from 33 lying frames in 6 recordings, so they are not independent.
+- Windows are cut after the preprocessing filters, so recordings without a known person are never windowed.
+- Checkpoints record the label rule. Checkpoints saved before the rule existed are treated as `last`.
 
 ## Baking the dataset
 

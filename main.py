@@ -24,7 +24,7 @@ from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
 
 from data.preprocess import build_pipeline
-from data.windows import make_windows, collapse_lying
+from data.windows import collapse_lying, make_windows, window_timing
 from models.factory import MODELS, build_model
 from models.model import BaseModel
 from utils.config import Config
@@ -71,6 +71,13 @@ def run(cfg: Config) -> None:
         stride=cfg.eval.stride,
         heatmaps=make_model().needs_heatmaps,
         relabel=collapse_lying if cfg.eval.collapse_lying else None,
+        label_rule=cfg.eval.label_rule,
+    )
+    timing = window_timing(ds, cfg.eval.window_len, cfg.eval.stride)
+    logger.info(
+        "windows: %d frames = %.1f s, stride %d frames = %.1f s (%.2f s per frame), label rule %r",
+        cfg.eval.window_len, timing["window_s"], cfg.eval.stride, timing["stride_s"],
+        timing["frame_period_s"], cfg.eval.label_rule,
     )
     logger.info("%d windows from %d groups, classes: %s", len(y), len(set(groups)), dict(Counter(y.tolist())))
     splitter = GroupKFoldSplitter(cfg.eval.folds, cfg.eval.seed)
@@ -81,7 +88,7 @@ def run(cfg: Config) -> None:
         sys.exit(1)
 
     out_dir = REPO / cfg.eval.out_dir / f"{datetime.now():%Y%m%d-%H%M%S}_{cfg.model.name}"
-    trainer = Trainer(make_model, splitter=splitter, out_dir=out_dir, config=asdict(cfg))
+    trainer = Trainer(make_model, splitter=splitter, out_dir=out_dir, config={**asdict(cfg), "window_timing": timing})
     trainer.cross_validate(x, y, groups)
 
 
