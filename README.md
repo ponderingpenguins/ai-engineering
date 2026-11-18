@@ -42,12 +42,6 @@ uv pip install -e ".[jupyter]"
 python -m ipykernel install --user --name floor-posture --display-name "floor-posture"
 ```
 
-To use the custom `recorder` package by Valtes:
-
-```
-uv pip install -e ./data/raw/floor_posture_dataset/recorder
-```
-
 ## Environment
 
 Create the environment (first time) and activate it before running anything:
@@ -55,6 +49,17 @@ Create the environment (first time) and activate it before running anything:
 ```
 uv sync
 source .venv/bin/activate
+```
+
+## Install Data
+
+Run these commands before running any script. Install `git-lfs` with your package manager first (for example `sudo apt install git-lfs` on Debian/Ubuntu or `brew install git-lfs` on macOS).
+
+```
+git lfs install
+git lfs pull
+
+uv pip install -e ./data/raw/floor_posture_dataset/recorder
 ```
 
 ## Running `main.py`
@@ -83,6 +88,13 @@ python main.py data.baked=/path/to/floor_posture
 
 ```
 python -m data.extract [data.root=...] [data.baked=...] [num_proc=4] [overwrite=true] ['recordings=["a","b"]']
+```
+
+After extracting the data, synchronize the environment before opening the notebooks:
+
+```bash
+uv sync
+source .venv/bin/activate
 ```
 
 Quote recording names: YAML reads an unquoted `2311__20231120_144541` as a number. It takes about 20 s with `num_proc=6`, and the result is about 4.4 GB.
