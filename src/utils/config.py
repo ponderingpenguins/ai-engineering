@@ -17,8 +17,11 @@ class DataConfig:
 class RNNConfig:
     hidden: int = 128  # GRU hidden size
     feat_dim: int = 64  # size of the per-frame feature vector from the CNN
+    dropout: float = 0.5  # on the GRU output, before the classification layer
+    feature_dropout: float = 0.3  # on the per-frame CNN features
+    noise: float = 0.05  # augmentation: noise std on the standardised heatmap while training
     lr: float = 1e-3
-    weight_decay: float = 1e-4
+    weight_decay: float = 1e-2
     epochs: int = 30  # upper limit; early stopping usually ends training sooner
     batch_size: int = 32
     seed: int = 0

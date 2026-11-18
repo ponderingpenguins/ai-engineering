@@ -194,3 +194,13 @@ def test_regularisation_only_acts_in_training_and_checkpoint_keeps_it():
     assert not torch.equal(net(x), net(x))  # dropout, point dropping and jitter are random in training
     model = PointNet(point_dropout=0.1, point_drop=0.2, jitter=0.03)
     assert model._build_net(2).point_drop == 0.2
+
+
+def test_rnn_regularisation_only_acts_in_training():
+    from models.rnn import HeatmapGRU
+    net = HeatmapGRU(2, feat_dim=8, hidden=8, dropout=0.5, feature_dropout=0.5, noise=0.5)
+    x = torch.randn(2, 3, 1, 256, 16)
+    net.eval()
+    assert torch.equal(net(x), net(x))
+    net.train()
+    assert not torch.equal(net(x), net(x))
