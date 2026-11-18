@@ -29,7 +29,9 @@ class History:
 
 
 class BaseModel(ABC):
-    needs_heatmaps = True  # False for models that ignore x, so the heatmaps need not be loaded
+    # What the windows must hold for this model: "heatmap" (N, T, 1, R, D), "pointcloud" (N, P, 7), or "none"
+    # for models that ignore x, so nothing needs to be loaded. See data.windows.INPUT_TYPES.
+    input_type: str = "heatmap"
     model_name: str  # Key used to register this model in models.factory.MODEL_CLASSES.
 
     def save(self, path: str | Path, evaluation: dict[str, Any]) -> None:
@@ -46,8 +48,10 @@ class BaseModel(ABC):
             "format_version": 1,
             "model": self.model_name,
             # label_rule is optional so checkpoints saved before it existed still load, as "last"
+            # optional keys: checkpoints saved before they existed still load, with the old behaviour
             "evaluation": {**{key: evaluation[key] for key in required},
-                           "label_rule": evaluation.get("label_rule", "last")},
+                           "label_rule": evaluation.get("label_rule", "last"),
+                           "max_points": evaluation.get("max_points", 128)},
         }
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -68,6 +72,7 @@ class BaseModel(ABC):
         if not isinstance(evaluation, dict) or not required <= set(evaluation):
             raise ValueError("Checkpoint is missing evaluation settings.")
         evaluation.setdefault("label_rule", "last")  # checkpoints from before window label rules existed
+        evaluation.setdefault("max_points", 128)  # and from before point-cloud windows existed
 
         model_class = cls
         if cls is BaseModel:

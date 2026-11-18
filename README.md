@@ -105,6 +105,20 @@ Consequences to keep in mind when reading scores:
 - Windows are cut after the preprocessing filters, so recordings without a known person are never windowed.
 - Checkpoints record the label rule. Checkpoints saved before the rule existed are treated as `last`.
 
+### Models and their inputs
+
+| `model.name` | Input per window | Notes |
+| --- | --- | --- |
+| `rnn` | the 16 range-Doppler heatmaps (16 x 256 x 16), log-scaled | CNN per frame, GRU over the frames. About 131k parameters. |
+| `pointnet` | the radar **point cloud** of the window | Mini PointNet, about 27k parameters. See below. |
+| `baseline` | none | Always predicts the most common training label. |
+
+All models use the same windows, folds, preprocessing, class weighting, validation loss and early stopping (`models/torch_classifier.py`), so their results are comparable. Each model declares what it reads with `input_type`, and `make_windows(inputs=...)` builds it.
+
+**The point-cloud input.** The radar reports 0 to 16 points per frame (median 2; 27% of labelled frames have none, and the radar's tracker never reports a track). For a window the points of all its frames are put into one set of at most `eval.max_points` (default 128) points with the columns `x, y, z, doppler, snr, time` (time is 0 for the first frame of the window and 1 for the last) and a flag marking real points versus padding. A 16-frame window holds about 41 points (99th percentile 105), so 128 truncates 0.3% of windows; if there are more, the strongest by SNR are kept. The radar's noise value and its track id (always 255) are not used.
+
+**The mini PointNet** applies the same small MLP (6 to 32 to 64 to 128 features) to every point, pools the valid points with max and mean (padding never reaches the pooled features, and the order of the points does not matter), adds the log of the number of points (lying windows tend to have more) and classifies with a small head. There is no alignment network (T-Net). x, y, z, doppler and snr are standardised with statistics of the training points. Run it with `python main.py model.name=pointnet`; its hyperparameters are under `model.pointnet.*`. Regularisation (all under `model.pointnet.*`): `dropout` (head, 0.5), `point_dropout` (per-point features, 0.2), `weight_decay` (1e-2), and two augmentations that only act while training: `point_drop` (drops 30% of the points) and `jitter` (noise on the standardised features). Set them to 0 to switch them off.
+
 ### Training logs, early stopping and checkpoints
 
 Every `python main.py` run writes a folder `results/<timestamp>_<model>/` containing:

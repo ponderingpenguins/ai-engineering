@@ -6,9 +6,10 @@ from utils.config import ModelConfig
 
 from .baseline import MajorityClass
 from .model import BaseModel
+from .pointnet import PointNet
 from .rnn import RNN
 
-MODEL_CLASSES: dict[str, type[BaseModel]] = {"baseline": MajorityClass, "rnn": RNN}
+MODEL_CLASSES: dict[str, type[BaseModel]] = {"baseline": MajorityClass, "rnn": RNN, "pointnet": PointNet}
 MODELS = tuple(MODEL_CLASSES)
 
 
@@ -18,4 +19,6 @@ def build_model(cfg: ModelConfig) -> BaseModel:
         return MajorityClass()
     if cfg.name == "rnn":
         return RNN(**asdict(cfg.rnn))
+    if cfg.name == "pointnet":
+        return PointNet(**asdict(cfg.pointnet))
     raise ValueError(f"unknown model {cfg.name!r}, choose one of {MODELS}")

@@ -14,6 +14,13 @@ HEATMAP_SHAPE = (256, 16)  # (range_bins, doppler_bins)
 # See "How windows are labelled" in the README and `_window_label`.
 LABEL_RULES = ("last", "any_lying")
 
+# What a window's input array holds:
+#   "heatmap":    (N, window_len, 1, 256, 16) log-scaled range-Doppler heatmaps.
+#   "pointcloud": (N, max_points, 7) the radar points of all frames of the window, see _window_points.
+#   "none":       (N, window_len) zeros, for models that ignore the input (the labels are all they need).
+INPUT_TYPES = ("heatmap", "pointcloud", "none")
+POINT_FEATURES = ("x", "y", "z", "doppler", "snr")  # the first five of the radar's 7 point values
+
 
 def collapse_lying(y: np.ndarray) -> np.ndarray:
     """Relable all labels to either 'lying' or 'no_lying'"""
@@ -64,6 +71,31 @@ def limit_per_group(y: np.ndarray, groups: np.ndarray, n: int, seed: int = 0) ->
     return np.sort(np.concatenate(keep)) if keep else np.zeros(0, dtype=int)
 
 
+def _window_points(clouds: list[np.ndarray], frames: np.ndarray, max_points: int) -> np.ndarray:
+    """All radar points of one window as a fixed-size array of shape (max_points, 7).
+
+    Columns are the five point features (see POINT_FEATURES), the time of the point's frame inside the window
+    (0 for the first frame, 1 for the last) and a validity flag (1 for a real point, 0 for padding). The
+    radar returns 0 to 16 points per frame, so a window of 16 frames has about 40 on average (a few have
+    none). If a window has more than `max_points`, the strongest by SNR are kept.
+    """
+    span = max(len(frames) - 1, 1)
+    rows = [
+        np.column_stack([clouds[pos][:, :5], np.full(len(clouds[pos]), t / span, dtype=np.float32)])
+        for t, pos in enumerate(frames)
+        if len(clouds[pos])
+    ]
+    out = np.zeros((max_points, 7), dtype=np.float32)
+    if rows:
+        points = np.concatenate(rows)
+        if len(points) > max_points:
+            keep = np.sort(np.argsort(-points[:, 4], kind="stable")[:max_points])  # strongest, original order
+            points = points[keep]
+        out[: len(points), :6] = points
+        out[: len(points), 6] = 1.0
+    return out
+
+
 def _prep(h, shape: tuple[int, int]) -> np.ndarray:
     """Make sure the shapes match"""
     a = np.log1p(np.asarray(h, dtype=np.float32))
@@ -78,20 +110,24 @@ def make_windows(
     window_len: int = 16,  # frames per window
     stride: int = 8,  # frames between window starts
     shape: tuple[int, int] = HEATMAP_SHAPE,
-    heatmaps: bool = True,
+    inputs: str = "heatmap",
     relabel: Callable[[np.ndarray], np.ndarray] | None = None,
     label_rule: str = "last",
     max_per_person: int | None = None,
     seed: int = 0,
+    max_points: int = 128,
 ) -> tuple:
     """Cut each recording into windows of `window_len` frames.
 
-    Returns x (N, window_len, 1, *shape), y (N,) and groups (N,). A window's label comes from its
+    Returns x, y (N,) and groups (N,). x depends on `inputs` (see INPUT_TYPES): heatmaps
+    (N, window_len, 1, *shape), point clouds (N, max_points, 7), or placeholder zeros. A window's label comes from its
     frames' labels by `label_rule` (see LABEL_RULES; "last" is the last frame's label). The group is the
     person (the windows of one group must not be split between train and test). Run the preprocessing
     pipeline first to drop recordings without a known person. `max_per_person` keeps at most that many windows
     per person (see `limit_per_group`), for quick test runs; None keeps all.
     """
+    if inputs not in INPUT_TYPES:
+        raise ValueError(f"inputs must be one of {INPUT_TYPES}, got {inputs!r}")
     if label_rule not in LABEL_RULES:
         raise ValueError(f"label_rule must be one of {LABEL_RULES}, got {label_rule!r}")
     # 1. keep only frames we can use: valid heatmap, a label, and the expected shape
@@ -140,11 +176,15 @@ def make_windows(
         keep_windows = limit_per_group(y, groups, max_per_person, seed)
         window_frames, y, groups = window_frames[keep_windows], y[keep_windows], groups[keep_windows]
 
-    # 3. load the heatmaps and gather them into windows
+    # 3. load the inputs and gather them into windows
+    if inputs == "none":
+        return np.zeros((len(window_frames), window_len), dtype=np.float32), y, groups
+    if inputs == "pointcloud":
+        clouds = [np.asarray(c, dtype=np.float32).reshape(-1, 7) for c in frames_ds["pointcloud"]]
+        points = [_window_points(clouds, frames, max_points) for frames in window_frames]
+        return (np.stack(points) if points else np.zeros((0, max_points, 7), dtype=np.float32)), y, groups
     if len(window_frames) == 0:
         return np.zeros((0, window_len, 1, *shape), dtype=np.float32), y, groups
-    if not heatmaps:
-        return np.zeros((len(window_frames), window_len), dtype=np.float32), y, groups
     heatmap_batches = frames_ds.select_columns(["heatmap"]).iter(256)
     all_frames = np.concatenate(
         [np.stack([_prep(h, shape) for h in cast(dict, batch)["heatmap"]]) for batch in heatmap_batches]

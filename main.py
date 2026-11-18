@@ -82,7 +82,7 @@ def run(cfg: Config) -> None:
         sys.exit(1)
     ds = build_pipeline(cfg.data.preprocess)(cast(Dataset, load_from_disk(str(path))))
 
-    task = {key: getattr(cfg.eval, key) for key in ("target", "collapse_lying", "window_len", "label_rule")}
+    task = {key: getattr(cfg.eval, key) for key in ("target", "collapse_lying", "window_len", "label_rule", "max_points")}
     resampler = None if cfg.train.oversample is None else RandomOversampler(cfg.train.oversample, cfg.eval.seed)
     model_cfg, tuned = cfg.model, None
     if cfg.train.full_run:
@@ -106,7 +106,8 @@ def run(cfg: Config) -> None:
         cfg.eval.target,
         window_len=cfg.eval.window_len,
         stride=cfg.eval.stride,
-        heatmaps=make_model().needs_heatmaps,
+        inputs=make_model().input_type,
+        max_points=cfg.eval.max_points,
         relabel=collapse_lying if cfg.eval.collapse_lying else None,
         label_rule=cfg.eval.label_rule,
         max_per_person=cfg.eval.max_windows_per_person,

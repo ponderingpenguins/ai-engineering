@@ -26,7 +26,7 @@ def make_ds(labels, person="Bob", recording="r1", drop=()):
 
 
 def windows(ds, **kwargs):
-    x, y, groups = make_windows(ds, window_len=16, stride=8, heatmaps=False, **kwargs)
+    x, y, groups = make_windows(ds, window_len=16, stride=8, inputs="none", **kwargs)
     return y, groups
 
 
