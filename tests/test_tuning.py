@@ -1,3 +1,4 @@
+from dataclasses import replace
 import numpy as np
 import pytest
 
@@ -5,6 +6,7 @@ from models.baseline import MajorityClass
 from models.model import History
 from utils.splitter import GroupKFoldSplitter
 from utils.trainer import Trainer
+from utils.task import Task
 from utils.tuning import (Tuner, apply_tuned, best_epoch, best_overall, kept_val_loss, load_tuned, median_epoch, save_tuned,
                           validate_grid)
 
@@ -138,10 +140,10 @@ def test_best_overall_breaks_a_tie_by_the_lower_mean_loss():
 
 def test_tuned_setting_round_trips_through_the_yaml_file(tmp_path):
     best = {"setting": {"hidden": 64, "lr": 0.0003}, "epochs": 7, "wins": 3, "of_folds": 4, "mean_val_loss": 0.5}
-    task = {"target": "label_pose", "collapse_lying": True, "window_len": 16, "label_rule": "any_lying"}
+    task = Task(target="label_pose", collapse_lying=True, window_len=16, label_rule="any_lying")
     path = tmp_path / "sub" / "tuned.yaml"
     save_tuned(path, best, "rnn", task)
-    assert load_tuned(path) == {"model": "rnn", "task": task, **best}
+    assert load_tuned(path) == {"model": "rnn", "task": task.to_dict(), **best}
 
 
 def test_loading_a_missing_tuned_file_says_to_tune_first(tmp_path):
@@ -166,7 +168,7 @@ def test_trainer_tunes_each_outer_fold_on_its_training_people_only():
 
 def test_train_final_fits_on_all_windows_and_saves_a_checkpoint(tmp_path):
     x, y, groups = make_data()
-    task = {"target": "label_pose", "collapse_lying": True, "window_len": 16, "label_rule": "any_lying"}
+    task = Task(target="label_pose", collapse_lying=True, window_len=16, label_rule="any_lying")
     info = Trainer(MajorityClass, out_dir=tmp_path, task=task).train_final(x, y)
     assert info["n_windows"] == len(y) and info["checkpoint"] == "final.pt"
     assert (tmp_path / "final.pt").is_file() and (tmp_path / "final.json").is_file()
@@ -183,8 +185,8 @@ def test_report_has_a_tuning_section_with_every_setting(tmp_path):
     assert "{'loss': 0.8}" in report and "**{'loss': 0.3, 'good': True}**" in report  # the winner is bold
 
 
-TASK = {"target": "label_pose", "collapse_lying": True, "window_len": 16, "label_rule": "any_lying"}
-TUNED = {"model": "rnn", "task": TASK, "setting": {"hidden": 64, "epochs": 99}, "epochs": 7}
+TASK = Task(target="label_pose", collapse_lying=True, window_len=16, label_rule="any_lying")
+TUNED = {"model": "rnn", "task": TASK.to_dict(), "setting": {"hidden": 64, "epochs": 99}, "epochs": 7}
 
 
 def test_apply_tuned_sets_the_setting_and_the_tuned_epochs():
@@ -197,7 +199,7 @@ def test_apply_tuned_sets_the_setting_and_the_tuned_epochs():
 def test_apply_tuned_refuses_a_different_task_or_model():
     from utils.config import ModelConfig
     with pytest.raises(ValueError, match="tune again"):
-        apply_tuned(ModelConfig(), TUNED, {**TASK, "window_len": 8})
+        apply_tuned(ModelConfig(), TUNED, replace(TASK, window_len=8))
     with pytest.raises(ValueError, match="tune again"):
         apply_tuned(ModelConfig(name="baseline"), TUNED, TASK)
     with pytest.raises(ValueError, match="unknown hyperparameter"):
@@ -213,7 +215,7 @@ def test_a_pointnet_setting_is_applied_to_the_pointnet_config():
     assert cfg.rnn == ModelConfig().rnn  # the other model's settings are untouched
     assert "width" in hyperparameter_names(cfg) and "hidden" not in hyperparameter_names(cfg)
 
-    tuned = {"model": "pointnet", "task": TASK, "setting": {"width": 64}, "epochs": 5}
+    tuned = {"model": "pointnet", "task": TASK.to_dict(), "setting": {"width": 64}, "epochs": 5}
     applied = apply_tuned(ModelConfig(name="pointnet"), tuned, TASK)
     assert applied.pointnet.width == 64 and applied.pointnet.epochs == 5
     with pytest.raises(ValueError, match="unknown hyperparameter"):  # an RNN setting does not fit PointNet

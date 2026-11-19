@@ -119,6 +119,9 @@ class RNN(TorchClassifier):
 
     model_name = "rnn"
     input_type = "heatmap"
+    preprocessing = "log1p_raw_heatmap_v1"
+    parameter_names = ("hidden", "feat_dim", "dropout", "feature_dropout", "noise", "lr", "weight_decay", "epochs",
+                       "batch_size", "seed", "patience", "evals_per_epoch", "augment")
 
     def __init__(
         self,
@@ -156,9 +159,7 @@ class RNN(TorchClassifier):
                 None or all off means no augmentation.
         """
         super().__init__(lr, weight_decay, epochs, batch_size, seed, patience, evals_per_epoch)
-        self.augment_settings = augment
-        heatmap_augment = HeatmapAugment(**augment) if augment else None
-        self.augment = heatmap_augment if heatmap_augment is not None and heatmap_augment.active else None
+        self._set_augment(augment, HeatmapAugment)
         self.hidden = hidden
         self.feat_dim = feat_dim
         self.dropout = dropout
@@ -173,35 +174,3 @@ class RNN(TorchClassifier):
         encoder = self.net.encoder  # type: ignore[attr-defined]
         encoder.input_mean.fill_(float(x.mean()))
         encoder.input_std.fill_(max(float(x.std()), 1e-6))
-
-    def _checkpoint_state(self) -> dict[str, Any]:
-        """Include normalization buffers along with weights and class names."""
-        if not hasattr(self, "net"):
-            raise ValueError("Train the model before saving it.")
-        return {
-            "parameters": {
-                "hidden": self.hidden, "feat_dim": self.feat_dim, "dropout": self.dropout,
-                "feature_dropout": self.feature_dropout, "noise": self.noise,
-                "lr": self.lr, "weight_decay": self.weight_decay,
-                "epochs": self.epochs, "batch_size": self.batch_size, "seed": self.seed,
-                "patience": self.patience, "evals_per_epoch": self.evals_per_epoch,
-                "augment": self.augment_settings,
-            },
-            "classes": self.classes_.tolist(),
-            "state_dict": self.net.state_dict(),
-            "preprocessing": "log1p_raw_heatmap_v1",
-        }
-
-    @classmethod
-    def _from_checkpoint(cls, checkpoint: dict[str, Any]) -> Self:
-        """Restore the RNN architecture, normalization and learned weights."""
-        if checkpoint.get("preprocessing") != "log1p_raw_heatmap_v1":
-            raise ValueError("Checkpoint preprocessing does not match the current pipeline.")
-        model = cls(**checkpoint["parameters"])
-        model.classes_ = np.asarray(checkpoint["classes"], dtype=str)
-        if len(model.classes_) == 0:
-            raise ValueError("Checkpoint has no class labels.")
-        model.net = HeatmapGRU(len(model.classes_), model.feat_dim, model.hidden, model.dropout, model.feature_dropout, model.noise).to(model.device)
-        model.net.load_state_dict(checkpoint["state_dict"])
-        model.net.eval()
-        return model

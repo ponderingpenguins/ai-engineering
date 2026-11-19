@@ -3,6 +3,8 @@ from typing import Any, Optional
 
 from omegaconf import MISSING
 
+from utils.task import DEFAULT_MAX_POINTS
+
 
 @dataclass
 class DataConfig:
@@ -114,7 +116,7 @@ class EvalConfig:
     target: str = "label_pose"  # label column to predict
     collapse_lying: bool = True  # True: lying occurred vs. not (with any_lying), False: the original pose classes
     window_len: int = 16  # frames per window
-    max_points: int = 128  # radar points kept per window by the point-cloud models (the strongest by SNR)
+    max_points: int = DEFAULT_MAX_POINTS  # radar points kept per window by the point-cloud models (the strongest by SNR)
     label_rule: str = "any_lying"  # "any_lying": predict whether lying occurred within the window; "last": label of its last frame
     stride: int = 8  # frames between window starts
     out_dir: str = "results"  # each run gets its own folder in here

@@ -6,6 +6,8 @@ from typing import Any, Self
 import numpy as np
 import torch
 
+from utils.task import Task
+
 
 @dataclass
 class History:
@@ -34,31 +36,24 @@ class BaseModel(ABC):
     input_type: str = "heatmap"
     model_name: str  # Key used to register this model in models.factory.MODEL_CLASSES.
 
-    def save(self, path: str | Path, evaluation: dict[str, Any]) -> None:
+    def save(self, path: str | Path, task: Task) -> None:
         """Save model state with the task settings used during training.
 
         Subclasses supply tensors and plain values through _checkpoint_state.
         Whole Python model objects are not pickled into the checkpoint.
         """
-        required = {"target", "collapse_lying", "window_len"}
-        if not required <= set(evaluation):
-            raise ValueError(f"Checkpoint evaluation settings require {sorted(required)}")
         checkpoint = {
             **self._checkpoint_state(),
             "format_version": 1,
             "model": self.model_name,
-            # label_rule is optional so checkpoints saved before it existed still load, as "last"
-            # optional keys: checkpoints saved before they existed still load, with the old behaviour
-            "evaluation": {**{key: evaluation[key] for key in required},
-                           "label_rule": evaluation.get("label_rule", "last"),
-                           "max_points": evaluation.get("max_points", 128)},
+            "evaluation": task.to_dict(),
         }
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(checkpoint, path)
 
     @classmethod
-    def load(cls, path: str | Path) -> tuple[Self, dict[str, Any]]:
+    def load(cls, path: str | Path) -> tuple[Self, Task]:
         """Restore a checkpoint and its task settings without training.
 
         BaseModel.load selects the registered subclass automatically. Calling
@@ -67,12 +62,10 @@ class BaseModel(ABC):
         checkpoint = torch.load(path, map_location="cpu", weights_only=True)
         if not isinstance(checkpoint, dict) or checkpoint.get("format_version") != 1:
             raise ValueError("Unsupported model checkpoint format.")
-        evaluation = checkpoint.get("evaluation")
-        required = {"target", "collapse_lying", "window_len"}
-        if not isinstance(evaluation, dict) or not required <= set(evaluation):
-            raise ValueError("Checkpoint is missing evaluation settings.")
-        evaluation.setdefault("label_rule", "last")  # checkpoints from before window label rules existed
-        evaluation.setdefault("max_points", 128)  # and from before point-cloud windows existed
+        try:
+            task = Task.from_dict(checkpoint.get("evaluation"))  # old checkpoints get the old defaults
+        except ValueError as e:
+            raise ValueError("Checkpoint is missing evaluation settings.") from e
 
         model_class = cls
         if cls is BaseModel:
@@ -84,7 +77,7 @@ class BaseModel(ABC):
                 raise ValueError(f"Unknown checkpoint model: {checkpoint.get('model')!r}")
         elif checkpoint.get("model") != cls.model_name:
             raise ValueError(f"Expected a {cls.model_name!r} checkpoint.")
-        return model_class._from_checkpoint(checkpoint), evaluation
+        return model_class._from_checkpoint(checkpoint), task
 
     @abstractmethod
     def _checkpoint_state(self) -> dict[str, Any]:
