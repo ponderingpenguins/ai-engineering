@@ -200,28 +200,35 @@ Two columns of the baked dataset are not in the raw data: they were annotated by
 
 ## Evaluation workflow
 
-Everything is split by person, and there are four known people, so we use nested leave-one-person-out cross-validation.
+Everything is split by person, and there are four known people, so we use nested leave-one-person-out cross-validation. **Run the tuning first, then the full run:** the full run reads the setting the tuning run saved.
+
+```bash
+# 1. Tuning: nested cross-validation over the grid. Writes results/tuned.yaml and the report.
+python main.py 'tune.grid=[{hidden: 64}, {hidden: 128, lr: 0.0003}]'
+
+# 2. Full run: trains one model on all people with the saved setting. Writes results/<run>_final/final.pt.
+python main.py train.full_run=true
+```
+
+What each step does:
 
 1. **Outer loop (testing).** Hold out one person as the test person.
-2. **Inner loop (tuning).** On the remaining people, run leave-one-person-out again: each of them is the validation person once, the others train. Compare hyperparameters on the pooled validation predictions and pick the best settings. Early stopping and the epoch count also come from the inner loop.
-3. **Refit.** Train on all the remaining people with the best settings and score on the test person.
-4. **Report** the outer scores: the per-person table first (lying recall with its support), then the pooled score over all test predictions.
-5. **Final model.** Train on all people with the settings that won most often in the inner loops. There is no validation person for this run, so it uses the median epoch count from the inner loops. It has no held-out score of its own; we assume that more training data does not make it worse than the cross-validated models.
+2. **Inner loop (tuning).** On the remaining people, run leave-one-person-out again: each of them is the validation person once, the others train. Every setting of `tune.grid` is tried this way. The winner is the setting with the lowest mean **class-balanced validation loss** (taken at the weights early stopping kept). The validation macro-F1 is reported next to it but does not decide. The epoch count is the median best epoch of the winner's inner folds.
+3. **Refit.** Train on all the remaining people with the winning setting for that many epochs (no validation person is left, so no early stopping), and score on the test person.
+4. **Report** the outer scores: the per-person table first (lying recall with its support), then the pooled score over all test predictions. `report.md` has a Tuning section with every setting's inner scores for each outer fold.
+5. **Best setting.** The setting that won the most outer folds (ties: lower mean validation loss), with the median of its epoch counts, is written to `tune.best_path` (default `results/tuned.yaml`, a copy goes into the run folder as `tuned.yaml`) together with the model and task it was tuned for.
+6. **Full run** (`train.full_run=true`). Skips cross-validation, trains one model on all people with the saved setting and epoch count, and saves `final.pt` and `final.json` in a `<timestamp>_<model>_final` run folder. It stops with an error if `tuned.yaml` is missing, if `tune.grid` is also set, or if the model or task settings (`eval.target`, `collapse_lying`, `window_len`, `label_rule`) differ from the ones it was tuned with: tune again in that case. The final model has no held-out score of its own; we assume that more training data does not make it worse than the cross-validated models.
 
 The test person is never used to choose settings, so the outer scores are not inflated by tuning.
+
+`tune.grid` is a list of `model.rnn` overrides (`hidden`, `lr`, `weight_decay`, `epochs`, ...). Write a space after each colon (`hidden: 64`, not `hidden:64`), or YAML reads the whole thing as one key; unknown keys are rejected. Tuning is only defined for `model.name=rnn`, and it replaces the single random validation person of `train.validation`. A single-setting grid is a way to choose only the epoch count. Settings not named in the grid keep the values from the config (or the command line) for the tuning run; the full run applies the saved setting on top of the defaults, so pass the same other overrides (such as `train.oversample`) to both steps.
 
 Caveats:
 
 - With 4 people the inner loop validates on one person at a time, who has only a few lying windows (they overlap, see "How windows are labelled"). Tuning is noisy, so keep the search small.
-- The cost is (people - 1) trainings per setting and per outer fold, plus one refit, so 4 x 3 = 12 trainings per setting for 4 people.
+- The cost is (people - 1) trainings per setting and per outer fold, plus one refit, so 4 x 3 = 12 trainings per setting for 4 people. Run it on the PC (`scripts/pc/train.sh`).
 - The outer scores describe the whole procedure (tuning included) on a new person, not the one final model.
-- Steps 1 to 4 are implemented: set `tune.grid` to a list of `model.rnn` overrides. Step 5 (the final model) is not implemented yet.
-
-```
-python main.py 'tune.grid=[{hidden: 64}, {hidden: 128, lr: 0.0003}]'
-```
-
-Write a space after each colon (`hidden: 64`, not `hidden:64`), or YAML reads the whole thing as one key; unknown keys are rejected. Tuning is only defined for `model.name=rnn`, and it replaces the single random validation person of `train.validation`. Each outer fold's result in `results.json` has a `tuning` entry with every setting's inner scores, per-person best epochs and the winner. A single-setting grid is a way to choose only the epoch count.
+- The setting chosen for the final model comes from folds that each saw different people, so it is a vote, not a score.
 
 Recordings from sensor configs other than Config 4, and recordings without a known participant, are dropped
 by the preprocessing pipeline (`data.preprocess` in the config) before windowing.

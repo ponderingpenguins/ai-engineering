@@ -27,10 +27,15 @@ def _settings(results: dict[str, Any]) -> list[str]:
     model, evaluation = config.get("model", {}), config.get("eval", {})
     timing = config.get("window_timing")
     validation = (config.get("train") or {}).get("validation", True)
+    tuned = "tuned" in results
     lines = [f"- Model: `{model.get('name', 'unknown')}`."]
     if model.get("name") == "rnn":
         rnn = model.get("rnn", {})
-        if validation:
+        if tuned:
+            lines.append(f"- Training: each fold is refit on all its training people for the epoch count chosen by tuning "
+                         f"(see Tuning), batch {rnn.get('batch_size')}, seed {rnn.get('seed')}; no validation data and no early "
+                         "stopping in the refit. The other settings are the tuned setting on top of the defaults below.")
+        elif validation:
             lines.append(f"- Training: up to {rnn.get('epochs')} epochs, batch {rnn.get('batch_size')}, lr {rnn.get('lr')}; "
                          f"early stopping on validation loss with patience {rnn.get('patience')} "
                          f"(validation loss evaluated {rnn.get('evals_per_epoch')}x per epoch).")
@@ -41,7 +46,8 @@ def _settings(results: dict[str, Any]) -> list[str]:
     folds = evaluation.get("folds")
     lines.append(f"- Cross-validation: {len(results['folds'])} folds, "
                  f"{'one fold per person' if folds is None else 'stratified, people kept together'}; seed {evaluation.get('seed')}. "
-                 + ("Each fold also holds out one training person for validation." if validation
+                 + ("Each fold tunes on its training people with an inner leave-one-person-out loop, then refits on all of them."
+                    if tuned else "Each fold also holds out one training person for validation." if validation
                     else "Every fold trains on all its training people."))
     if evaluation:
         window = f"{evaluation.get('window_len')} frames"
@@ -50,6 +56,34 @@ def _settings(results: dict[str, Any]) -> list[str]:
                        f"{timing['stride_s']:.1f} s)")
         lines.append(f"- Windows: {window}; label rule `{evaluation.get('label_rule')}`. "
                      "With `any_lying` a positive window means lying occurred somewhere within it.")
+    return lines
+
+
+def _tuning(results: dict[str, Any]) -> list[str]:
+    """The Tuning section: the chosen setting, then every setting's inner scores for each outer fold."""
+    best = results["tuned"]
+    lines = ["## Tuning", "",
+             "Settings are compared by the mean class-balanced validation loss over the inner folds (lower is better), "
+             "measured at the weights early stopping kept. Validation macro F1 is shown for information only. "
+             "The test person of the outer fold is never used.", "",
+             f"**Chosen for the final model:** `{best['setting']}` for {best['epochs']} epochs. It won {best['wins']} of "
+             f"{best['of_folds']} outer folds with mean validation loss {_fmt(best['mean_val_loss'])}. "
+             "Saved to `tuned.yaml`; a full run (`train.full_run=true`) reads it.", ""]
+    for fold in results["folds"]:
+        tuning = fold.get("tuning")
+        if not tuning:
+            continue
+        lines += [f"### Fold {fold['fold']}: test {'+'.join(fold['test_groups'])}", ""]
+        rows = []
+        for candidate in tuning["candidates"]:
+            won = candidate["setting"] == tuning["setting"]
+            inner = ", ".join(f"{f['val_group']}: {_fmt(f['val_loss'])}" for f in candidate["folds"])
+            epochs = ", ".join(str(f["best_epoch"]) for f in candidate["folds"])
+            rows.append([("**" + str(candidate["setting"]) + "**") if won else str(candidate["setting"]),
+                         _fmt(candidate["score"]), inner, _fmt(candidate["macro_f1"]), epochs, str(candidate["epochs"]),
+                         "yes" if won else ""])
+        lines += _table(["Setting", "Val loss", "Loss per validation person", "Val macro F1", "Best epochs", "Epochs used", "Chosen"],
+                        rows)
     return lines
 
 
@@ -68,6 +102,9 @@ def write_report(results: dict[str, Any], out_dir: Path) -> Path:
     lines += _table(["Class", "Precision", "Recall", "F1", "Support"],
                     [[c, _fmt(r["precision"]), _fmt(r["recall"]), _fmt(r["f1"]), str(r["support"])]
                      for c, r in pooled["per_class"].items()])
+
+    if "tuned" in results:
+        lines += _tuning(results)
 
     lines += ["## Per fold", "", "N/A means undefined, e.g. the class has no windows in that fold.", ""]
     header = ["Fold", "Test", "Val", "Test windows", "Accuracy", "Macro F1", *[f"Recall {c}" for c in classes],

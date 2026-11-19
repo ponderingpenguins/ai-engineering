@@ -16,7 +16,7 @@ from models.model import BaseModel
 from utils.metrics import accuracy, macro_f1, per_class, scores
 from utils.run_report import write_report
 from utils.splitter import GroupKFoldSplitter, validation_split
-from utils.tuning import Tuner
+from utils.tuning import Tuner, best_overall
 
 logger = logging.getLogger(__name__)
 
@@ -137,10 +137,37 @@ class Trainer:
             logger.info("  person %-10s n=%d %s", person, row["n"], {key: value for key, value in row.items() if key.endswith(("_recall", "_support"))})
 
         results = {"config": self.config, "folds": fold_results, "pooled": pooled, "per_person": per_person}
+        if self.tuner is not None:  # the setting to use for the final model, see utils.tuning.best_overall
+            results["tuned"] = best_overall([fold["tuning"] for fold in fold_results])
+            logger.info("tuned: %s", results["tuned"])
         if collect_predictions:
             results["predictions"] = predictions
         self._save(results)
         return results
+
+    def train_final(self, x: np.ndarray, y: np.ndarray) -> dict[str, Any]:
+        """Trains one model on all windows, with no validation and no held-out score.
+
+        The model comes from `make_model`, which should already carry the tuned setting and epoch count.
+        The result is saved as `final.pt` and `final.json` in `out_dir`, when it and `task` are set.
+        """
+        idx = np.arange(len(y)) if self.resampler is None else self.resampler.indices(y)
+        model = self.make_model()
+        started = perf_counter()
+        history = model.fit(x[idx], y[idx])
+        train_seconds = perf_counter() - started
+        info = {"config": self.config, "n_windows": len(y), "n_train_after_resampling": len(idx),
+                "train_classes": dict(Counter(y[idx].tolist())), "train_seconds": train_seconds,
+                "history": None if history is None else history.to_dict(), "checkpoint": None}
+        if self.out_dir is not None:
+            self.out_dir.mkdir(parents=True, exist_ok=True)
+            if self.task is not None:
+                model.save(self.out_dir / "final.pt", evaluation=self.task)
+                info["checkpoint"] = "final.pt"
+            (self.out_dir / "final.json").write_text(json.dumps(info, indent=2))
+        logger.info("final model trained on %d windows in %.1f s; checkpoint %s", len(idx), train_seconds,
+                    info["checkpoint"])
+        return info
 
     def _save_checkpoint(self, model: BaseModel, fold: int, held_out: np.ndarray) -> str | None:
         """Saves the fold's trained model (its best weights) under `out_dir/checkpoints`.

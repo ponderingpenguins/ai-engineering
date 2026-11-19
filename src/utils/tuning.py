@@ -1,22 +1,30 @@
 """Hyperparameter tuning inside one training fold: the inner loop of nested cross-validation.
 
 For an outer fold, every setting of the grid is trained with leave-one-person-out over the fold's training
-people (the outer test person is never in it). The setting with the best pooled validation macro-F1 wins,
-and the epoch count is the median best epoch of its inner folds. The caller then refits on all the training
-people with `Tuner.build`, which has no validation person left and so trains for exactly that many epochs.
+people (the outer test person is never in it). The setting with the lowest mean class-balanced validation
+loss (at the weights early stopping kept) wins, and the epoch count is the median best epoch of its inner
+folds. The caller then refits on all the training people with `Tuner.build`, which has no validation person
+left and so trains for exactly that many epochs.
+
+Across the outer folds, `best_overall` picks the setting to use for the final model, and `save_tuned` /
+`load_tuned` hand it to a later full run.
 """
 
+import json
 import logging
 import math
 from collections import Counter
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, replace
+from pathlib import Path
 from typing import Any
 
 import numpy as np
+from omegaconf import OmegaConf
 
 from data.resample import RandomOversampler
 from models.model import BaseModel, History
+from utils.config import ModelConfig, RNNConfig
 from utils.metrics import macro_f1
 from utils.splitter import inner_splits
 
@@ -47,6 +55,15 @@ def best_epoch(history: History | None) -> int | None:
     return None if step is None else math.ceil(step / history.steps_per_epoch)
 
 
+def kept_val_loss(history: History | None) -> float | None:
+    """The validation loss at the weights that were kept (the lowest one if no step was marked)."""
+    if history is None or not history.val_loss:
+        return None
+    if history.best_step in history.val_steps:
+        return history.val_loss[history.val_steps.index(history.best_step)]
+    return min(history.val_loss)
+
+
 def median_epoch(epochs: Sequence[int]) -> int:
     """The median of the best epochs, rounded up, and at least 1."""
     return max(1, math.ceil(float(np.median(epochs))))
@@ -58,7 +75,7 @@ class Tuning:
 
     setting: Setting  # the winning setting
     epochs: int  # median best epoch of the winner's inner folds
-    score: float | None  # the winner's pooled validation macro-F1
+    score: float  # the winner's mean class-balanced validation loss over its inner folds (lower is better)
     candidates: list[dict[str, Any]] = field(default_factory=list)  # every setting with its inner results
 
     def to_dict(self) -> dict[str, Any]:
@@ -83,40 +100,44 @@ class Tuner:
         Args:
             x, y, groups: All windows, their labels and their people.
             train: Indices of the outer training fold. The outer test person must not be in it.
-            classes: The fixed class set the validation macro-F1 is scored against.
+            classes: The fixed class set the (informational) validation macro-F1 is scored against.
 
         Returns:
-            The winning setting, its epoch count and every candidate's inner results. Ties go to the
-            earlier setting in the grid. A setting whose macro-F1 is undefined ranks last.
+            The winning setting, its epoch count and every candidate's inner results. The winner has the
+            lowest mean validation loss; ties go to the earlier setting in the grid.
+
+        Raises:
+            ValueError: If the model reports no validation loss or no best epoch.
         """
         inner = inner_splits(train, groups)
         candidates = []
         for number, setting in enumerate(self.grid, start=1):
-            true, pred, folds, epochs = [], [], [], []
+            true, pred, folds, epochs, losses = [], [], [], [], []
             for fit_idx, val_idx in inner:
                 if self.resampler is not None:
                     fit_idx = fit_idx[self.resampler.indices(y[fit_idx])]
                 model = self.make_model(setting)
                 history = model.fit(x[fit_idx], y[fit_idx], val=(x[val_idx], y[val_idx]))
                 predicted = model.predict(x[val_idx])
-                epoch = best_epoch(history)
-                person = str(groups[val_idx][0])
-                folds.append({"val_group": person, "best_epoch": epoch,
+                epoch, loss = best_epoch(history), kept_val_loss(history)
+                if loss is None:
+                    raise ValueError("the model reports no validation loss, so settings cannot be compared")
+                folds.append({"val_group": str(groups[val_idx][0]), "best_epoch": epoch, "val_loss": loss,
                               "macro_f1": macro_f1(y[val_idx], predicted, classes)})
+                losses.append(loss)
                 true.append(y[val_idx])
                 pred.append(predicted)
                 if epoch is not None:
                     epochs.append(epoch)
             if not epochs:
                 raise ValueError("the model reports no best epoch, so no epoch count can be chosen")
-            score = macro_f1(np.concatenate(true), np.concatenate(pred), classes)
+            score, f1 = float(np.mean(losses)), macro_f1(np.concatenate(true), np.concatenate(pred), classes)
             candidates.append({"setting": setting, "score": score, "epochs": median_epoch(epochs), "folds": folds,
-                               "predicted_classes": dict(Counter(np.concatenate(pred).tolist()))})
-            logger.info("tune %d/%d %s: val macro_f1=%s, best epochs %s", number, len(self.grid), setting,
-                        "N/A" if score is None else f"{score:.3f}", epochs)
+                               "macro_f1": f1, "predicted_classes": dict(Counter(np.concatenate(pred).tolist()))})
+            logger.info("tune %d/%d %s: val loss %.4f (macro_f1 %s), best epochs %s", number, len(self.grid), setting,
+                        score, "N/A" if f1 is None else f"{f1:.3f}", epochs)
 
-        winner = max(range(len(candidates)), key=lambda i: -math.inf if candidates[i]["score"] is None
-                     else candidates[i]["score"])  # max keeps the first of equal scores
+        winner = min(range(len(candidates)), key=lambda i: candidates[i]["score"])  # min keeps the first tie
         best = candidates[winner]
         logger.info("tune: best setting %s, %d epochs", best["setting"], best["epochs"])
         return Tuning(best["setting"], best["epochs"], best["score"], candidates)
@@ -124,3 +145,49 @@ class Tuner:
     def build(self, tuning: Tuning) -> BaseModel:
         """A fresh model with the winning setting, set to train for the chosen number of epochs."""
         return self.make_model({**tuning.setting, "epochs": tuning.epochs})
+
+
+def best_overall(tunings: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    """The setting to use for the final model, from the `Tuning.to_dict()` of every outer fold.
+
+    The setting that won the most outer folds. Ties go to the lower mean validation loss of its wins. Its
+    epoch count is the median of the epochs it won with.
+    """
+    wins: dict[str, list[dict[str, Any]]] = {}
+    for tuning in tunings:
+        wins.setdefault(json.dumps(tuning["setting"], sort_keys=True), []).append(tuning)
+    key = min(wins, key=lambda k: (-len(wins[k]), float(np.mean([t["score"] for t in wins[k]]))))
+    won = wins[key]
+    return {"setting": won[0]["setting"], "epochs": median_epoch([t["epochs"] for t in won]),
+            "wins": len(won), "of_folds": len(tunings), "mean_val_loss": float(np.mean([t["score"] for t in won]))}
+
+
+def save_tuned(path: Path, best: dict[str, Any], model: str, task: dict[str, Any]) -> None:
+    """Writes the chosen setting to a YAML file, with the model and task it was tuned for."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    OmegaConf.save(OmegaConf.create({"model": model, "task": task, **best}), path)
+
+
+def apply_tuned(model_cfg: ModelConfig, tuned: dict[str, Any], task: dict[str, Any]) -> ModelConfig:
+    """The model config with a tuned setting and epoch count applied, for the full run.
+
+    Raises:
+        ValueError: If the setting was tuned for a different model or task than the current run, or names
+            a hyperparameter the model does not have.
+    """
+    if tuned.get("model") != model_cfg.name or tuned.get("task") != task:
+        raise ValueError(f"the tuned config is for model {tuned.get('model')!r} and task {tuned.get('task')}, "
+                         f"but this run is {model_cfg.name!r} with {task}; tune again")
+    validate_grid([tuned["setting"]], [f.name for f in fields(RNNConfig)])
+    return replace(model_cfg, rnn=replace(model_cfg.rnn, **{**tuned["setting"], "epochs": tuned["epochs"]}))
+
+
+def load_tuned(path: Path) -> dict[str, Any]:
+    """Reads a file written by `save_tuned`.
+
+    Raises:
+        FileNotFoundError: If the file does not exist, with a hint to run the tuning first.
+    """
+    if not path.is_file():
+        raise FileNotFoundError(f"no tuned config at {path}; run the tuning first (set tune.grid)")
+    return OmegaConf.to_container(OmegaConf.load(path), resolve=True)  # type: ignore[return-value]
