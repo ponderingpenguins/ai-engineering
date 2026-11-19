@@ -11,6 +11,8 @@ class DataConfig:
     baked: str = "data/processed/floor_posture"  # baked HF dataset (gitignored)
     # extra preprocessors run in order on the loaded frames, see data/preprocess.py (unknown persons are always dropped first)
     preprocess: list[str] = field(default_factory=lambda: ["config_4"])
+    # recordings left out of training and testing: the camera in these does not look top down
+    exclude: list[str] = field(default_factory=lambda: ["2311__20231124_152926", "2311__20231124_153817"])
 
 
 @dataclass

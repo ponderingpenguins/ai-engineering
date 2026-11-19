@@ -68,6 +68,22 @@ class DropUnknownPerson(RowFilter):
         return meta.person != NO_PERSON
 
 
+class DropRecordings(RowFilter):
+    """Drops the named recordings, for example ones that do not have the usual top-down camera view."""
+
+    name = "exclude_recordings"
+    columns = ("recording",)
+
+    def __init__(self, recordings: Sequence[str]) -> None:
+        self.recordings = set(recordings)
+
+    def keep(self, meta):
+        missing = self.recordings - set(meta.recording)
+        if missing:
+            logger.warning("data.exclude names recordings that are not in the dataset: %s", sorted(missing))
+        return ~meta.recording.isin(self.recordings)
+
+
 def _as_2d(heatmap) -> np.ndarray:
     """A heatmap as a float32 2-D array; the empty heatmap (`[]`) of a bad frame becomes shape (0, 0)."""
     a = np.asarray(heatmap, dtype=np.float32)
@@ -192,11 +208,12 @@ class Pipeline:
         return ds
 
 
-def build_pipeline(names: Sequence[str]) -> Pipeline:
-    """A pipeline that first drops unknown persons, then runs the named preprocessors in the given order.
+def build_pipeline(names: Sequence[str], exclude: Sequence[str] = ()) -> Pipeline:
+    """A pipeline that first drops unknown persons and the `exclude` recordings, then runs the named preprocessors.
 
     Dropping recordings without a known person is not optional: they would all share one pseudo-person in the
-    person-level splits. `known_person` in `names` is accepted and ignored.
+    person-level splits. `known_person` in `names` is accepted and ignored. The `exclude` recordings are dropped
+    from training and testing alike.
 
     Raises:
         ValueError: If a name is not in `PREPROCESSORS`.
@@ -204,5 +221,8 @@ def build_pipeline(names: Sequence[str]) -> Pipeline:
     unknown = [name for name in names if name not in PREPROCESSORS]
     if unknown:
         raise ValueError(f"unknown preprocessor {unknown}, choose from {list(PREPROCESSORS)}")
-    steps = [DropUnknownPerson()] + [PREPROCESSORS[name]() for name in names if name != DropUnknownPerson.name]
+    steps: list[Preprocessor] = [DropUnknownPerson()]
+    if exclude:
+        steps.append(DropRecordings(exclude))
+    steps += [PREPROCESSORS[name]() for name in names if name != DropUnknownPerson.name]
     return Pipeline(steps)

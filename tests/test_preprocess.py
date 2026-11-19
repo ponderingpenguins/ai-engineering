@@ -6,6 +6,7 @@ from datasets import Dataset
 from data.extract import NO_PERSON
 from data.preprocess import (
     CONFIG_4,
+    DropRecordings,
     DropUnknownPerson,
     KeepConfig4,
     RangeNormalise,
@@ -46,6 +47,24 @@ def test_empty_pipeline_only_drops_unknown_persons(ds):
 def test_unknown_step_name_raises():
     with pytest.raises(ValueError, match="unknown preprocessor"):
         build_pipeline(["nope"])
+
+
+def test_named_recordings_are_dropped_from_the_pipeline(ds):
+    assert DropRecordings(["r1", "r4"])(ds)["recording"] == ["r2", "r3"]
+    out = build_pipeline(["config_4"], exclude=["r1"])(ds)
+    assert out["recording"] == ["r4"]  # r2 has no person, r3 is Config 3, r1 is excluded
+    assert build_pipeline([], exclude=[])(ds)["recording"] == ["r1", "r3", "r4"]  # nothing excluded by default
+
+
+def test_excluding_a_recording_that_does_not_exist_warns(ds, caplog):
+    with caplog.at_level("WARNING"):
+        out = DropRecordings(["no_such_recording"])(ds)
+    assert out["recording"] == ds["recording"]
+    assert "no_such_recording" in caplog.text
+
+
+def test_the_default_config_excludes_the_two_non_top_down_recordings():
+    assert DataConfig().exclude == ["2311__20231124_152926", "2311__20231124_153817"]
 
 
 def test_unknown_persons_are_dropped_even_if_not_requested(ds):

@@ -87,7 +87,7 @@ def run(cfg: Config, root: Path) -> RunResults | FinalResult:
     path = root / cfg.data.baked  # absolute paths pass through unchanged
     if not path.is_dir():
         raise ValueError(f"No baked dataset at {path}.\nBuild it with: python -m data.extract")
-    ds = build_pipeline(cfg.data.preprocess)(cast(Dataset, load_from_disk(str(path))))
+    ds = build_pipeline(cfg.data.preprocess, cfg.data.exclude)(cast(Dataset, load_from_disk(str(path))))
 
     task = Task.from_eval(cfg.eval)
     resampler = None if cfg.train.oversample is None else RandomOversampler(cfg.train.oversample, cfg.eval.seed)

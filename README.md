@@ -32,6 +32,7 @@ Defaults are in `config/config.yaml`. Command-line `key=value` pairs override th
 | `model.name` | `rnn` | `rnn` (CNN + GRU on heatmaps), `pointnet` (on radar points) or `baseline` (most common label). Hyperparameters are under `model.<name>.*`. |
 | `data.baked` | `data/processed/floor_posture` | Baked dataset folder. |
 | `data.preprocess` | `[config_4]` | Extra frame filters. Recordings without a known person are always dropped. |
+| `data.exclude` | two recordings | Recordings left out of training and testing. The default drops `2311__20231124_152926` and `2311__20231124_153817`, where the camera does not look top down. |
 | `eval.folds` | `null` | `null`: one fold per person. An integer `k`: stratified k-fold over people. |
 | `eval.window_len` / `eval.stride` | `16` / `8` | Frames per window and step. A frame is about 0.2 s. |
 | `eval.label_rule` | `any_lying` | `any_lying`: lying occurred in the window. `last`: label of the last frame. |

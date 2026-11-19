@@ -144,3 +144,12 @@ def test_run_limits_the_windows_per_person(tmp_path):
     tiny_dataset(tmp_path / "baked")
     results = run(make_cfg(tmp_path, max_windows_per_person=2), tmp_path)
     assert results.pooled.n == 4 * 2
+
+
+def test_run_leaves_out_the_excluded_recordings(tmp_path):
+    tiny_dataset(tmp_path / "baked")
+    cfg = make_cfg(tmp_path)
+    cfg.data.exclude = ["rec_Bob"]
+    results = run(cfg, tmp_path)
+    assert len(results.folds) == 3  # one fold per remaining person
+    assert all("Bob" not in fold.test_groups for fold in results.folds)

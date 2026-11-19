@@ -9,7 +9,7 @@ Frames are cut into windows of `eval.window_len` frames (about 0.2 s each, measu
 - **`any_lying` (default):** the classifier predicts whether lying **occurred** within the window's 3.2 s. A window is labelled lying if at least one of its frames is lying, and not lying if none is. If the window has several lying frames, the last one decides between `lying_left` and `lying_right` (when `eval.collapse_lying=false`).
 - **`last`:** a window takes the label of its last frame.
 
-Why `any_lying`: in the labelled data, lying is annotated in short runs of 1 to 5 frames (0.2 to 1 s), scattered through recordings that last about 6 minutes. With `last`, a window is only positive when it happens to end on one of those frames: with 16-frame windows and stride 8, that kept 7 lying windows out of 1450. Requiring most of the window to be lying (majority) kept none. With `any_lying`, the same data gives 37 lying windows, and each person has some.
+Why `any_lying`: in the labelled data, lying is annotated in short runs of 1 to 5 frames (0.2 to 1 s), scattered through recordings that last about 6 minutes. With `last`, a window is only positive when it happens to end on one of those frames: with 16-frame windows and stride 8, that kept 7 lying windows out of 1268. Requiring most of the window to be lying (majority) kept none. With `any_lying`, the same data gives 37 lying windows, and each person has some.
 
 Consequences to keep in mind when reading scores:
 
