@@ -151,20 +151,27 @@ Two columns of the baked dataset are not in the raw data: they were annotated by
 - **`person`** is one value per recording. The notebook shows the best face crops of each recording and you pick a name from a fixed list of pseudonyms. Unlabelled recordings always stay in the train set of the person-wise split.
 - **`person_present`** is stored as `enter` and `leave` events on frame indices. A person is present from each `enter` until the next `leave` (or the end of the recording), so a recording that starts with someone already in view needs an `enter` on frame 0. Recordings without any events get `None`, not `False`, so filter on `person_present.notna()` before training on it. This is separate from the raw `label_presence` track, which is not reliable (it is `False` wherever it exists).
 
-## Comparing models
+## Evaluation workflow
 
-```bash
-python -m utils.compare 'checkpoints=["results/rnn.pt"]'
-python -m utils.compare 'checkpoints=["results/rnn_a.pt","results/rnn_b.pt"]'
-python -m utils.compare  # baseline only
-```
+Everything is split by person, and there are four known people, so we use nested leave-one-person-out cross-validation.
 
-Loads saved models and evaluates them on the prepared test partition. The majority-class
-baseline is always included. No models are trained.
+1. **Outer loop (testing).** Hold out one person as the test person.
+2. **Inner loop (tuning).** On the remaining people, run leave-one-person-out again: each of them is the validation person once, the others train. Compare hyperparameters on the pooled validation predictions and pick the best settings. Early stopping and the epoch count also come from the inner loop.
+3. **Refit.** Train on all the remaining people with the best settings and score on the test person.
+4. **Report** the outer scores: the per-person table first (lying recall with its support), then the pooled score over all test predictions.
+5. **Final model.** Train on all people with the settings that won most often in the inner loops. There is no validation person for this run, so it uses the median epoch count from the inner loops. It has no held-out score of its own; we assume that more training data does not make it worse than the cross-validated models.
 
-Test set defaults to `data/processed/floor_posture_person_split`; override it with `partitions=/path/to/split`.
+The test person is never used to choose settings, so the outer scores are not inflated by tuning.
+
+Caveats:
+
+- With 4 people the inner loop validates on one person at a time, who has only a few lying windows (they overlap, see "How windows are labelled"). Tuning is noisy, so keep the search small.
+- The cost is (people - 1) trainings per setting and per outer fold, plus one refit, so 4 x 3 = 12 trainings per setting for 4 people.
+- The outer scores describe the whole procedure (tuning included) on a new person, not the one final model.
+- The nested loop is not implemented yet: `main.py` currently runs only the outer loop, with no tuning.
+
 Recordings from sensor configs other than Config 4, and recordings without a known participant, are dropped
-by the preprocessing pipeline (`data.preprocess` in the config) before windowing, in both training and comparison.
+by the preprocessing pipeline (`data.preprocess` in the config) before windowing.
 
 After training a model, save it with the task settings used for that run:
 
