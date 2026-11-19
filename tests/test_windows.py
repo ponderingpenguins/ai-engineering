@@ -87,3 +87,25 @@ def test_window_timing_in_seconds(blip):
 def test_window_timing_ignores_long_gaps():
     ds = make_ds(["standing"] * 40, drop=range(10, 30))  # a 4 s hole in the recording
     assert window_timing(ds, 16, 8)["frame_period_s"] == pytest.approx(PERIOD)
+
+
+def test_limit_per_group_keeps_rare_windows_and_caps_every_person():
+    from data.windows import limit_per_group
+
+    groups = np.array(["a"] * 20 + ["b"] * 20 + ["c"] * 3)
+    y = np.array((["lying"] * 2 + ["not_lying"] * 18) + ["not_lying"] * 20 + ["not_lying"] * 3)
+    keep = limit_per_group(y, groups, 5, seed=1)
+    assert (np.diff(keep) > 0).all()  # sorted, no repeats
+    for g, expected in (("a", 5), ("b", 5), ("c", 3)):
+        assert (groups[keep] == g).sum() == expected
+    assert (y[keep][groups[keep] == "a"] == "lying").sum() == 2  # both lying windows survive
+    assert np.array_equal(keep, limit_per_group(y, groups, 5, seed=1))  # seeded
+    assert len(limit_per_group(y, groups, 100)) == len(y)  # a big limit keeps everything
+
+
+def test_make_windows_can_limit_windows_per_person():
+    labels = ["standing"] * 80
+    y_all, g_all = windows(make_ds(labels))
+    assert len(y_all) > 3
+    x, y, groups = make_windows(make_ds(labels), window_len=16, stride=8, heatmaps=False, max_per_person=3)
+    assert len(x) == len(y) == len(groups) == 3

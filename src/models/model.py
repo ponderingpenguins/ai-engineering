@@ -1,9 +1,31 @@
 from abc import ABC, abstractmethod
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Self
 
 import numpy as np
 import torch
+
+
+@dataclass
+class History:
+    """Losses recorded while training one model.
+
+    The train loss is recorded at every optimiser step, the validation loss only every few steps.
+    Both are class-weighted cross-entropy, so they are on the same scale.
+    """
+
+    steps_per_epoch: int
+    train_steps: list[int] = field(default_factory=list)
+    train_loss: list[float] = field(default_factory=list)
+    val_steps: list[int] = field(default_factory=list)
+    val_loss: list[float] = field(default_factory=list)
+    best_step: int | None = None  # step of the lowest validation loss; its weights are the ones kept
+    stopped_early: bool = False  # True if patience ran out before the last epoch
+
+    def to_dict(self) -> dict[str, Any]:
+        """Plain lists and numbers, ready for JSON."""
+        return asdict(self)
 
 
 class BaseModel(ABC):
@@ -71,13 +93,21 @@ class BaseModel(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def fit(self, x: np.ndarray, y:np.ndarray, val:tuple[np.ndarray, np.ndarray] | None = None) -> None:
+    def fit(self, x: np.ndarray, y: np.ndarray, val: tuple[np.ndarray, np.ndarray] | None = None,
+            val_weight_labels: np.ndarray | None = None) -> History | None:
         """Trains the model from scratch.
 
         Args:
             x: Training windows.
             y: Training labels, shape (N,).
-            val: Optional (x, y) used to choose the best epoch. Must not contain test data.
+            val: Optional (x, y) used for early stopping and to choose the best weights.
+                Must not contain test data.
+            val_weight_labels: Optional labels whose class frequencies weight the validation loss. Pass the
+                pooled labels of many people so validation losses of different people are comparable. Default:
+                the labels of `val` itself.
+
+        Returns:
+            The recorded losses, or None for models that do not train iteratively.
         """
         pass
 

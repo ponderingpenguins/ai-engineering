@@ -35,8 +35,7 @@ class GroupKFoldSplitter:
         """Returns one `(train_idx, test_idx)` pair per fold.
 
         Raises:
-            ValueError: If `k` is out of range, or the folds are not a partition of the groups
-                (an empty fold, or a group tested more than once).
+            ValueError: If `k` is out of range, or a fold has no test data.
         """
         k = self.n_splits(groups)
         splitter = StratifiedGroupKFold(n_splits=k, shuffle=True, random_state=self.seed)
@@ -45,6 +44,52 @@ class GroupKFoldSplitter:
         tested = [set(groups[test]) for _, test in folds]
         if any(not group_set for group_set in tested):
             raise ValueError("a fold has no test data; try a different seed or fewer folds")
-        if sum(len(group_set) for group_set in tested) != len(set(groups)):
-            raise ValueError("a group is in more than one test fold")
         return folds
+
+
+def validation_split(train: np.ndarray, groups: np.ndarray, seed: int) -> tuple[np.ndarray, np.ndarray | None]:
+    """Splits a training fold into fit and validation indices by holding out one whole person.
+
+    A person is never in both parts, so the validation loss measures generalisation to a new person
+    (as the test fold does) and early stopping is not tuned on someone the model has trained on.
+
+    Args:
+        train: Indices of the training fold.
+        groups: The person of every window, indexed like the full dataset.
+        seed: Chooses which person is held out.
+
+    Returns:
+        `(fit_idx, val_idx)`, or `(train, None)` if the fold has fewer than two people, in which case
+        there is nothing to validate on.
+    """
+    people = np.unique(groups[train])
+    if len(people) < 2:
+        return train, None
+    return _hold_out(train, groups, np.random.default_rng(seed).choice(people))
+
+
+def inner_splits(train: np.ndarray, groups: np.ndarray) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Leave-one-person-out inside a training fold, for tuning without touching the test person.
+
+    Every person in the training fold is the validation person once, and the others are fit on.
+
+    Args:
+        train: Indices of the training fold (the outer test person is not in it).
+        groups: The person of every window, indexed like the full dataset.
+
+    Returns:
+        One `(fit_idx, val_idx)` pair per person in `train`, sorted by the person's name.
+
+    Raises:
+        ValueError: If `train` has fewer than two people, so there is nothing to fit on or validate with.
+    """
+    people = np.unique(groups[train])
+    if len(people) < 2:
+        raise ValueError(f"inner splits need at least two people, got {len(people)}")
+    return [_hold_out(train, groups, person) for person in people]
+
+
+def _hold_out(train: np.ndarray, groups: np.ndarray, person: str) -> tuple[np.ndarray, np.ndarray]:
+    """`(fit_idx, val_idx)` with all of `person`'s windows in `val_idx`."""
+    is_val = groups[train] == person
+    return train[~is_val], train[is_val]

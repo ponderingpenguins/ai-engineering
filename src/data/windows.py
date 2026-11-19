@@ -4,6 +4,8 @@ import numpy as np
 import pandas as pd
 from datasets import Dataset
 
+from data.extract import NO_PERSON
+
 # Every labelled recording is Config_4: 256 range bins x 16 Doppler bins (see data/preprocess.py, which drops
 # the other sensor configs).
 HEATMAP_SHAPE = (256, 16)  # (range_bins, doppler_bins)
@@ -39,6 +41,29 @@ def window_timing(ds: Dataset, window_len: int, stride: int) -> dict[str, float]
     return {"frame_period_s": period, "window_s": window_len * period, "stride_s": stride * period}
 
 
+def limit_per_group(y: np.ndarray, groups: np.ndarray, n: int, seed: int = 0) -> np.ndarray:
+    """Indices of at most `n` windows per group, for quick test runs.
+
+    Every group keeps its windows of the rarer classes first (they are what makes a run meaningful) and
+    fills up with random windows of the most common class. If the rarer classes alone exceed `n`, a random
+    `n` of all of the group's windows are kept. The result is sorted, so the window order is unchanged.
+    """
+    rng = np.random.default_rng(seed)
+    keep = []
+    for group in np.unique(groups):
+        idx = np.flatnonzero(groups == group)
+        if len(idx) > n:
+            labels, counts = np.unique(y[idx], return_counts=True)
+            rare = idx[y[idx] != labels[counts.argmax()]]
+            common = idx[y[idx] == labels[counts.argmax()]]
+            if len(rare) >= n:
+                idx = rng.choice(idx, n, replace=False)
+            else:
+                idx = np.concatenate([rare, rng.choice(common, n - len(rare), replace=False)])
+        keep.append(idx)
+    return np.sort(np.concatenate(keep)) if keep else np.zeros(0, dtype=int)
+
+
 def _prep(h, shape: tuple[int, int]) -> np.ndarray:
     """Make sure the shapes match"""
     a = np.log1p(np.asarray(h, dtype=np.float32))
@@ -55,17 +80,17 @@ def make_windows(
     shape: tuple[int, int] = HEATMAP_SHAPE,
     heatmaps: bool = True,
     relabel: Callable[[np.ndarray], np.ndarray] | None = None,
-    return_metadata: bool = False,
     label_rule: str = "last",
+    max_per_person: int | None = None,
+    seed: int = 0,
 ) -> tuple:
     """Cut each recording into windows of `window_len` frames.
 
     Returns x (N, window_len, 1, *shape), y (N,) and groups (N,). A window's label comes from its
-    frames' labels by `label_rule` (see LABEL_RULES; "last" is the last frame's label). The group is the person (the windows of one group must not be split between train and
-    test). Run the preprocessing pipeline first to drop recordings without a known person.
-
-    With return_metadata=True, also returns one metadata dict per window, including
-    ordered original frame IDs and capture timestamps for investigating predictions.
+    frames' labels by `label_rule` (see LABEL_RULES; "last" is the last frame's label). The group is the
+    person (the windows of one group must not be split between train and test). Run the preprocessing
+    pipeline first to drop recordings without a known person. `max_per_person` keeps at most that many windows
+    per person (see `limit_per_group`), for quick test runs; None keeps all.
     """
     if label_rule not in LABEL_RULES:
         raise ValueError(f"label_rule must be one of {LABEL_RULES}, got {label_rule!r}")
@@ -87,13 +112,14 @@ def make_windows(
     frames_per_window = []  # for each window: positions of its frames in frames_ds
     window_labels = []
     window_groups = []
-    window_metadata = []
-    for recording, rec in meta.groupby("recording", sort=False):
+    for _, rec in meta.groupby("recording", sort=False):
         rec = rec.sort_values("capture_idx")
         positions = rec.index.to_numpy()
         frame_nums = rec.capture_idx.to_numpy()
         labels = rec[target].to_numpy()
         person = rec.person.iloc[0]
+        if person == NO_PERSON:
+            raise ValueError(f"recording {rec.recording.iloc[0]} has no known person; run the preprocessing pipeline first")
         group = str(person)
 
         for start in range(0, len(rec) - window_len + 1, stride):
@@ -104,33 +130,23 @@ def make_windows(
             frames_per_window.append(positions[start : last + 1])
             window_labels.append(_window_label(labels[start : last + 1], label_rule))
             window_groups.append(group)
-            if return_metadata:
-                part = rec.iloc[start : last + 1]
-                window_metadata.append({
-                    "recording": str(recording), "person": str(person), "group": group,
-                    "frame_ids": part.frame_idx.astype(int).tolist(),
-                    "start_timestamp": part.timestamp.iloc[0].isoformat(),
-                    "end_timestamp": part.timestamp.iloc[-1].isoformat(),
-                    "capture_start": int(frame_nums[start]), "capture_end": int(frame_nums[last]),
-                })
 
     window_frames = np.asarray(frames_per_window, dtype=int).reshape(-1, window_len)
     y = np.asarray(window_labels, dtype=str)
     groups = np.asarray(window_groups, dtype=str)
     if relabel is not None:
         y = relabel(y)
-
-    def result(x):
-        base = (x, y, groups)
-        return (*base, window_metadata) if return_metadata else base
+    if max_per_person is not None:
+        keep_windows = limit_per_group(y, groups, max_per_person, seed)
+        window_frames, y, groups = window_frames[keep_windows], y[keep_windows], groups[keep_windows]
 
     # 3. load the heatmaps and gather them into windows
     if len(window_frames) == 0:
-        return result(np.zeros((0, window_len, 1, *shape), dtype=np.float32))
+        return np.zeros((0, window_len, 1, *shape), dtype=np.float32), y, groups
     if not heatmaps:
-        return result(np.zeros((len(window_frames), window_len), dtype=np.float32))
+        return np.zeros((len(window_frames), window_len), dtype=np.float32), y, groups
     heatmap_batches = frames_ds.select_columns(["heatmap"]).iter(256)
     all_frames = np.concatenate(
         [np.stack([_prep(h, shape) for h in cast(dict, batch)["heatmap"]]) for batch in heatmap_batches]
     )
-    return result(all_frames[window_frames])
+    return all_frames[window_frames], y, groups
