@@ -35,8 +35,7 @@ class GroupKFoldSplitter:
         """Returns one `(train_idx, test_idx)` pair per fold.
 
         Raises:
-            ValueError: If `k` is out of range, or the folds are not a partition of the groups
-                (an empty fold, or a group tested more than once).
+            ValueError: If `k` is out of range, or a fold has no test data.
         """
         k = self.n_splits(groups)
         splitter = StratifiedGroupKFold(n_splits=k, shuffle=True, random_state=self.seed)
@@ -45,8 +44,6 @@ class GroupKFoldSplitter:
         tested = [set(groups[test]) for _, test in folds]
         if any(not group_set for group_set in tested):
             raise ValueError("a fold has no test data; try a different seed or fewer folds")
-        if sum(len(group_set) for group_set in tested) != len(set(groups)):
-            raise ValueError("a group is in more than one test fold")
         return folds
 
 

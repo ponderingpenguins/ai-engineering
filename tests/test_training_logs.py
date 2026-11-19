@@ -2,7 +2,6 @@ import json
 
 import numpy as np
 import pytest
-import torch
 
 from models.baseline import MajorityClass
 from models.model import BaseModel, History

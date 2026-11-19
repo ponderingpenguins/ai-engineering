@@ -11,20 +11,6 @@ class DataConfig:
     baked: str = "data/processed/floor_posture"  # baked HF dataset (gitignored)
     # preprocessors run in order on the loaded frames, see data/preprocess.py
     preprocess: list[str] = field(default_factory=lambda: ["config_4", "known_person"])
-    # per-recording sensor config (constant within a recording)
-    cfg_columns: list[str] = field(
-        default_factory=lambda: [
-            "cfg_file",
-            "range_resolution_m",
-            "range_max_m",
-            "num_range_bins",
-            "num_doppler_bins",
-            "doppler_resolution_m_s",
-            "max_velocity_m_s",
-            "num_tx",
-            "num_rx",
-        ]
-    )
 
 
 @dataclass

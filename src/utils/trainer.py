@@ -41,8 +41,7 @@ class Trainer:
     validate: bool = True  # False: no validation person, the model trains on all training people for its epochs
     tuner: Tuner | None = None  # set: each fold tunes on its training people, then refits on all of them
 
-    def cross_validate(self, x: np.ndarray, y: np.ndarray, groups: np.ndarray,
-                       collect_predictions: bool = False) -> dict[str, Any]:
+    def cross_validate(self, x: np.ndarray, y: np.ndarray, groups: np.ndarray) -> dict[str, Any]:
         """Each fold is held out once as test data. Returns per-fold, pooled and per-person results.
 
         Every metric is scored against the classes of the whole dataset, so a fold without a rare class
@@ -53,7 +52,6 @@ class Trainer:
         classes = np.unique(y)
         all_true, all_pred, all_groups = [], [], []
         fold_results = []
-        predictions = []
 
         for i, (train, test) in enumerate(folds, start=1):
             held_out = np.unique(groups[test])
@@ -85,11 +83,6 @@ class Trainer:
             started = perf_counter()
             pred = model.predict(x[test])
             predict_seconds = perf_counter() - started
-            if collect_predictions:
-                predictions.extend({"sample_id": int(j), "fold": i,
-                                    "true_label": str(y[j]), "predicted_label": str(p)}
-                                   for j, p in zip(test, pred))
-
             fold_scores = {name: fn(y[test], pred, classes) for name, fn in self.metrics.items()}
             logger.info("fold %d/%d: n=%d %s", i, k, len(test),
                         " ".join(f"{name}={fmt(score)}" for name, score in fold_scores.items()))
@@ -140,8 +133,6 @@ class Trainer:
         if self.tuner is not None:  # the setting to use for the final model, see utils.tuning.best_overall
             results["tuned"] = best_overall([fold["tuning"] for fold in fold_results])
             logger.info("tuned: %s", results["tuned"])
-        if collect_predictions:
-            results["predictions"] = predictions
         self._save(results)
         return results
 

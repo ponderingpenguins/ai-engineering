@@ -55,17 +55,14 @@ def make_windows(
     shape: tuple[int, int] = HEATMAP_SHAPE,
     heatmaps: bool = True,
     relabel: Callable[[np.ndarray], np.ndarray] | None = None,
-    return_metadata: bool = False,
     label_rule: str = "last",
 ) -> tuple:
     """Cut each recording into windows of `window_len` frames.
 
     Returns x (N, window_len, 1, *shape), y (N,) and groups (N,). A window's label comes from its
-    frames' labels by `label_rule` (see LABEL_RULES; "last" is the last frame's label). The group is the person (the windows of one group must not be split between train and
-    test). Run the preprocessing pipeline first to drop recordings without a known person.
-
-    With return_metadata=True, also returns one metadata dict per window, including
-    ordered original frame IDs and capture timestamps for investigating predictions.
+    frames' labels by `label_rule` (see LABEL_RULES; "last" is the last frame's label). The group is the
+    person (the windows of one group must not be split between train and test). Run the preprocessing
+    pipeline first to drop recordings without a known person.
     """
     if label_rule not in LABEL_RULES:
         raise ValueError(f"label_rule must be one of {LABEL_RULES}, got {label_rule!r}")
@@ -87,8 +84,7 @@ def make_windows(
     frames_per_window = []  # for each window: positions of its frames in frames_ds
     window_labels = []
     window_groups = []
-    window_metadata = []
-    for recording, rec in meta.groupby("recording", sort=False):
+    for _, rec in meta.groupby("recording", sort=False):
         rec = rec.sort_values("capture_idx")
         positions = rec.index.to_numpy()
         frame_nums = rec.capture_idx.to_numpy()
@@ -104,15 +100,6 @@ def make_windows(
             frames_per_window.append(positions[start : last + 1])
             window_labels.append(_window_label(labels[start : last + 1], label_rule))
             window_groups.append(group)
-            if return_metadata:
-                part = rec.iloc[start : last + 1]
-                window_metadata.append({
-                    "recording": str(recording), "person": str(person), "group": group,
-                    "frame_ids": part.frame_idx.astype(int).tolist(),
-                    "start_timestamp": part.timestamp.iloc[0].isoformat(),
-                    "end_timestamp": part.timestamp.iloc[-1].isoformat(),
-                    "capture_start": int(frame_nums[start]), "capture_end": int(frame_nums[last]),
-                })
 
     window_frames = np.asarray(frames_per_window, dtype=int).reshape(-1, window_len)
     y = np.asarray(window_labels, dtype=str)
@@ -120,17 +107,13 @@ def make_windows(
     if relabel is not None:
         y = relabel(y)
 
-    def result(x):
-        base = (x, y, groups)
-        return (*base, window_metadata) if return_metadata else base
-
     # 3. load the heatmaps and gather them into windows
     if len(window_frames) == 0:
-        return result(np.zeros((0, window_len, 1, *shape), dtype=np.float32))
+        return np.zeros((0, window_len, 1, *shape), dtype=np.float32), y, groups
     if not heatmaps:
-        return result(np.zeros((len(window_frames), window_len), dtype=np.float32))
+        return np.zeros((len(window_frames), window_len), dtype=np.float32), y, groups
     heatmap_batches = frames_ds.select_columns(["heatmap"]).iter(256)
     all_frames = np.concatenate(
         [np.stack([_prep(h, shape) for h in cast(dict, batch)["heatmap"]]) for batch in heatmap_batches]
     )
-    return result(all_frames[window_frames])
+    return all_frames[window_frames], y, groups
