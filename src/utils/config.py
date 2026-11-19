@@ -14,12 +14,42 @@ class DataConfig:
 
 
 @dataclass
+class AugmentConfig:
+    """Training-time heatmap augmentation, see data/augment.py. Everything is off by default.
+
+    Sized for Config_4 only (0.0237 m range bins, 256x16 heatmaps), the one sensor config used for model development.
+    """
+
+    range_shift_bins: float = 0.0  # largest random shift along range, in bins (one bin is 0.0237 m, so 13 is about 0.3 m)
+    floor_jitter: float = 0.0  # std of a random smooth baseline along range, in raw heatmap units (try 50)
+    time_reverse: bool = False  # play windows backwards half of the time; needs eval.label_rule=any_lying
+
+
+@dataclass
+class PointAugmentConfig:
+    """Training-time point cloud augmentation, see data/augment.py. Everything is off by default.
+
+    Sized for Config_4 only. The points are in the sensor frame: y is the boresight (the distance to the floor),
+    and the floor plane is x-z. Dropping points and jitter are `model.pointnet.point_drop` and `jitter`.
+    """
+
+    shift_m: float = 0.0  # random move along the floor (x and z), up to this many metres each (try 0.3)
+    height_m: float = 0.0  # random move along the boresight (y), up to this many metres (try 0.2)
+    yaw_deg: float = 0.0  # random rotation about the boresight, up to this angle; needs eval.collapse_lying=true
+    tilt_deg: float = 0.0  # random sensor tilt about x and z, up to this angle (try 5)
+    mirror: bool = False  # mirror half of the windows (x -> -x); needs eval.collapse_lying=true
+    ghost_points: float = 0.0  # mean number of false-alarm points added per window (try 3)
+    snr_jitter_db: float = 0.0  # std of one SNR offset per window, in dB (try 2)
+
+
+@dataclass
 class RNNConfig:
     hidden: int = 128  # GRU hidden size
     feat_dim: int = 64  # size of the per-frame feature vector from the CNN
     dropout: float = 0.5  # on the GRU output, before the classification layer
     feature_dropout: float = 0.3  # on the per-frame CNN features
     noise: float = 0.05  # augmentation: noise std on the standardised heatmap while training
+    augment: AugmentConfig = field(default_factory=AugmentConfig)  # more augmentation, applied to training batches only
     lr: float = 1e-3
     weight_decay: float = 1e-2
     epochs: int = 30  # upper limit; early stopping usually ends training sooner
@@ -43,6 +73,7 @@ class PointNetConfig:
     seed: int = 0
     patience: int = 5  # stop after this many validation evaluations without improvement
     evals_per_epoch: int = 1  # validation loss evaluations per epoch; patience counts these
+    augment: PointAugmentConfig = field(default_factory=PointAugmentConfig)  # geometric augmentation, training batches only
 
 
 @dataclass

@@ -162,10 +162,25 @@ def main() -> None:
         cfg = cast(Config, OmegaConf.to_object(merged))
         if cfg.model.name not in MODELS:
             raise ValueError(f"model.name must be one of {MODELS}, got {cfg.model.name!r}")
+        for name in ("rnn", "pointnet"):
+            aug = getattr(cfg.model, name).augment
+            if not any(asdict(aug).values()):
+                continue
+            if cfg.model.name != name:
+                raise ValueError(f"model.{name}.augment only applies to model.name={name}")
+            if "config_4" not in cfg.data.preprocess:
+                raise ValueError("the augmentation sizes are for Config_4, keep 'config_4' in data.preprocess")
+        if cfg.model.rnn.augment.time_reverse and cfg.eval.label_rule != "any_lying":
+            raise ValueError("model.rnn.augment.time_reverse needs eval.label_rule=any_lying, "
+                             "because with 'last' the label depends on which frame is last")
+        point_aug = cfg.model.pointnet.augment
+        if (point_aug.yaw_deg or point_aug.mirror) and not cfg.eval.collapse_lying:
+            raise ValueError("model.pointnet.augment.yaw_deg and mirror change which way a person lies, "
+                             "so they need eval.collapse_lying=true")
     except (TypeError, ValueError, OmegaConfBaseException) as e:  # pylint: disable=broad-exception-raised
         logger.error(
             "Error: %s\n\nUsage: python main.py [data.baked=<path>] [model.name=%s] "
-            "[model.rnn.epochs=<n>] [train.oversample=<ratio>] [train.validation=true|false] [eval.folds=<k>] [eval.collapse_lying=true|false] [tune.grid=<list of settings>] [train.full_run=true|false]",
+            "[model.rnn.epochs=<n>] [train.oversample=<ratio>] [train.validation=true|false] [model.rnn.augment.range_shift_bins=<n>] [model.pointnet.augment.shift_m=<m>] [eval.folds=<k>] [eval.collapse_lying=true|false] [tune.grid=<list of settings>] [train.full_run=true|false]",
             e,
             "|".join(MODELS),
         )

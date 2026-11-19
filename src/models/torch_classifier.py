@@ -3,7 +3,7 @@
 import copy
 import logging
 from abc import abstractmethod
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import torch
@@ -39,6 +39,8 @@ class TorchClassifier(BaseModel):
 
     net: nn.Module
     classes_: np.ndarray
+    # applied to each training batch (never to validation or test data); a subclass may set it
+    augment: Callable[[torch.Tensor], torch.Tensor] | None = None
 
     def __init__(
         self,
@@ -131,6 +133,8 @@ class TorchClassifier(BaseModel):
             self.net.train()
             for xb, yb in loader:
                 xb, yb = xb.to(self.device), yb.to(self.device)
+                if self.augment is not None:
+                    xb = self.augment(xb)
                 optimizer.zero_grad()
                 loss = loss_fn(self.net(xb), yb)
                 loss.backward()
