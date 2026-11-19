@@ -14,7 +14,7 @@ TODO:
 import sys
 import logging
 from collections import Counter
-from dataclasses import asdict
+from dataclasses import asdict, fields, replace
 from datetime import datetime
 from pathlib import Path
 from typing import cast
@@ -28,9 +28,10 @@ from data.resample import RandomOversampler
 from data.windows import collapse_lying, make_windows, window_timing
 from models.factory import MODELS, build_model
 from models.model import BaseModel
-from utils.config import Config
+from utils.config import Config, RNNConfig
 from utils.splitter import GroupKFoldSplitter
 from utils.trainer import Trainer
+from utils.tuning import Tuner, validate_grid
 
 logging.basicConfig(
     level=logging.INFO,
@@ -91,8 +92,19 @@ def run(cfg: Config) -> None:
     out_dir = REPO / cfg.eval.out_dir / f"{datetime.now():%Y%m%d-%H%M%S}_{cfg.model.name}"
     task = {key: getattr(cfg.eval, key) for key in ("target", "collapse_lying", "window_len", "label_rule")}
     resampler = None if cfg.train.oversample is None else RandomOversampler(cfg.train.oversample, cfg.eval.seed)
+    tuner = None
+    if cfg.tune.grid:
+        try:
+            if cfg.model.name != "rnn":
+                raise ValueError(f"tuning is only defined for model.name=rnn, got {cfg.model.name!r}")
+            validate_grid(cfg.tune.grid, [f.name for f in fields(RNNConfig)])
+        except ValueError as e:
+            logger.error("%s", e)
+            sys.exit(1)
+        tuner = Tuner(lambda setting: build_model(replace(cfg.model, rnn=replace(cfg.model.rnn, **setting))),
+                      cfg.tune.grid, resampler)
     trainer = Trainer(make_model, splitter=splitter, out_dir=out_dir, task=task, seed=cfg.eval.seed,
-                      resampler=resampler, validate=cfg.train.validation,
+                      resampler=resampler, validate=cfg.train.validation, tuner=tuner,
                       config={**asdict(cfg), "window_timing": timing})
     trainer.cross_validate(x, y, groups)
 

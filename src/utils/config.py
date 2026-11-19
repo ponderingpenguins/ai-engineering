@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 from omegaconf import MISSING
 
@@ -57,6 +57,14 @@ class TrainConfig:
 
 
 @dataclass
+class TuneConfig:
+    # Nested cross-validation: a list of hyperparameter overrides of model.rnn, e.g.
+    # [{hidden: 64}, {hidden: 128, lr: 0.0003}]. Every outer fold tries each setting with leave-one-person-out
+    # over its training people, keeps the best and refits it for the median best epoch. Empty: no tuning.
+    grid: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass
 class EvalConfig:
     folds: Optional[int] = None  # k for person-wise k-fold cross-validation; None = one fold per person
     seed: int = 0  # shuffles the fold assignment
@@ -73,4 +81,5 @@ class Config:
     data: DataConfig = field(default_factory=DataConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
+    tune: TuneConfig = field(default_factory=TuneConfig)
     eval: EvalConfig = field(default_factory=EvalConfig)

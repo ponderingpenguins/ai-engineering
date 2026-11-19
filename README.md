@@ -215,7 +215,13 @@ Caveats:
 - With 4 people the inner loop validates on one person at a time, who has only a few lying windows (they overlap, see "How windows are labelled"). Tuning is noisy, so keep the search small.
 - The cost is (people - 1) trainings per setting and per outer fold, plus one refit, so 4 x 3 = 12 trainings per setting for 4 people.
 - The outer scores describe the whole procedure (tuning included) on a new person, not the one final model.
-- The nested loop is not implemented yet: `main.py` currently runs only the outer loop, with no tuning.
+- Steps 1 to 4 are implemented: set `tune.grid` to a list of `model.rnn` overrides. Step 5 (the final model) is not implemented yet.
+
+```
+python main.py 'tune.grid=[{hidden: 64}, {hidden: 128, lr: 0.0003}]'
+```
+
+Write a space after each colon (`hidden: 64`, not `hidden:64`), or YAML reads the whole thing as one key; unknown keys are rejected. Tuning is only defined for `model.name=rnn`, and it replaces the single random validation person of `train.validation`. Each outer fold's result in `results.json` has a `tuning` entry with every setting's inner scores, per-person best epochs and the winner. A single-setting grid is a way to choose only the epoch count.
 
 Recordings from sensor configs other than Config 4, and recordings without a known participant, are dropped
 by the preprocessing pipeline (`data.preprocess` in the config) before windowing.

@@ -16,6 +16,7 @@ from models.model import BaseModel
 from utils.metrics import accuracy, macro_f1, per_class, scores
 from utils.run_report import write_report
 from utils.splitter import GroupKFoldSplitter, validation_split
+from utils.tuning import Tuner
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,7 @@ class Trainer:
     seed: int = 0  # picks the validation person of each fold
     resampler: RandomOversampler | None = None  # applied to each fold's training windows only
     validate: bool = True  # False: no validation person, the model trains on all training people for its epochs
+    tuner: Tuner | None = None  # set: each fold tunes on its training people, then refits on all of them
 
     def cross_validate(self, x: np.ndarray, y: np.ndarray, groups: np.ndarray,
                        collect_predictions: bool = False) -> dict[str, Any]:
@@ -57,10 +59,14 @@ class Trainer:
             held_out = np.unique(groups[test])
             logger.info("fold %d/%d: test on %s", i, k, ", ".join(sorted(held_out)))
 
-            # one training person is held out for early stopping; the test person is never used for that
-            fit_idx, val_idx = validation_split(train, groups, self.seed + i) if self.validate else (train, None)
+            tuning = None
+            if self.tuner is not None:  # inner leave-one-person-out picks the setting and epochs, then refit on all
+                tuning = self.tuner.tune(x, y, groups, train, classes)
+                fit_idx, val_idx = train, None
+            else:  # one training person is held out for early stopping; the test person is never used for that
+                fit_idx, val_idx = validation_split(train, groups, self.seed + i) if self.validate else (train, None)
             val_people = [] if val_idx is None else sorted(np.unique(groups[val_idx]))
-            if val_idx is None and self.validate:
+            if val_idx is None and self.validate and tuning is None:
                 logger.warning("fold %d/%d: fewer than two training people, no validation data", i, k)
             elif val_idx is not None:
                 logger.info("fold %d/%d: validate on %s", i, k, ", ".join(val_people))
@@ -71,7 +77,7 @@ class Trainer:
                 logger.info("fold %d/%d: oversampled training windows %s -> %s", i, k,
                             dict(Counter(y[fit_idx].tolist())), dict(Counter(y[train_idx].tolist())))
 
-            model = self.make_model()
+            model = self.make_model() if tuning is None else self.tuner.build(tuning)
             started = perf_counter()
             history = model.fit(x[train_idx], y[train_idx], val=None if val_idx is None else (x[val_idx], y[val_idx]))
             train_seconds = perf_counter() - started
@@ -100,6 +106,7 @@ class Trainer:
                 "metrics": fold_scores,
                 "per_class": per_class(y[test], pred, classes),
                 "history": None if history is None else history.to_dict(),
+                "tuning": None if tuning is None else tuning.to_dict(),
                 "checkpoint": checkpoint,
                 "train_seconds": train_seconds,
                 "predict_seconds": predict_seconds,
