@@ -43,6 +43,7 @@ class MiniPointNet(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Class scores of shape (B, n_classes)."""
         valid = x[..., 6] > 0.5  # (B, P)
+        n_points = valid.sum(dim=1, keepdim=True)  # real points, counted before augmentation drops any
         coords = (x[..., :N_STANDARDISED] - self.feat_mean) / self.feat_std
         if self.training:  # augmentation, training only: drop random points and jitter the rest
             if self.point_drop > 0:
@@ -57,7 +58,7 @@ class MiniPointNet(nn.Module):
         pooled_max = h.masked_fill(~mask, float("-inf")).max(dim=1).values
         pooled_max = torch.where(n_valid > 0, pooled_max, torch.zeros_like(pooled_max))
         pooled_mean = (h * mask).sum(dim=1) / n_valid.clamp(min=1)
-        count = torch.log1p(n_valid.float()) / 5.0  # about 0 to 1 for 0 to 150 points
+        count = torch.log1p(n_points.float()) / 5.0  # about 0 to 1 for 0 to 150 points
         return self.head(torch.cat([pooled_max, pooled_mean, count], dim=-1))
 
 

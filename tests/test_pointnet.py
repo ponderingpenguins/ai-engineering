@@ -204,3 +204,18 @@ def test_rnn_regularisation_only_acts_in_training():
     assert torch.equal(net(x), net(x))
     net.train()
     assert not torch.equal(net(x), net(x))
+
+
+def test_point_count_feature_ignores_augmentation_dropping():
+    from models.pointnet import MiniPointNet
+
+    torch.manual_seed(0)
+    x = torch.rand(8, 40, 7)
+    x[..., 6] = 1.0
+    net = MiniPointNet(2, point_drop=0.9)
+    net.train()
+    seen = []
+    net.head.register_forward_hook(lambda module, inputs, out: seen.append(inputs[0][:, -1]))
+    net(x)
+    expected = torch.log1p(torch.tensor(40.0)) / 5.0  # all 40 points are real, however many were dropped
+    assert torch.allclose(seen[0], expected.expand(8))

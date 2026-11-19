@@ -58,7 +58,7 @@ class TrainConfig:
     # that share of the largest class (1.0 = balanced). Training data only, see data/resample.py.
     oversample: Optional[float] = None
     # True: each fold holds out one training person for validation (early stopping, best weights).
-    # False: no validation; every fold trains for exactly model.rnn.epochs on all its training people.
+    # False: no validation; every fold trains for exactly the model's `epochs` on all its training people.
     validation: bool = True
     # True: skip cross-validation and train one model on all people with the setting saved by the tuning run
     # (tune.best_path), then save it as final.pt. Run the tuning first. Cannot be combined with tune.grid.
