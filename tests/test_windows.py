@@ -26,7 +26,7 @@ def make_ds(labels, person="Bob", recording="r1", drop=()):
 
 
 def windows(ds, **kwargs):
-    x, y, groups = make_windows(ds, window_len=16, stride=8, heatmaps=False, **kwargs)
+    x, y, groups = make_windows(ds, window_len=16, stride=8, inputs="none", **kwargs)
     return y, groups
 
 
@@ -107,5 +107,5 @@ def test_make_windows_can_limit_windows_per_person():
     labels = ["standing"] * 80
     y_all, g_all = windows(make_ds(labels))
     assert len(y_all) > 3
-    x, y, groups = make_windows(make_ds(labels), window_len=16, stride=8, heatmaps=False, max_per_person=3)
+    x, y, groups = make_windows(make_ds(labels), window_len=16, stride=8, inputs="none", max_per_person=3)
     assert len(x) == len(y) == len(groups) == 3

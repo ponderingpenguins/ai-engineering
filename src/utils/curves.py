@@ -1,5 +1,6 @@
 """Loss-curve figures for a cross-validation run, drawn from the histories saved in `results.json`."""
 
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -85,7 +86,8 @@ def mean_curves(folds: list[dict[str, Any]]) -> dict[str, np.ndarray] | None:
     def reduce(curves: list[np.ndarray], width: int) -> tuple[np.ndarray, np.ndarray]:
         stack = np.vstack(curves) if curves else np.full((1, width), np.nan)
         n = np.sum(~np.isnan(stack), axis=0)
-        with np.errstate(all="ignore"):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)  # columns where no fold has a value stay NaN
             mean, std = np.nanmean(stack, axis=0), np.nanstd(stack, axis=0)
         mean[n < 2], std[n < 2] = np.nan, np.nan
         return mean, std

@@ -9,7 +9,7 @@ from .model import BaseModel
 
 
 class MajorityClass(BaseModel):
-    needs_heatmaps = False
+    input_type = "none"
     model_name = "baseline"
 
     def _checkpoint_state(self) -> dict[str, Any]:

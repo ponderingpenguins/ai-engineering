@@ -29,8 +29,11 @@ def _settings(results: dict[str, Any]) -> list[str]:
     validation = (config.get("train") or {}).get("validation", True)
     tuned = "tuned" in results
     lines = [f"- Model: `{model.get('name', 'unknown')}`."]
-    if model.get("name") == "rnn":
-        rnn = model.get("rnn", {})
+    if model.get("name") in ("rnn", "pointnet"):
+        rnn = model.get(model["name"], {})  # the chosen model's own hyperparameters
+        if model["name"] == "pointnet":
+            lines.append(f"- Input: the radar point cloud of each window, up to {(config.get('eval') or {}).get('max_points')} "
+                         "points (x, y, z, doppler, snr, time in window), not the heatmaps.")
         if tuned:
             lines.append(f"- Training: each fold is refit on all its training people for the epoch count chosen by tuning "
                          f"(see Tuning), batch {rnn.get('batch_size')}, seed {rnn.get('seed')}; no validation data and no early "

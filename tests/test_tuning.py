@@ -202,3 +202,27 @@ def test_apply_tuned_refuses_a_different_task_or_model():
         apply_tuned(ModelConfig(name="baseline"), TUNED, TASK)
     with pytest.raises(ValueError, match="unknown hyperparameter"):
         apply_tuned(ModelConfig(), {**TUNED, "setting": {"hiden": 1}}, TASK)
+
+
+def test_a_pointnet_setting_is_applied_to_the_pointnet_config():
+    from utils.config import ModelConfig
+    from utils.tuning import hyperparameter_names, with_setting
+
+    cfg = with_setting(ModelConfig(name="pointnet"), {"width": 64, "point_drop": 0.1})
+    assert cfg.pointnet.width == 64 and cfg.pointnet.point_drop == 0.1
+    assert cfg.rnn == ModelConfig().rnn  # the other model's settings are untouched
+    assert "width" in hyperparameter_names(cfg) and "hidden" not in hyperparameter_names(cfg)
+
+    tuned = {"model": "pointnet", "task": TASK, "setting": {"width": 64}, "epochs": 5}
+    applied = apply_tuned(ModelConfig(name="pointnet"), tuned, TASK)
+    assert applied.pointnet.width == 64 and applied.pointnet.epochs == 5
+    with pytest.raises(ValueError, match="unknown hyperparameter"):  # an RNN setting does not fit PointNet
+        apply_tuned(ModelConfig(name="pointnet"), {**tuned, "setting": {"hidden": 8}}, TASK)
+
+
+def test_the_baseline_cannot_be_tuned():
+    from utils.config import ModelConfig
+    from utils.tuning import hyperparameter_names
+
+    with pytest.raises(ValueError, match="only defined for"):
+        hyperparameter_names(ModelConfig(name="baseline"))
