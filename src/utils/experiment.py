@@ -19,6 +19,7 @@ from data.windows import collapse_lying, make_windows, window_timing
 from models.factory import MODEL_CLASSES, MODELS, build_model
 from models.model import BaseModel
 from utils.config import Config, ModelConfig
+from utils.results import FinalResult, RunResults
 from utils.splitter import GroupKFoldSplitter
 from utils.task import Task
 from utils.trainer import Trainer
@@ -69,7 +70,7 @@ def tuned_model_config(cfg: Config, task: Task, root: Path) -> tuple[ModelConfig
     return apply_tuned(cfg.model, tuned, task), tuned
 
 
-def run(cfg: Config, root: Path) -> dict[str, Any]:
+def run(cfg: Config, root: Path) -> RunResults | FinalResult:
     """Cross-validates the configured model on the baked dataset, or trains the final model.
 
     Args:
@@ -140,8 +141,8 @@ def run(cfg: Config, root: Path) -> dict[str, Any]:
     trainer = Trainer(make_model, splitter=splitter, out_dir=out_dir, task=task, seed=cfg.eval.seed,
                       resampler=resampler, validate=cfg.train.validation, tuner=tuner, config=config)
     results = trainer.cross_validate(x, y, groups)
-    if tuner is not None:  # the full run (train.full_run=true) picks this up
+    if tuner is not None and results.tuned is not None:  # the full run (train.full_run=true) picks this up
         for target in (root / cfg.tune.best_path, out_dir / "tuned.yaml"):
-            save_tuned(target, results["tuned"], cfg.model.name, task)
+            save_tuned(target, results.tuned, cfg.model.name, task)
         logger.info("saved the best setting to %s", root / cfg.tune.best_path)
     return results

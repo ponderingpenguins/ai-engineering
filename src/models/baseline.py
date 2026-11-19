@@ -23,13 +23,15 @@ class MajorityClass(BaseModel):
         model.label_ = checkpoint["label"]
         return model
 
-    def fit(self, x: np.ndarray, y: np.ndarray, val:tuple[np.ndarray, np.ndarray] | None=None) -> None:
+    def fit(self, x: np.ndarray, y: np.ndarray, val: tuple[np.ndarray, np.ndarray] | None = None,
+            val_weight_labels: np.ndarray | None = None) -> None:
         """Remembers the most common label.
 
         Args:
             x: Ignored.
             y: Training labels, shape (N,).
             val: Ignored.
+            val_weight_labels: Ignored.
         """
         self.label_ = Counter(y).most_common(1)[0][0]
 

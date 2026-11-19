@@ -16,7 +16,7 @@ import logging
 import math
 from collections import Counter
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field, fields, is_dataclass, replace
+from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -26,13 +26,13 @@ from omegaconf import OmegaConf
 from data.resample import RandomOversampler
 from models.model import BaseModel, History
 from utils.config import ModelConfig
+from utils.fitting import fit_fold
+from utils.results import BestSetting, Candidate, InnerFold, Setting, Tuning
 from utils.task import Task
 from utils.metrics import macro_f1
 from utils.splitter import inner_splits
 
 logger = logging.getLogger(__name__)
-
-Setting = dict[str, Any]  # overrides of the model's hyperparameters, e.g. {"hidden": 64, "lr": 3e-4}
 
 
 def hyperparameter_names(model_cfg: ModelConfig) -> list[str]:
@@ -90,20 +90,6 @@ def median_epoch(epochs: Sequence[int]) -> int:
 
 
 @dataclass
-class Tuning:
-    """The outcome of tuning one outer fold."""
-
-    setting: Setting  # the winning setting
-    epochs: int  # median best epoch of the winner's inner folds
-    score: float  # the winner's mean class-balanced validation loss over its inner folds (lower is better)
-    candidates: list[dict[str, Any]] = field(default_factory=list)  # every setting with its inner results
-
-    def to_dict(self) -> dict[str, Any]:
-        """Plain values, ready for JSON."""
-        return {"setting": self.setting, "epochs": self.epochs, "score": self.score, "candidates": self.candidates}
-
-
-@dataclass
 class Tuner:
     make_model: Callable[[Setting], BaseModel]  # a fresh, untrained model with the setting applied
     grid: list[Setting]
@@ -134,16 +120,14 @@ class Tuner:
         for number, setting in enumerate(self.grid, start=1):
             true, pred, folds, epochs, losses = [], [], [], [], []
             for fit_idx, val_idx in inner:
-                if self.resampler is not None:
-                    fit_idx = fit_idx[self.resampler.indices(y[fit_idx])]
                 model = self.make_model(setting)
-                history = model.fit(x[fit_idx], y[fit_idx], val=(x[val_idx], y[val_idx]), val_weight_labels=y[train])
+                history = fit_fold(model, x, y, fit_idx, val_idx, resampler=self.resampler,
+                                   val_weight_labels=y[train]).history  # the same weights for every person
                 predicted = model.predict(x[val_idx])
                 epoch, loss = best_epoch(history), kept_val_loss(history)
                 if loss is None:
                     raise ValueError("the model reports no validation loss, so settings cannot be compared")
-                folds.append({"val_group": str(groups[val_idx][0]), "best_epoch": epoch, "val_loss": loss,
-                              "macro_f1": macro_f1(y[val_idx], predicted, classes)})
+                folds.append(InnerFold(str(groups[val_idx][0]), epoch, loss, macro_f1(y[val_idx], predicted, classes)))
                 losses.append(loss)
                 true.append(y[val_idx])
                 pred.append(predicted)
@@ -152,40 +136,39 @@ class Tuner:
             if not epochs:
                 raise ValueError("the model reports no best epoch, so no epoch count can be chosen")
             score, f1 = float(np.mean(losses)), macro_f1(np.concatenate(true), np.concatenate(pred), classes)
-            candidates.append({"setting": setting, "score": score, "epochs": median_epoch(epochs), "folds": folds,
-                               "macro_f1": f1, "predicted_classes": dict(Counter(np.concatenate(pred).tolist()))})
+            candidates.append(Candidate(setting, score, median_epoch(epochs), folds, f1,
+                                        dict(Counter(np.concatenate(pred).tolist()))))
             logger.info("tune %d/%d %s: val loss %.4f (macro_f1 %s), best epochs %s", number, len(self.grid), setting,
                         score, "N/A" if f1 is None else f"{f1:.3f}", epochs)
 
-        winner = min(range(len(candidates)), key=lambda i: candidates[i]["score"])  # min keeps the first tie
-        best = candidates[winner]
-        logger.info("tune: best setting %s, %d epochs", best["setting"], best["epochs"])
-        return Tuning(best["setting"], best["epochs"], best["score"], candidates)
+        best = min(candidates, key=lambda c: c.score)  # min keeps the first tie
+        logger.info("tune: best setting %s, %d epochs", best.setting, best.epochs)
+        return Tuning(best.setting, best.epochs, best.score, candidates)
 
     def build(self, tuning: Tuning) -> BaseModel:
         """A fresh model with the winning setting, set to train for the chosen number of epochs."""
         return self.make_model({**tuning.setting, "epochs": tuning.epochs})
 
 
-def best_overall(tunings: Sequence[dict[str, Any]]) -> dict[str, Any]:
-    """The setting to use for the final model, from the `Tuning.to_dict()` of every outer fold.
+def best_overall(tunings: Sequence[Tuning]) -> BestSetting:
+    """The setting to use for the final model, from the tuning of every outer fold.
 
     The setting that won the most outer folds. Ties go to the lower mean validation loss of its wins. Its
     epoch count is the median of the epochs it won with.
     """
-    wins: dict[str, list[dict[str, Any]]] = {}
+    wins: dict[str, list[Tuning]] = {}
     for tuning in tunings:
-        wins.setdefault(json.dumps(tuning["setting"], sort_keys=True), []).append(tuning)
-    key = min(wins, key=lambda k: (-len(wins[k]), float(np.mean([t["score"] for t in wins[k]]))))
+        wins.setdefault(json.dumps(tuning.setting, sort_keys=True), []).append(tuning)
+    key = min(wins, key=lambda k: (-len(wins[k]), float(np.mean([t.score for t in wins[k]]))))
     won = wins[key]
-    return {"setting": won[0]["setting"], "epochs": median_epoch([t["epochs"] for t in won]),
-            "wins": len(won), "of_folds": len(tunings), "mean_val_loss": float(np.mean([t["score"] for t in won]))}
+    return BestSetting(won[0].setting, median_epoch([t.epochs for t in won]), len(won), len(tunings),
+                       float(np.mean([t.score for t in won])))
 
 
-def save_tuned(path: Path, best: dict[str, Any], model: str, task: Task) -> None:
+def save_tuned(path: Path, best: BestSetting, model: str, task: Task) -> None:
     """Writes the chosen setting to a YAML file, with the model and task it was tuned for."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    OmegaConf.save(OmegaConf.create({"model": model, "task": task.to_dict(), **best}), path)
+    OmegaConf.save(OmegaConf.create({"model": model, "task": task.to_dict(), **asdict(best)}), path)
 
 
 def apply_tuned(model_cfg: ModelConfig, tuned: dict[str, Any], task: Task) -> ModelConfig:
