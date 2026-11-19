@@ -226,3 +226,12 @@ def test_the_baseline_cannot_be_tuned():
 
     with pytest.raises(ValueError, match="only defined for"):
         hyperparameter_names(ModelConfig(name="baseline"))
+
+
+def test_nested_sub_configs_are_not_tunable():
+    from utils.config import ModelConfig
+    from utils.tuning import hyperparameter_names
+
+    for name in ("rnn", "pointnet"):
+        names = hyperparameter_names(ModelConfig(name=name))
+        assert "augment" not in names and "lr" in names

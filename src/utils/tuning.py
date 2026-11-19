@@ -16,7 +16,7 @@ import logging
 import math
 from collections import Counter
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field, fields, replace
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -38,14 +38,15 @@ TUNABLE_MODELS = ("rnn", "pointnet")  # the models whose hyperparameters live in
 
 
 def hyperparameter_names(model_cfg: ModelConfig) -> list[str]:
-    """The names of the chosen model's hyperparameters, which a tuning setting may override.
+    """The names of the chosen model's plain hyperparameters, which a tuning setting may override.
 
     Raises:
         ValueError: If the model has no tunable hyperparameters (the baseline).
     """
     if model_cfg.name not in TUNABLE_MODELS:
         raise ValueError(f"tuning is only defined for model.name in {TUNABLE_MODELS}, got {model_cfg.name!r}")
-    return [f.name for f in fields(getattr(model_cfg, model_cfg.name))]
+    params = getattr(model_cfg, model_cfg.name)
+    return [f.name for f in fields(params) if not is_dataclass(getattr(params, f.name))]  # no nested sub-configs
 
 
 def with_setting(model_cfg: ModelConfig, setting: Setting) -> ModelConfig:
