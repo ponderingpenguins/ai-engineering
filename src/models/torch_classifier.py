@@ -57,17 +57,9 @@ class TorchClassifier(BaseModel):
         patience: int = 5,
         evals_per_epoch: int = 1,
     ) -> None:
-        """Stores the training hyperparameters. The network is built in `fit`.
+        """Stores the training hyperparameters shared by all models (see `RNNConfig`). The network is built in `fit`.
 
-        Args:
-            lr: Adam learning rate.
-            weight_decay: Adam weight decay.
-            epochs: Maximum number of passes over the training data.
-            batch_size: Batch size for training and prediction.
-            seed: Torch seed, set at the start of `fit`.
-            patience: Stop after this many validation evaluations in a row without a lower
-                validation loss. Only applies when `fit` gets validation data.
-            evals_per_epoch: How often the validation loss is computed, per epoch.
+        `patience` counts validation evaluations, and only applies when `fit` gets validation data.
         """
         self.lr = lr
         self.weight_decay = weight_decay

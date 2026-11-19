@@ -3,8 +3,6 @@ from typing import Any, Optional
 
 from omegaconf import MISSING
 
-from utils.task import DEFAULT_MAX_POINTS
-
 
 @dataclass
 class DataConfig:
@@ -52,11 +50,11 @@ class RNNConfig:
     feature_dropout: float = 0.3  # on the per-frame CNN features
     noise: float = 0.05  # augmentation: noise std on the standardised heatmap while training
     augment: AugmentConfig = field(default_factory=AugmentConfig)  # more augmentation, applied to training batches only
-    lr: float = 1e-3
-    weight_decay: float = 1e-2
+    lr: float = 1e-3  # Adam learning rate
+    weight_decay: float = 1e-2  # Adam weight decay (L2 penalty)
     epochs: int = 30  # upper limit; early stopping usually ends training sooner
-    batch_size: int = 32
-    seed: int = 0
+    batch_size: int = 32  # for training and for prediction
+    seed: int = 0  # torch seed, set at the start of each fit
     patience: int = 5  # stop after this many validation evaluations without improvement
     evals_per_epoch: int = 1  # validation loss evaluations per epoch; patience counts these
 
@@ -68,11 +66,11 @@ class PointNetConfig:
     point_dropout: float = 0.2  # per-point features, before pooling
     point_drop: float = 0.3  # augmentation: probability of dropping each point while training
     jitter: float = 0.05  # augmentation: noise std on the standardised point features while training
-    lr: float = 1e-3
-    weight_decay: float = 1e-2
+    lr: float = 1e-3  # Adam learning rate
+    weight_decay: float = 1e-2  # Adam weight decay (L2 penalty)
     epochs: int = 30  # upper limit; early stopping usually ends training sooner
-    batch_size: int = 32
-    seed: int = 0
+    batch_size: int = 32  # for training and for prediction
+    seed: int = 0  # torch seed, set at the start of each fit
     patience: int = 5  # stop after this many validation evaluations without improvement
     evals_per_epoch: int = 1  # validation loss evaluations per epoch; patience counts these
     augment: PointAugmentConfig = field(default_factory=PointAugmentConfig)  # geometric augmentation, training batches only
@@ -116,7 +114,7 @@ class EvalConfig:
     target: str = "label_pose"  # label column to predict
     collapse_lying: bool = True  # True: lying occurred vs. not (with any_lying), False: the original pose classes
     window_len: int = 16  # frames per window
-    max_points: int = DEFAULT_MAX_POINTS  # radar points kept per window by the point-cloud models (the strongest by SNR)
+    max_points: int = 128  # radar points kept per window by the point-cloud models (the strongest by SNR)
     label_rule: str = "any_lying"  # "any_lying": predict whether lying occurred within the window; "last": label of its last frame
     stride: int = 8  # frames between window starts
     out_dir: str = "results"  # each run gets its own folder in here

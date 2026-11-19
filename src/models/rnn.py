@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Self
+from typing import Any
 
 import numpy as np
 import torch
@@ -139,24 +139,9 @@ class RNN(TorchClassifier):
         evals_per_epoch: int = 1,
         augment: dict[str, Any] | None = None,
     ) -> None:
-        """Stores the hyperparameters. The network is built in `fit`.
+        """Stores the hyperparameters; `RNNConfig` says what each one does. The network is built in `fit`.
 
-        Args:
-            hidden: Size of the GRU hidden state.
-            feat_dim: Size of the feature vector per frame.
-            dropout: Dropout on the GRU output before the classification layer.
-            feature_dropout: Dropout on the per-frame CNN features.
-            noise: Std of Gaussian noise on the standardised heatmap while training (augmentation).
-            lr: Adam learning rate.
-            weight_decay: Adam weight decay.
-            epochs: Maximum number of passes over the training data.
-            batch_size: Batch size for training and prediction.
-            seed: Torch seed, set at the start of `fit`.
-            patience: Stop after this many validation evaluations in a row without a lower
-                validation loss. Only applies when `fit` gets validation data.
-            evals_per_epoch: How often the validation loss is computed, per epoch.
-            augment: Settings of `data.augment.HeatmapAugment`, applied to training batches only.
-                None or all off means no augmentation.
+        `augment` holds the settings of `HeatmapAugment`; None or all off means no augmentation.
         """
         super().__init__(lr, weight_decay, epochs, batch_size, seed, patience, evals_per_epoch)
         self._set_augment(augment, HeatmapAugment)

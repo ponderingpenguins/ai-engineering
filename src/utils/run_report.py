@@ -10,11 +10,8 @@ import sys
 from pathlib import Path
 
 from utils.curves import plot_fold_curves, plot_mean_curves
+from utils.metrics import fmt
 from utils.results import RunResults
-
-
-def _fmt(value: float | None, digits: int = 3) -> str:
-    return "N/A" if value is None else f"{value:.{digits}f}"
 
 
 def _table(header: list[str], rows: list[list[str]]) -> list[str]:
@@ -71,7 +68,7 @@ def _tuning(results: RunResults) -> list[str]:
              "measured at the weights early stopping kept. Validation macro F1 is shown for information only. "
              "The test person of the outer fold is never used.", "",
              f"**Chosen for the final model:** `{best.setting}` for {best.epochs} epochs. It won {best.wins} of "
-             f"{best.of_folds} outer folds with mean validation loss {_fmt(best.mean_val_loss)}. "
+             f"{best.of_folds} outer folds with mean validation loss {fmt(best.mean_val_loss)}. "
              "Saved to `tuned.yaml`; a full run (`train.full_run=true`) reads it.", ""]
     for fold in results.folds:
         tuning = fold.tuning
@@ -81,10 +78,10 @@ def _tuning(results: RunResults) -> list[str]:
         rows = []
         for candidate in tuning.candidates:
             won = candidate.setting == tuning.setting
-            inner = ", ".join(f"{f.val_group}: {_fmt(f.val_loss)}" for f in candidate.folds)
+            inner = ", ".join(f"{f.val_group}: {fmt(f.val_loss)}" for f in candidate.folds)
             epochs = ", ".join(str(f.best_epoch) for f in candidate.folds)
             rows.append([("**" + str(candidate.setting) + "**") if won else str(candidate.setting),
-                         _fmt(candidate.score), inner, _fmt(candidate.macro_f1), epochs, str(candidate.epochs),
+                         fmt(candidate.score), inner, fmt(candidate.macro_f1), epochs, str(candidate.epochs),
                          "yes" if won else ""])
         lines += _table(["Setting", "Val loss", "Loss per validation person", "Val macro F1", "Best epochs", "Epochs used", "Chosen"],
                         rows)
@@ -102,9 +99,9 @@ def write_report(results: RunResults, out_dir: Path) -> Path:
              "Scored once over the held-out predictions of all folds together. This is the headline number.", ""]
     pooled = results.pooled
     lines += _table(["Accuracy", "Macro F1", "Windows"],
-                    [[_fmt(pooled.metrics.get("accuracy")), _fmt(pooled.metrics.get("macro_f1")), str(pooled.n)]])
+                    [[fmt(pooled.metrics.get("accuracy")), fmt(pooled.metrics.get("macro_f1")), str(pooled.n)]])
     lines += _table(["Class", "Precision", "Recall", "F1", "Support"],
-                    [[c, _fmt(r["precision"]), _fmt(r["recall"]), _fmt(r["f1"]), str(r["support"])]
+                    [[c, fmt(r["precision"]), fmt(r["recall"]), fmt(r["f1"]), str(r["support"])]
                      for c, r in pooled.per_class.items()])
 
     if results.tuned is not None:
@@ -118,15 +115,15 @@ def write_report(results: RunResults, out_dir: Path) -> Path:
         history, per_class = fold.history, fold.per_class
         stopped = "early" if history and history.stopped_early else ("max epochs" if history else "-")
         rows.append([str(fold.fold), "+".join(fold.test_groups), "+".join(fold.val_groups) or "-",
-                     str(fold.n_test), _fmt(fold.metrics.get("accuracy")), _fmt(fold.metrics.get("macro_f1")),
-                     *[_fmt(per_class.get(c, {}).get("recall")) + f" (n={per_class.get(c, {}).get('support', 0)})"
+                     str(fold.n_test), fmt(fold.metrics.get("accuracy")), fmt(fold.metrics.get("macro_f1")),
+                     *[fmt(per_class.get(c, {}).get("recall")) + f" (n={per_class.get(c, {}).get('support', 0)})"
                        for c in classes],
                      "-" if history is None or history.best_step is None else str(history.best_step), stopped])
     lines += _table(header, rows)
 
     lines += ["## Per person", "", "How each held-out person does, with the number of windows behind each recall.", ""]
     lines += _table(["Person", "Windows", *[f"Recall {c} (n)" for c in classes]],
-                    [[person, str(row["n"]), *[f"{_fmt(row.get(f'{c}_recall'))} ({row.get(f'{c}_support', 0)})" for c in classes]]
+                    [[person, str(row["n"]), *[f"{fmt(row.get(f'{c}_recall'))} ({row.get(f'{c}_support', 0)})" for c in classes]]
                      for person, row in results.per_person.items()])
 
     if any(path for _, path in figures):

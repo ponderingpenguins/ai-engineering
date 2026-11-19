@@ -11,9 +11,6 @@ Tune first, then train the final model with the best setting (see "Evaluation wo
 
     python main.py 'tune.grid=[{hidden: 64}, {hidden: 128, lr: 0.0003}]'
     python main.py train.full_run=true
-
-TODO:
-- data preprocessing
 """
 
 import logging

@@ -1,6 +1,6 @@
 """A mini PointNet on the radar point cloud of a window, instead of on the range-Doppler heatmaps."""
 
-from typing import Any, Self
+from typing import Any
 
 import numpy as np
 import torch
@@ -89,17 +89,9 @@ class PointNet(TorchClassifier):
         evals_per_epoch: int = 1,
         augment: dict[str, Any] | None = None,
     ) -> None:
-        """Stores the hyperparameters. The network is built in `fit`.
+        """Stores the hyperparameters; `PointNetConfig` says what each one does. The network is built in `fit`.
 
-        Args:
-            width: Number of features per point after the shared MLP (the pooled vector has twice this).
-            dropout: Dropout in the classifier head.
-            point_dropout: Dropout on the per-point features before pooling.
-            point_drop: Probability of dropping each point while training (augmentation).
-            jitter: Std of Gaussian noise added to the standardised point features while training (augmentation).
-            lr, weight_decay, epochs, batch_size, seed, patience, evals_per_epoch: see `TorchClassifier`.
-            augment: Settings of `data.augment.PointAugment` (moves, rotations, ghost points), applied to training
-                batches only. None or all off means no geometric augmentation.
+        `augment` holds the settings of `PointAugment`; None or all off means no geometric augmentation.
         """
         super().__init__(lr, weight_decay, epochs, batch_size, seed, patience, evals_per_epoch)
         self._set_augment(augment, PointAugment)

@@ -14,7 +14,7 @@ from utils.splitter import GroupKFoldSplitter, validation_split
 from utils.task import Task
 from utils.trainer import Trainer
 
-TASK = Task(target="label_pose", collapse_lying=True, window_len=16, label_rule="any_lying")
+TASK = Task(target="label_pose", collapse_lying=True, window_len=16, label_rule="any_lying", max_points=128)
 
 
 # ---- validation split -------------------------------------------------------------------------

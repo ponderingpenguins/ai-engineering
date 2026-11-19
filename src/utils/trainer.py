@@ -14,7 +14,7 @@ import numpy as np
 from data.resample import RandomOversampler
 from models.model import BaseModel
 from utils.fitting import fit_fold
-from utils.metrics import accuracy, macro_f1, per_class, scores
+from utils.metrics import accuracy, fmt, macro_f1, per_class, scores
 from utils.results import FinalResult, FoldResult, Pooled, RunResults
 from utils.run_report import write_report
 from utils.splitter import GroupKFoldSplitter, validation_split
@@ -24,11 +24,6 @@ from utils.tuning import Tuner, best_overall
 logger = logging.getLogger(__name__)
 
 Metric = Callable[[np.ndarray, np.ndarray, np.ndarray], float | None]  # (y_true, y_pred, classes)
-
-
-def fmt(value: float | None) -> str:
-    """Three decimals, or N/A for an undefined metric."""
-    return "N/A" if value is None else f"{value:.3f}"
 
 
 @dataclass

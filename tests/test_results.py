@@ -33,15 +33,7 @@ def test_nested_records_come_back_as_records():
     assert loaded.tuned == BestSetting({"hidden": 8}, 2, 1, 1, 0.5)
 
 
-def test_old_files_without_newer_keys_still_load():
-    old = {"config": None, "folds": [{"fold": 1, "test_groups": ["Ian"], "n_test": 3, "metrics": {}, "old_key": 1}],
-           "pooled": {"n": 3, "metrics": {}, "per_class": {}}}
-    loaded = RunResults.from_dict(old)
-    assert loaded.folds[0].history is None and loaded.folds[0].tuning is None and loaded.tuned is None
-    assert loaded.per_person == {} and loaded.folds[0].val_groups == []
-
-
-def test_a_file_without_folds_or_pooled_is_refused():
+def test_a_stored_run_without_its_keys_is_refused():
     with pytest.raises(KeyError):
         RunResults.from_dict({"config": None})
 

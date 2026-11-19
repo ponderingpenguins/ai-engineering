@@ -70,3 +70,8 @@ def scores(y_true: Labels, y_pred: Labels, classes: Labels) -> dict[str, float |
         result[f"{label}_recall"] = row["recall"]
         result[f"{label}_support"] = row["support"]
     return result
+
+
+def fmt(value: float | None, digits: int = 3) -> str:
+    """A metric for logs and reports: fixed decimals, or N/A when the metric is undefined."""
+    return "N/A" if value is None else f"{value:.{digits}f}"

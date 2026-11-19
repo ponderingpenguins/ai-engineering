@@ -2,22 +2,15 @@
 
 `Trainer` builds them, the report and the loss curves read them, and `results.json` stores them. Only the
 conversion to and from plain values (`to_dict`, `from_dict`) knows about the stored file, so a key is spelled
-in one place. `from_dict` accepts files from older runs: a missing key gets its default and an unknown key is
-ignored.
+in one place.
 """
 
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from models.model import History
 
 Setting = dict[str, Any]  # one hyperparameter setting of the tuning grid
-
-
-def _known(cls: type, values: dict[str, Any]) -> dict[str, Any]:
-    """The entries of `values` that are fields of the dataclass `cls`."""
-    names = {f.name for f in fields(cls)}
-    return {key: value for key, value in values.items() if key in names}
 
 
 @dataclass
@@ -43,8 +36,7 @@ class Candidate:
 
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> "Candidate":
-        folds = [InnerFold(**_known(InnerFold, f)) for f in values.get("folds", [])]
-        return cls(**{**_known(cls, values), "folds": folds})
+        return cls(**{**values, "folds": [InnerFold(**f) for f in values["folds"]]})
 
 
 @dataclass
@@ -58,8 +50,7 @@ class Tuning:
 
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> "Tuning":
-        candidates = [Candidate.from_dict(c) for c in values.get("candidates", [])]
-        return cls(**{**_known(cls, values), "candidates": candidates})
+        return cls(**{**values, "candidates": [Candidate.from_dict(c) for c in values["candidates"]]})
 
 
 @dataclass
@@ -96,9 +87,9 @@ class FoldResult:
 
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> "FoldResult":
-        history, tuning = values.get("history"), values.get("tuning")
-        return cls(**{**_known(cls, values),
-                      "history": History.from_dict(history) if history else None,
+        history, tuning = values["history"], values["tuning"]
+        return cls(**{**values,
+                      "history": History(**history) if history else None,
                       "tuning": Tuning.from_dict(tuning) if tuning else None})
 
 
@@ -128,12 +119,12 @@ class RunResults:
 
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> "RunResults":
-        tuned = values.get("tuned")
-        return cls(config=values.get("config"),
+        tuned = values["tuned"]
+        return cls(config=values["config"],
                    folds=[FoldResult.from_dict(f) for f in values["folds"]],
-                   pooled=Pooled(**_known(Pooled, values["pooled"])),
-                   per_person=values.get("per_person", {}),
-                   tuned=BestSetting(**_known(BestSetting, tuned)) if tuned else None)
+                   pooled=Pooled(**values["pooled"]),
+                   per_person=values["per_person"],
+                   tuned=BestSetting(**tuned) if tuned else None)
 
 
 @dataclass

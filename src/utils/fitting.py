@@ -35,20 +35,9 @@ def fit_fold(
 ) -> FoldFit:
     """Trains `model` on the windows `fit_idx`, with `val_idx` as validation data if given.
 
-    The resampler repeats training windows only. The validation windows keep their real class balance, and
-    the test windows are never passed in.
-
-    Args:
-        model: A fresh, untrained model.
-        x, y: All windows and their labels.
-        fit_idx: Indices of the training windows, before resampling.
-        val_idx: Indices of the validation windows, or None to train without validation.
-        resampler: Oversamples the training windows, or None to use them as they are.
-        val_weight_labels: Labels whose class frequencies weight the validation loss, see `BaseModel.fit`.
-        log_as: A name for the log line about oversampling (for example "fold 2/4"). None logs nothing.
-
-    Returns:
-        The loss history, the training windows used and the training time.
+    Only the training windows are resampled. Validation windows keep their real class balance, and test
+    windows are never passed in. `val_weight_labels` sets the validation class weights (see `BaseModel.fit`).
+    `log_as` names the log line about oversampling (for example "fold 2/4"); None logs nothing.
     """
     train_idx = fit_idx
     if resampler is not None:

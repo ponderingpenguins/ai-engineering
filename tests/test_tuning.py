@@ -141,7 +141,7 @@ def test_best_overall_breaks_a_tie_by_the_lower_mean_loss():
 
 def test_tuned_setting_round_trips_through_the_yaml_file(tmp_path):
     best = BestSetting({"hidden": 64, "lr": 0.0003}, 7, 3, 4, 0.5)
-    task = Task(target="label_pose", collapse_lying=True, window_len=16, label_rule="any_lying")
+    task = Task(target="label_pose", collapse_lying=True, window_len=16, label_rule="any_lying", max_points=128)
     path = tmp_path / "sub" / "tuned.yaml"
     save_tuned(path, best, "rnn", task)
     assert load_tuned(path) == {"model": "rnn", "task": task.to_dict(), **asdict(best)}
@@ -169,7 +169,7 @@ def test_trainer_tunes_each_outer_fold_on_its_training_people_only():
 
 def test_train_final_fits_on_all_windows_and_saves_a_checkpoint(tmp_path):
     x, y, groups = make_data()
-    task = Task(target="label_pose", collapse_lying=True, window_len=16, label_rule="any_lying")
+    task = Task(target="label_pose", collapse_lying=True, window_len=16, label_rule="any_lying", max_points=128)
     info = Trainer(MajorityClass, out_dir=tmp_path, task=task).train_final(x, y)
     assert info.n_windows == len(y) and info.checkpoint == "final.pt"
     assert (tmp_path / "final.pt").is_file() and (tmp_path / "final.json").is_file()
@@ -186,7 +186,7 @@ def test_report_has_a_tuning_section_with_every_setting(tmp_path):
     assert "{'loss': 0.8}" in report and "**{'loss': 0.3, 'good': True}**" in report  # the winner is bold
 
 
-TASK = Task(target="label_pose", collapse_lying=True, window_len=16, label_rule="any_lying")
+TASK = Task(target="label_pose", collapse_lying=True, window_len=16, label_rule="any_lying", max_points=128)
 TUNED = {"model": "rnn", "task": TASK.to_dict(), "setting": {"hidden": 64, "epochs": 99}, "epochs": 7}
 
 
