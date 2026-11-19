@@ -189,9 +189,9 @@ def test_without_validation_every_fold_trains_on_all_its_training_people():
     seen = []
 
     class Recorder(MajorityClass):
-        def fit(self, x, y, val=None):
+        def fit(self, x, y, val=None, **kwargs):
             seen.append(val)
-            return super().fit(x, y, val)
+            return super().fit(x, y, val, **kwargs)
 
     results = Trainer(Recorder, splitter=GroupKFoldSplitter(), validate=False).cross_validate(x, y, groups)
     assert all(val is None for val in seen)

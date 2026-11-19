@@ -29,10 +29,16 @@ def test_pipeline_applies_steps_in_order_and_keeps_other_columns(ds):
     assert out.column_names == ds.column_names
 
 
-def test_empty_pipeline_is_identity(ds):
-    assert build_pipeline([])(ds)["recording"] == ds["recording"]
+def test_empty_pipeline_only_drops_unknown_persons(ds):
+    assert build_pipeline([])(ds)["recording"] == ["r1", "r3", "r4"]
 
 
 def test_unknown_step_name_raises():
     with pytest.raises(ValueError, match="unknown preprocessor"):
         build_pipeline(["nope"])
+
+
+def test_unknown_persons_are_dropped_even_if_not_requested(ds):
+    out = build_pipeline(["config_4"])(ds)
+    assert "NA" not in out["person"]
+    assert "NA" not in build_pipeline([])(ds)["person"]

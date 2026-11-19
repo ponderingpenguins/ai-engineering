@@ -4,6 +4,8 @@ import numpy as np
 import pandas as pd
 from datasets import Dataset
 
+from data.extract import NO_PERSON
+
 # Every labelled recording is Config_4: 256 range bins x 16 Doppler bins (see data/preprocess.py, which drops
 # the other sensor configs).
 HEATMAP_SHAPE = (256, 16)  # (range_bins, doppler_bins)
@@ -90,6 +92,8 @@ def make_windows(
         frame_nums = rec.capture_idx.to_numpy()
         labels = rec[target].to_numpy()
         person = rec.person.iloc[0]
+        if person == NO_PERSON:
+            raise ValueError(f"recording {rec.recording.iloc[0]} has no known person; run the preprocessing pipeline first")
         group = str(person)
 
         for start in range(0, len(rec) - window_len + 1, stride):

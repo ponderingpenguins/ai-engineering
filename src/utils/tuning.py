@@ -3,7 +3,8 @@
 For an outer fold, every setting of the grid is trained with leave-one-person-out over the fold's training
 people (the outer test person is never in it). The setting with the lowest mean class-balanced validation
 loss (at the weights early stopping kept) wins, and the epoch count is the median best epoch of its inner
-folds. The caller then refits on all the training people with `Tuner.build`, which has no validation person
+folds. The class weights of that loss are pooled over all the fold's training people, the same for every validation
+person and setting, so the losses are comparable. The caller then refits on all the training people with `Tuner.build`, which has no validation person
 left and so trains for exactly that many epochs.
 
 Across the outer folds, `best_overall` picks the setting to use for the final model, and `save_tuned` /
@@ -117,7 +118,7 @@ class Tuner:
                 if self.resampler is not None:
                     fit_idx = fit_idx[self.resampler.indices(y[fit_idx])]
                 model = self.make_model(setting)
-                history = model.fit(x[fit_idx], y[fit_idx], val=(x[val_idx], y[val_idx]))
+                history = model.fit(x[fit_idx], y[fit_idx], val=(x[val_idx], y[val_idx]), val_weight_labels=y[train])
                 predicted = model.predict(x[val_idx])
                 epoch, loss = best_epoch(history), kept_val_loss(history)
                 if loss is None:

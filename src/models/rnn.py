@@ -189,11 +189,13 @@ class RNN(BaseModel):
         model.net.eval()
         return model
 
-    def fit(self, x: np.ndarray, y: np.ndarray, val: tuple[np.ndarray, np.ndarray] | None = None) -> History:
+    def fit(self, x: np.ndarray, y: np.ndarray, val: tuple[np.ndarray, np.ndarray] | None = None,
+            val_weight_labels: np.ndarray | None = None) -> History:
         """Trains a new network on windows of heatmaps.
 
         Classes are weighted by inverse frequency of the training windows (a balanced training set gets weight 1
-        each). The validation loss is class-balanced on the validation set. If `val` is given, the validation loss is computed
+        each). The validation loss is class-balanced, with weights from `val_weight_labels` (default: the labels of
+        `val`). If `val` is given, the validation loss is computed
         `evals_per_epoch` times per epoch. Training stops when it has not improved for `patience`
         evaluations in a row, and the weights with the lowest validation loss are kept. Without `val`
         the network trains for all epochs and the last weights are kept.
@@ -202,6 +204,9 @@ class RNN(BaseModel):
             x: Heatmaps of shape (N, T, 1, R, D).
             y: String labels of shape (N,).
             val: Optional (x, y) validation data. Must not contain test data.
+            val_weight_labels: Labels whose class frequencies give the validation class weights. Tuning passes the
+                pooled labels of all people in the training fold, so every validation person and every setting is
+                scored with the same weights.
 
         Returns:
             The train loss per step and the validation loss per evaluation.
@@ -229,7 +234,10 @@ class RNN(BaseModel):
         eval_every = max(1, steps_per_epoch // self.evals_per_epoch)
         history = History(steps_per_epoch=steps_per_epoch)
         val_data = self._val_tensors(val)
-        val_weights = None if val_data is None else self._balanced_weights(val_data[1], n_classes)
+        val_weights = None
+        if val_data is not None:
+            weight_y = val_data[1] if val_weight_labels is None else self._to_int(val_weight_labels)
+            val_weights = self._balanced_weights(weight_y, n_classes)
 
         best_loss, best_state, stale_evals, step = float("inf"), None, 0, 0
         for epoch in tqdm(range(1, self.epochs + 1)):
@@ -283,6 +291,11 @@ class RNN(BaseModel):
         y_int = np.searchsorted(self.classes_, yv[known])
         return torch.as_tensor(xv[known], dtype=torch.float32), torch.as_tensor(y_int, dtype=torch.long)
 
+    def _to_int(self, y: np.ndarray) -> torch.Tensor:
+        """Integer class ids of the labels the network knows; other labels are ignored."""
+        y = np.asarray(y)
+        return torch.as_tensor(np.searchsorted(self.classes_, y[np.isin(y, self.classes_)]), dtype=torch.long)
+
     def _balanced_weights(self, y_int: torch.Tensor, n_classes: int) -> torch.Tensor:
         """Inverse-frequency class weights from `y_int`; classes that do not occur get weight 0."""
         counts = torch.bincount(y_int, minlength=n_classes).float()
@@ -295,9 +308,10 @@ class RNN(BaseModel):
     def _val_loss(self, xv: torch.Tensor, yv: torch.Tensor, weights: torch.Tensor) -> float:
         """Class-balanced cross-entropy over all validation windows.
 
-        Weights are the inverse class frequencies of the validation set itself, so this is the mean of the
-        per-class mean losses: a model that predicts 50/50 scores ln 2 whatever the class sizes. It does not
-        depend on how the training data was weighted or resampled.
+        With weights that are the inverse class frequencies of the validation set itself, this is the mean of the
+        per-class mean losses: a model that predicts 50/50 scores ln 2 whatever the class sizes. With weights
+        pooled over many people, every person's loss is on one scale. Either way it does not depend on how the
+        training data was weighted or resampled.
         """
         self.net.eval()
         total, weight_sum = 0.0, 0.0

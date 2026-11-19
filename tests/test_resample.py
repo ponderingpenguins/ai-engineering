@@ -45,9 +45,9 @@ class Recorder(MajorityClass):
 
     seen: list = []
 
-    def fit(self, x, y, val=None):
+    def fit(self, x, y, val=None, **kwargs):
         Recorder.seen.append((np.asarray(y).copy(), None if val is None else np.asarray(val[1]).copy()))
-        return super().fit(x, y, val)
+        return super().fit(x, y, val, **kwargs)
 
 
 def test_trainer_oversamples_training_windows_only():
@@ -88,3 +88,20 @@ def test_validation_loss_is_the_mean_of_per_class_losses():
     expected = np.mean([per_window[yv == c].mean() for c in model.classes_])
     # one step per epoch evaluation; the kept weights are the only ones, so the recorded loss matches
     assert history.val_loss[-1] == pytest.approx(expected, rel=1e-4)
+
+
+def test_validation_weights_can_be_pooled_over_people():
+    rng = np.random.default_rng(0)
+    x = rng.normal(size=(12, 2, 1, 256, 16)).astype(np.float32)
+    y = np.array(["lying", "not_lying"] * 6)
+    xv = rng.normal(size=(5, 2, 1, 256, 16)).astype(np.float32)
+    yv = np.array(["not_lying"] * 5)  # a validation person with one class only
+    pooled = np.array(["lying"] * 2 + ["not_lying"] * 8)
+    own = RNN(epochs=1, batch_size=6, hidden=8, feat_dim=8).fit(x, y, val=(xv, yv)).val_loss[-1]
+    shared = RNN(epochs=1, batch_size=6, hidden=8, feat_dim=8).fit(x, y, val=(xv, yv), val_weight_labels=pooled).val_loss[-1]
+    # one class: any positive weight gives the same weighted mean, so the loss is the plain cross-entropy either way
+    assert shared == pytest.approx(own, rel=1e-4)
+    model = RNN()
+    model.classes_ = np.array(["lying", "not_lying"])
+    weights = model._balanced_weights(model._to_int(pooled), 2)
+    assert weights.tolist() == pytest.approx([10 / (2 * 2), 10 / (2 * 8)])

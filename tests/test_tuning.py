@@ -22,7 +22,7 @@ class Fake:
     def __init__(self, setting):
         self.setting = setting
 
-    def fit(self, x, y, val=None):
+    def fit(self, x, y, val=None, **kwargs):
         Fake.seen.append(("fit", set(x[:, 0].astype(int))))
         if val is not None:
             Fake.seen.append(("val", set(val[0][:, 0].astype(int))))
@@ -89,7 +89,7 @@ def test_kept_val_loss_is_the_loss_at_the_best_step():
 
 def test_model_without_validation_loss_cannot_be_tuned():
     class NoLoss(Fake):
-        def fit(self, x, y, val=None):
+        def fit(self, x, y, val=None, **kwargs):
             return History(steps_per_epoch=10, train_steps=[10], best_step=10)
 
     x, y, groups = make_data()

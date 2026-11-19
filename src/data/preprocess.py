@@ -81,7 +81,10 @@ class Pipeline:
 
 
 def build_pipeline(names: Sequence[str]) -> Pipeline:
-    """A pipeline of the named preprocessors, in the given order.
+    """A pipeline that first drops unknown persons, then runs the named preprocessors in the given order.
+
+    Dropping recordings without a known person is not optional: they would all share one pseudo-person in the
+    person-level splits. `known_person` in `names` is accepted and ignored.
 
     Raises:
         ValueError: If a name is not in `PREPROCESSORS`.
@@ -89,4 +92,5 @@ def build_pipeline(names: Sequence[str]) -> Pipeline:
     unknown = [name for name in names if name not in PREPROCESSORS]
     if unknown:
         raise ValueError(f"unknown preprocessor {unknown}, choose from {list(PREPROCESSORS)}")
-    return Pipeline([PREPROCESSORS[name]() for name in names])
+    steps = [DropUnknownPerson()] + [PREPROCESSORS[name]() for name in names if name != DropUnknownPerson.name]
+    return Pipeline(steps)

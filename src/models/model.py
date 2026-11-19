@@ -93,7 +93,8 @@ class BaseModel(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def fit(self, x: np.ndarray, y:np.ndarray, val:tuple[np.ndarray, np.ndarray] | None = None) -> History | None:
+    def fit(self, x: np.ndarray, y: np.ndarray, val: tuple[np.ndarray, np.ndarray] | None = None,
+            val_weight_labels: np.ndarray | None = None) -> History | None:
         """Trains the model from scratch.
 
         Args:
@@ -101,6 +102,9 @@ class BaseModel(ABC):
             y: Training labels, shape (N,).
             val: Optional (x, y) used for early stopping and to choose the best weights.
                 Must not contain test data.
+            val_weight_labels: Optional labels whose class frequencies weight the validation loss. Pass the
+                pooled labels of many people so validation losses of different people are comparable. Default:
+                the labels of `val` itself.
 
         Returns:
             The recorded losses, or None for models that do not train iteratively.
