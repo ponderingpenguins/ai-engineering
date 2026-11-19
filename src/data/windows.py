@@ -41,6 +41,29 @@ def window_timing(ds: Dataset, window_len: int, stride: int) -> dict[str, float]
     return {"frame_period_s": period, "window_s": window_len * period, "stride_s": stride * period}
 
 
+def limit_per_group(y: np.ndarray, groups: np.ndarray, n: int, seed: int = 0) -> np.ndarray:
+    """Indices of at most `n` windows per group, for quick test runs.
+
+    Every group keeps its windows of the rarer classes first (they are what makes a run meaningful) and
+    fills up with random windows of the most common class. If the rarer classes alone exceed `n`, a random
+    `n` of all of the group's windows are kept. The result is sorted, so the window order is unchanged.
+    """
+    rng = np.random.default_rng(seed)
+    keep = []
+    for group in np.unique(groups):
+        idx = np.flatnonzero(groups == group)
+        if len(idx) > n:
+            labels, counts = np.unique(y[idx], return_counts=True)
+            rare = idx[y[idx] != labels[counts.argmax()]]
+            common = idx[y[idx] == labels[counts.argmax()]]
+            if len(rare) >= n:
+                idx = rng.choice(idx, n, replace=False)
+            else:
+                idx = np.concatenate([rare, rng.choice(common, n - len(rare), replace=False)])
+        keep.append(idx)
+    return np.sort(np.concatenate(keep)) if keep else np.zeros(0, dtype=int)
+
+
 def _prep(h, shape: tuple[int, int]) -> np.ndarray:
     """Make sure the shapes match"""
     a = np.log1p(np.asarray(h, dtype=np.float32))
@@ -58,13 +81,16 @@ def make_windows(
     heatmaps: bool = True,
     relabel: Callable[[np.ndarray], np.ndarray] | None = None,
     label_rule: str = "last",
+    max_per_person: int | None = None,
+    seed: int = 0,
 ) -> tuple:
     """Cut each recording into windows of `window_len` frames.
 
     Returns x (N, window_len, 1, *shape), y (N,) and groups (N,). A window's label comes from its
     frames' labels by `label_rule` (see LABEL_RULES; "last" is the last frame's label). The group is the
     person (the windows of one group must not be split between train and test). Run the preprocessing
-    pipeline first to drop recordings without a known person.
+    pipeline first to drop recordings without a known person. `max_per_person` keeps at most that many windows
+    per person (see `limit_per_group`), for quick test runs; None keeps all.
     """
     if label_rule not in LABEL_RULES:
         raise ValueError(f"label_rule must be one of {LABEL_RULES}, got {label_rule!r}")
@@ -110,6 +136,9 @@ def make_windows(
     groups = np.asarray(window_groups, dtype=str)
     if relabel is not None:
         y = relabel(y)
+    if max_per_person is not None:
+        keep_windows = limit_per_group(y, groups, max_per_person, seed)
+        window_frames, y, groups = window_frames[keep_windows], y[keep_windows], groups[keep_windows]
 
     # 3. load the heatmaps and gather them into windows
     if len(window_frames) == 0:

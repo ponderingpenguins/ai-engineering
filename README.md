@@ -79,6 +79,7 @@ Defaults come from `config/config.yaml`; `key=value` arguments on the command li
 | `eval.folds` | `null` | Cross-validation folds over people. `null` is one fold per person; an integer `k` gives stratified k-fold. |
 | `eval.window_len` / `eval.stride` | `16` / `8` | Window length and step in frames. One frame is about 0.2 s, so this is 3.2 s windows every 1.6 s. The run logs the exact seconds. |
 | `eval.label_rule` | `any_lying` | How a window gets its label, see below. |
+| `eval.max_windows_per_person` | `null` | Keep at most this many windows per person, for quick test runs: all the person's rarer-class windows first, then random windows of the common class. `null` uses every window. Do not use it for results you report. |
 
 Example:
 

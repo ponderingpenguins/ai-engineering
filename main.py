@@ -109,6 +109,8 @@ def run(cfg: Config) -> None:
         heatmaps=make_model().needs_heatmaps,
         relabel=collapse_lying if cfg.eval.collapse_lying else None,
         label_rule=cfg.eval.label_rule,
+        max_per_person=cfg.eval.max_windows_per_person,
+        seed=cfg.eval.seed,
     )
     timing = window_timing(ds, cfg.eval.window_len, cfg.eval.stride)
     logger.info(

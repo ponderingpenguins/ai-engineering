@@ -66,6 +66,8 @@ class EvalConfig:
     label_rule: str = "any_lying"  # "any_lying": predict whether lying occurred within the window; "last": label of its last frame
     stride: int = 8  # frames between window starts
     out_dir: str = "results"  # each run gets its own folder in here
+    # None: use every window. n: keep at most n windows per person (all rarer-class windows first), for quick test runs
+    max_windows_per_person: Optional[int] = None
 
 
 @dataclass
