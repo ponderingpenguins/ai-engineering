@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Config 4 viewer</title>
+</head>
+<body>
+<p>
+  <button id="prevRec">&lt; recording</button>
+  <select id="recSelect"></select>
+  <button id="nextRec">recording &gt;</button>
+</p>
+<p>
+  <button id="play">play</button>
+  speed <select id="speed"><option>0.5</option><option selected>1</option><option>2</option><option>4</option></select>
+  <button id="prevRun">&lt; lying</button>
+  <button id="nextRun">lying &gt;</button>
+</p>
+<p><img id="frame" width="672" height="504" alt="camera frame"></p>
+<h2 id="label"></h2>
+<p id="info"></p>
+<canvas id="strip" width="900" height="40"></canvas>
+<table id="legend"><tr></tr></table>
+<p>
+  Keys: space = play/pause, left/right = one frame (shift = ten), up/down = recording, L = next lying run
+  (shift+L = previous). Click the strip to jump. The strip shows the labels of the whole recording, and the
+  black marks above it are the lying runs. A frame is 0.2 s.
+</p>
+<script src="data.js"></script>
+<script>
+"use strict";
+// VIEWER = {period, classes: [{key, name, colour}], recordings: [{name, person, labels, runs}]}
+// `labels` has one character per frame; each character is the `key` of a class. `runs` are [first, last] frames.
+const V = VIEWER, REC = V.recordings;
+const $ = id => document.getElementById(id);
+const KIND = Object.fromEntries(V.classes.map(c => [c.key, c]));
+const isLying = ch => KIND[ch].name.startsWith("lying");
+const STRIP_W = 900, STRIP_H = 40;
+const ctx = $("strip").getContext("2d");
+let rec = 0, pos = 0, playing = false, timer = 0, speed = 1;
+
+const url = (r, i) => "frames/" + REC[r].name + "/" + String(i).padStart(4, "0") + ".jpg";
+
+// ---- preload the next frames so playback does not wait for the disk
+const cache = new Map();
+function image(r, i) {
+  const k = r + ":" + i;
+  if (!cache.has(k)) { const im = new Image(); im.src = url(r, i); cache.set(k, im); }
+  return cache.get(k);
+}
+function preload() {
+  const n = REC[rec].labels.length;
+  for (let i = pos; i < Math.min(n, pos + 40); i++) image(rec, i);
+  if (cache.size > 400) for (const k of [...cache.keys()].slice(0, cache.size - 300)) cache.delete(k);
+}
+
+// ---- drawing
+function drawStrip() {
+  const labels = REC[rec].labels, n = labels.length, w = STRIP_W / n;
+  ctx.clearRect(0, 0, STRIP_W, STRIP_H);
+  for (let i = 0; i < n; i++) { ctx.fillStyle = KIND[labels[i]].colour; ctx.fillRect(i * w, 10, Math.ceil(w), 30); }
+  ctx.fillStyle = "black";
+  for (const [a] of REC[rec].runs) ctx.fillRect(a * w - 1, 0, 3, 10);   // lying runs
+  ctx.fillRect(pos * w - 1, 10, 3, 30);                                 // current frame
+}
+function show() {
+  const r = REC[rec], ch = r.labels[pos], lying = isLying(ch);
+  $("frame").src = image(rec, pos).src;
+  $("label").replaceChildren(KIND[ch].name + " (", lying ? Object.assign(document.createElement("mark"), {textContent: "LYING"}) : "not lying", ")");
+  const lyingFrames = [...r.labels].filter(isLying).length;
+  $("info").textContent = r.name.split("__").pop() + " | " + r.person + " | frame " + (pos + 1) + " of " + r.labels.length +
+    " | " + (pos * V.period).toFixed(1) + " s | " + lyingFrames + " lying frames in " + r.runs.length + " runs";
+  drawStrip(); preload();
+  history.replaceState(null, "", "#rec=" + encodeURIComponent(r.name) + "&f=" + pos);
+}
+
+// ---- navigation
+function go(p) { pos = Math.max(0, Math.min(REC[rec].labels.length - 1, p)); show(); }
+function setRecording(i) { stop(); rec = (i + REC.length) % REC.length; $("recSelect").value = rec; go(0); }
+function jumpRun(dir) {
+  const starts = REC[rec].runs.map(r => r[0]);
+  if (!starts.length) return;
+  const later = starts.filter(s => s > pos), earlier = starts.filter(s => s < pos);
+  go(dir > 0 ? (later.length ? later[0] : starts[0]) : (earlier.length ? earlier.at(-1) : starts.at(-1)));
+}
+
+// ---- playback: the frame is chosen from the elapsed time, and waits for its image if the disk is slow
+function stop() { playing = false; clearTimeout(timer); $("play").textContent = "play"; }
+function start() {
+  const last = REC[rec].labels.length - 1;
+  if (pos >= last) pos = 0;
+  playing = true; $("play").textContent = "pause";
+  const t0 = performance.now(), p0 = pos;
+  const tick = () => {
+    if (!playing) return;
+    const target = p0 + Math.floor((performance.now() - t0) / (V.period * 1000 / speed));
+    if (target >= last) { go(last); stop(); return; }
+    if (target !== pos && image(rec, target).complete) go(target);
+    timer = setTimeout(tick, 20);
+  };
+  tick();
+}
+
+// ---- wiring
+REC.forEach((r, i) => {
+  const lying = [...r.labels].filter(isLying).length;
+  const none = [...r.labels].every(c => KIND[c].name === "not labelled");
+  $("recSelect").add(new Option(r.name.split("__").pop() + " | " + r.person + " | " + (r.labels.length * V.period / 60).toFixed(1) +
+                                " min | " + (none ? "not labelled" : lying + " lying frames"), i));
+});
+for (const c of V.classes) {
+  const swatch = document.createElement("td"); swatch.bgColor = c.colour; swatch.width = 24;
+  const name = document.createElement("td"); name.textContent = c.name;
+  $("legend").rows[0].append(swatch, name);
+}
+$("recSelect").onchange = e => setRecording(+e.target.value);
+$("prevRec").onclick = () => setRecording(rec - 1);
+$("nextRec").onclick = () => setRecording(rec + 1);
+$("prevRun").onclick = () => { stop(); jumpRun(-1); };
+$("nextRun").onclick = () => { stop(); jumpRun(+1); };
+$("play").onclick = () => playing ? stop() : start();
+$("speed").onchange = e => { speed = +e.target.value; if (playing) { stop(); start(); } };
+$("strip").onclick = e => { stop(); go(Math.floor(e.offsetX / STRIP_W * REC[rec].labels.length)); };
+document.onkeydown = e => {
+  if (e.target.tagName === "SELECT") return;   // the arrow keys belong to the menu while it has focus
+  const k = e.key;
+  if (k === " ") { e.preventDefault(); playing ? stop() : start(); }
+  else if (k === "ArrowRight") { stop(); go(pos + (e.shiftKey ? 10 : 1)); }
+  else if (k === "ArrowLeft") { stop(); go(pos - (e.shiftKey ? 10 : 1)); }
+  else if (k === "ArrowDown") { e.preventDefault(); setRecording(rec + 1); }
+  else if (k === "ArrowUp") { e.preventDefault(); setRecording(rec - 1); }
+  else if (k.toLowerCase() === "l") { stop(); jumpRun(e.shiftKey ? -1 : +1); }
+};
+
+// a link can name the start: index.html#rec=<recording>&f=<frame>, and &play=1 starts playing
+const hash = new URLSearchParams(location.hash.slice(1));
+const named = REC.findIndex(r => r.name === hash.get("rec"));
+rec = named >= 0 ? named : 0;
+$("recSelect").value = rec;
+go(+hash.get("f") || 0);
+if (hash.get("play")) start();
+</script>
+</body>
+</html>
