@@ -29,7 +29,7 @@ def test_negative_sizes_are_rejected():
 
 def test_input_is_not_modified_and_shape_is_kept():
     x = windows(); before = x.clone()
-    out = HeatmapAugment(range_shift_bins=5, floor_jitter=50, time_reverse=True, time_mask_frames=3)(x)
+    out = HeatmapAugment(range_shift_bins=5, floor_jitter=50, time_reverse=True)(x)
     assert out.shape == x.shape and torch.equal(x, before)
 
 
@@ -72,22 +72,6 @@ def test_time_reverse_flips_some_windows_and_leaves_the_rest():
     kept = out[:, 0, 0, 0, 0] == 0
     assert (flipped | kept).all() and flipped.any() and kept.any()
     assert torch.equal(out[flipped], x[flipped].flip(1))
-
-
-def test_time_mask_replaces_a_short_run_by_the_median_frame():
-    x = torch.arange(T, dtype=torch.float32).view(1, T, 1, 1, 1).expand(32, T, 1, R, D).contiguous()
-    torch.manual_seed(1)
-    out = HeatmapAugment(time_mask_frames=3)(x)
-    changed = (out != x).any(-1).any(-1).any(-1)  # (B, T): which frames were replaced
-    assert changed.sum(1).max() <= 3 and changed.any()
-    assert (changed.int().diff(dim=1).abs().sum(1) <= 2).all()  # one contiguous run
-    assert torch.allclose(out[changed], torch.full_like(out[changed], x[0].median().item()))
-
-
-def test_time_mask_never_hides_the_whole_window():
-    x = windows()
-    out = HeatmapAugment(time_mask_frames=100)(x)  # more than T
-    assert (out != x).any(-1).any(-1).any(-1).sum(1).max() <= T - 1
 
 
 def test_rnn_trains_with_augmentation_and_only_on_training_batches():

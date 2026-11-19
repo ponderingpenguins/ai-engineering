@@ -133,6 +133,9 @@ class RangeNormalise(HeatmapTransform):
     against 40-120 heatmap units). It is a low percentile over the recording's time and Doppler axes, then
     smoothed along range with a running median wider than a person, so a person who is in the room for
     most of the recording does not pull the floor up under themselves.
+
+    Not causal: the floor comes from the whole recording, later frames included. Fine for recorded data, but it
+    could not run online. A recording whose heatmaps have an unexpected shape is left unchanged.
     """
 
     name = "range_normalise"

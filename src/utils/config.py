@@ -23,7 +23,6 @@ class AugmentConfig:
     range_shift_bins: float = 0.0  # largest random shift along range, in bins (one bin is 0.0237 m, so 13 is about 0.3 m)
     floor_jitter: float = 0.0  # std of a random smooth baseline along range, in raw heatmap units (try 50)
     time_reverse: bool = False  # play windows backwards half of the time; needs eval.label_rule=any_lying
-    time_mask_frames: int = 0  # each window loses one run of up to this many frames
 
 
 @dataclass

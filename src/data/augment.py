@@ -24,7 +24,11 @@ class HeatmapAugment:
     1. `time_reverse`: plays a window backwards.
     2. `range_shift_bins`: moves the whole scene along range, as if the sensor were mounted higher or lower.
     3. `floor_jitter`: adds a smooth random baseline along range, as the noise floor differs between setups.
-    4. `time_mask_frames`: replaces a short run of frames by the window's typical frame, like dropped frames.
+
+    There is no frame masking on purpose: lying is annotated in runs of only 1 to 5 frames and `any_lying` labels a
+    window from as few as one, so hiding frames would often erase the evidence while the label stays `lying`.
+    `floor_jitter` is meant for the raw heatmap. Do not combine it with `range_normalise`, which removes the floor
+    that the jitter varies.
     """
 
     def __init__(
@@ -32,7 +36,6 @@ class HeatmapAugment:
         range_shift_bins: float = 0.0,
         floor_jitter: float = 0.0,
         time_reverse: bool = False,
-        time_mask_frames: int = 0,
         floor_knots: int = 8,
     ) -> None:
         """Stores the settings.
@@ -45,26 +48,24 @@ class HeatmapAugment:
                 empty room varies by roughly 100-180 units across range and recordings). 0 turns it off.
             time_reverse: Play each window backwards with probability 0.5. Only valid when the label does not
                 depend on the order of the frames, which holds for the `any_lying` label rule but not for `last`.
-            time_mask_frames: Each window loses one run of up to this many frames. 0 turns it off.
             floor_knots: Number of random values the baseline is interpolated between along range.
 
         Raises:
             ValueError: If a setting is negative or `floor_knots` is below 2.
         """
-        if min(range_shift_bins, floor_jitter, time_mask_frames) < 0:
+        if min(range_shift_bins, floor_jitter) < 0:
             raise ValueError("augmentation sizes must not be negative")
         if floor_knots < 2:
             raise ValueError("floor_knots must be at least 2")
         self.range_shift_bins = range_shift_bins
         self.floor_jitter = floor_jitter
         self.time_reverse = time_reverse
-        self.time_mask_frames = time_mask_frames
         self.floor_knots = floor_knots
 
     @property
     def active(self) -> bool:
         """Whether any transform is switched on."""
-        return bool(self.range_shift_bins or self.floor_jitter or self.time_reverse or self.time_mask_frames)
+        return bool(self.range_shift_bins or self.floor_jitter or self.time_reverse)
 
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
         """Augments a batch.
@@ -81,8 +82,6 @@ class HeatmapAugment:
             x = self._shift(x)
         if self.floor_jitter:
             x = self._jitter(x)
-        if self.time_mask_frames:
-            x = self._mask(x)
         return x
 
     def _reverse(self, x: torch.Tensor) -> torch.Tensor:
@@ -114,14 +113,6 @@ class HeatmapAugment:
         baseline = F.interpolate(knots, size=R, mode="linear", align_corners=True).view(B, 1, 1, R, 1)
         return torch.log1p((torch.expm1(x) + baseline).clamp(min=0))
 
-    def _mask(self, x: torch.Tensor) -> torch.Tensor:
-        """Replaces one random run of frames per window by the window's median frame."""
-        B, T = x.shape[:2]
-        length = torch.randint(0, min(self.time_mask_frames, T - 1) + 1, (B, 1), device=x.device)
-        start = torch.randint(0, T, (B, 1), device=x.device)
-        t = torch.arange(T, device=x.device)[None, :]
-        masked = ((t >= start) & (t < start + length)).view(B, T, 1, 1, 1)
-        return torch.where(masked, x.median(dim=1, keepdim=True).values, x)
 
 
 RANGE_MAX_M = 4.85  # Config_4 range limit; points moved beyond it are dropped, as the sensor would not report them
