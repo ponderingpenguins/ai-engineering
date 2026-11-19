@@ -5,7 +5,7 @@ and `person_present` (data/processed/presence_events.csv, from notebooks/label_p
 
 Run it:
 
-    python -m data.extract [data.root=...] [num_proc=4] [overwrite=true] [test_room=room2] ['test_persons=[Dave]'] ['val_persons=[Ian]'] ['recordings=["a","b"]']
+    python -m data.extract [data.root=...] [num_proc=4] [overwrite=true] ['recordings=["a","b"]']
 
 Usage:
     ds = load_from_disk("data/processed/floor_posture")
@@ -21,7 +21,7 @@ from typing import Any, Iterator, cast
 
 import numpy as np
 import pandas as pd
-from datasets import Dataset, DatasetDict, Features, Image, Sequence, Value
+from datasets import Dataset, Features, Image, Sequence, Value
 from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
 
@@ -46,10 +46,6 @@ class ExtractConfig:
     data: DataConfig = field(default_factory=DataConfig)
     num_proc: int = 4
     overwrite: bool = False
-    test_room: str = "room2"  # room held out for the room-wise split
-    # persons held out for the person-wise split; Bob has ~46% of the frames, so these two give ~10% each
-    test_persons: list[str] = field(default_factory=lambda: ["Dave"])
-    val_persons: list[str] = field(default_factory=lambda: ["Ian"])
     recordings: list[str] = field(default_factory=list)  # empty = every recording present
 
     def __post_init__(self) -> None:
@@ -309,59 +305,6 @@ def _add_presence(ds: Dataset) -> Dataset:
     return ds.add_column("person_present", present.tolist()).cast_column("person_present", Value("bool"))
 
 
-def _split(ds: Dataset, is_test: np.ndarray, is_val: np.ndarray) -> DatasetDict:
-    """Splits a dataset into train, val and test.
-
-    Args:
-        ds: The dataset to split.
-        is_test: Boolean mask over the rows of `ds`, True for test rows.
-        is_val: Boolean mask over the rows of `ds`, True for validation rows.
-
-    Returns:
-        A DatasetDict where every row not in test or val goes to train.
-    """
-    train = ~(is_test | is_val)
-    return DatasetDict({
-        "train": ds.select(np.flatnonzero(train)),
-        "val": ds.select(np.flatnonzero(is_val)),
-        "test": ds.select(np.flatnonzero(is_test)),
-    })
-
-
-def _split_by_room(ds: Dataset, test_room: str) -> DatasetDict:
-    """Train/test only: with two rooms there is no room left over for val."""
-    rooms = np.asarray(ds["room"])
-    if test_room not in rooms:
-        raise ValueError(f"test_room {test_room!r} not in dataset rooms {sorted(set(rooms))}")
-    is_test = rooms == test_room
-    return DatasetDict({
-        "train": ds.select(np.flatnonzero(~is_test)),
-        "test": ds.select(np.flatnonzero(is_test)),
-    })
-
-
-def _split_by_person(ds: Dataset, test_persons: list[str], val_persons: list[str]) -> DatasetDict:
-    """Hold out whole persons. Unlabelled ("NA") recordings always stay in train."""
-    persons = np.asarray(ds["person"])
-    named = set(persons) - {NO_PERSON}
-    unknown = (set(test_persons) | set(val_persons)) - named
-    if unknown or set(test_persons) & set(val_persons):
-        raise ValueError(f"bad test/val persons {test_persons}/{val_persons}; have {sorted(named)}")
-    return _split(ds, np.isin(persons, test_persons), np.isin(persons, val_persons))
-
-
-def split_paths(out: Path) -> dict[str, Path]:
-    """Gives the output paths of the room-wise and person-wise splits.
-
-    Args:
-        out: Path of the full baked dataset.
-
-    Returns:
-        Maps "room" and "person" to the path the split is saved at, next to `out`.
-    """
-    return {"room": out.with_name(out.name + "_room_split"), "person": out.with_name(out.name + "_person_split")}
-
-
 def _recordings(root: Path, only: list[str]) -> list[dict[str, Any]]:
     """Lists the recordings that are present on disk.
 
@@ -393,9 +336,7 @@ def _recordings(root: Path, only: list[str]) -> list[dict[str, Any]]:
 
 
 def extract(cfg: ExtractConfig) -> None:
-    """Bakes the raw recordings into a Hugging Face dataset and its splits.
-
-    Saves the full dataset plus a room-wise and a person-wise split to disk.
+    """Bakes the raw recordings into a Hugging Face dataset and saves it to disk.
 
     Args:
         cfg: The extraction configuration.
@@ -411,8 +352,6 @@ def extract(cfg: ExtractConfig) -> None:
             logger.error("%s already exists. Pass overwrite=true to rebuild it.", out)
             sys.exit(1)
         shutil.rmtree(out)
-        for path in split_paths(out).values():
-            shutil.rmtree(path, ignore_errors=True)
 
     recs = _recordings(root, cfg.recordings)
     if not recs:
@@ -432,10 +371,6 @@ def extract(cfg: ExtractConfig) -> None:
     ds = _add_person(ds)
     ds = _add_presence(ds)
     ds.save_to_disk(str(out))
-    splits = {"room": _split_by_room(ds, cfg.test_room), "person": _split_by_person(ds, cfg.test_persons, cfg.val_persons)}
-    for name, path in split_paths(out).items():
-        splits[name].save_to_disk(str(path))
-        logger.info("%s split -> %s: %s", name, path, {k: len(v) for k, v in splits[name].items()})
     shutil.rmtree(cache, ignore_errors=True)
     logger.info("saved %d rows to %s", len(ds), out)
 

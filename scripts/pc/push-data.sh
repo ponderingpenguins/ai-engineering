@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Copies the baked dataset (about 3 GB) to the PC. Resumable: rerun it if it is interrupted.
-# Pass a different folder name to copy another one, e.g. floor_posture_person_split.
+# Pass a different folder name to copy another one.
 #   scripts/pc/push-data.sh [dataset-folder-name]
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
