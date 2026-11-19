@@ -4,16 +4,39 @@ import numpy as np
 import pandas as pd
 from datasets import Dataset
 
-from data.extract import NO_PERSON
-
-# Every labelled recording is Config_4: 256 range bins x 16 Doppler bins. Other sensor
-# configs (64/128 range bins) carry no pose labels, so they are dropped.
+# Every labelled recording is Config_4: 256 range bins x 16 Doppler bins (see data/preprocess.py, which drops
+# the other sensor configs).
 HEATMAP_SHAPE = (256, 16)  # (range_bins, doppler_bins)
+
+# How a window gets its label from the labels of its frames: "last" or "any_lying".
+# See "How windows are labelled" in the README and `_window_label`.
+LABEL_RULES = ("last", "any_lying")
 
 
 def collapse_lying(y: np.ndarray) -> np.ndarray:
     """Relable all labels to either 'lying' or 'no_lying'"""
     return np.where(np.char.startswith(y, "lying"), "lying", "not_lying")
+
+
+def _window_label(frame_labels: np.ndarray, rule: str) -> str:
+    """The label of one window, given the labels of its frames in time order."""
+    if rule == "any_lying":
+        lying = [label for label in frame_labels if str(label).startswith("lying")]
+        if lying:
+            return lying[-1]
+    return frame_labels[-1]
+
+
+def window_timing(ds: Dataset, window_len: int, stride: int) -> dict[str, float]:
+    """How long windows are in seconds, from the capture timestamps of `ds`.
+
+    The frame period is the median time between consecutive frames of a recording. Gaps longer than a
+    second (dropped frames, pauses) are ignored.
+    """
+    meta = ds.select_columns(["recording", "timestamp"]).to_pandas()
+    gaps = meta.sort_values(["recording", "timestamp"]).groupby("recording").timestamp.diff().dt.total_seconds()
+    period = float(gaps[gaps <= 1.0].median())
+    return {"frame_period_s": period, "window_s": window_len * period, "stride_s": stride * period}
 
 
 def _prep(h, shape: tuple[int, int]) -> np.ndarray:
@@ -33,16 +56,19 @@ def make_windows(
     heatmaps: bool = True,
     relabel: Callable[[np.ndarray], np.ndarray] | None = None,
     return_metadata: bool = False,
+    label_rule: str = "last",
 ) -> tuple:
     """Cut each recording into windows of `window_len` frames.
 
-    Returns x (N, window_len, 1, *shape), y (N,) and groups (N,). A window gets the label of its
-    last frame. The group is the person, or the recording when the person is unknown (the windows
-    of one group must not be split between train and test).
+    Returns x (N, window_len, 1, *shape), y (N,) and groups (N,). A window's label comes from its
+    frames' labels by `label_rule` (see LABEL_RULES; "last" is the last frame's label). The group is the person (the windows of one group must not be split between train and
+    test). Run the preprocessing pipeline first to drop recordings without a known person.
 
     With return_metadata=True, also returns one metadata dict per window, including
     ordered original frame IDs and capture timestamps for investigating predictions.
     """
+    if label_rule not in LABEL_RULES:
+        raise ValueError(f"label_rule must be one of {LABEL_RULES}, got {label_rule!r}")
     # 1. keep only frames we can use: valid heatmap, a label, and the expected shape
     has_heatmap = np.asarray(ds["heatmap_ok"], dtype=bool)
     has_label = np.array([label is not None for label in ds[target]])
@@ -68,7 +94,7 @@ def make_windows(
         frame_nums = rec.capture_idx.to_numpy()
         labels = rec[target].to_numpy()
         person = rec.person.iloc[0]
-        group = str(recording) if person == NO_PERSON else str(person)
+        group = str(person)
 
         for start in range(0, len(rec) - window_len + 1, stride):
             last = start + window_len - 1
@@ -76,7 +102,7 @@ def make_windows(
             if has_gap:  # frames were dropped in between, so skip this window
                 continue
             frames_per_window.append(positions[start : last + 1])
-            window_labels.append(labels[last])
+            window_labels.append(_window_label(labels[start : last + 1], label_rule))
             window_groups.append(group)
             if return_metadata:
                 part = rec.iloc[start : last + 1]

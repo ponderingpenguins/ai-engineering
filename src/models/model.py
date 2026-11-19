@@ -23,7 +23,9 @@ class BaseModel(ABC):
             **self._checkpoint_state(),
             "format_version": 1,
             "model": self.model_name,
-            "evaluation": {key: evaluation[key] for key in required},
+            # label_rule is optional so checkpoints saved before it existed still load, as "last"
+            "evaluation": {**{key: evaluation[key] for key in required},
+                           "label_rule": evaluation.get("label_rule", "last")},
         }
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -43,6 +45,7 @@ class BaseModel(ABC):
         required = {"target", "collapse_lying", "window_len"}
         if not isinstance(evaluation, dict) or not required <= set(evaluation):
             raise ValueError("Checkpoint is missing evaluation settings.")
+        evaluation.setdefault("label_rule", "last")  # checkpoints from before window label rules existed
 
         model_class = cls
         if cls is BaseModel:

@@ -220,7 +220,7 @@ class RNN(BaseModel):
             message = f"epoch {epoch}/{self.epochs} loss={loss:.4f}"
 
             if val is not None and len(val[1]) > 0:
-                score = macro_f1(val[1], self.predict(val[0]))
+                score = macro_f1(val[1], self.predict(val[0]), self.classes_) or 0.0  # undefined counts as the worst score
                 message += f" val_macro_f1={score:.3f}"
                 if score > best_score:  # remember the best epoch on validation data
                     best_score, best_state = score, copy.deepcopy(self.net.state_dict())

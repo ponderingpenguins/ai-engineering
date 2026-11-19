@@ -75,12 +75,34 @@ Defaults come from `config/config.yaml`; `key=value` arguments on the command li
 | Parameter  | Default                        | Description                                                                             |
 | ---------- | ------------------------------ | --------------------------------------------------------------------------------------- |
 | `data.baked` | `data/processed/floor_posture` | Baked dataset folder. Relative paths are resolved against the repo root.                |
+| `data.preprocess` | `[config_4, known_person]` | Frame filters run once after loading, before windowing (`src/data/preprocess.py`). |
+| `eval.folds` | `null` | Cross-validation folds over people. `null` is one fold per person; an integer `k` gives stratified k-fold. |
+| `eval.window_len` / `eval.stride` | `16` / `8` | Window length and step in frames. One frame is about 0.2 s, so this is 3.2 s windows every 1.6 s. The run logs the exact seconds. |
+| `eval.label_rule` | `any_lying` | How a window gets its label, see below. |
 
 Example:
 
 ```
 python main.py data.baked=/path/to/floor_posture
+python main.py model.name=baseline eval.folds=2 eval.label_rule=last
 ```
+
+### How windows are labelled
+
+Frames are cut into windows of `eval.window_len` frames (about 0.2 s each, measured from the capture timestamps). Windows that span a gap of dropped frames are skipped.
+
+- **`any_lying` (default):** the classifier predicts whether lying **occurred** within the window's 3.2 s. A window is labelled lying if at least one of its frames is lying, and not lying if none is. If the window has several lying frames, the last one decides between `lying_left` and `lying_right` (when `eval.collapse_lying=false`).
+- **`last`:** a window takes the label of its last frame.
+
+Why `any_lying`: in the labelled data, lying is annotated in short runs of 1 to 5 frames (0.2 to 1 s), scattered through recordings that last about 6 minutes. With `last`, a window is only positive when it happens to end on one of those frames: with 16-frame windows and stride 8, that kept 7 lying windows out of 1450. Requiring most of the window to be lying (majority) kept none. With `any_lying`, the same data gives 37 lying windows, and each person has some.
+
+Consequences to keep in mind when reading scores:
+
+- **What a positive means:** lying occurred at least once in the window's 3.2 s. It does not mean the person was lying for the whole window, and a positive window may contain 15 non-lying frames. Do not read lying recall or precision as "how long someone lay" or "how well a lying posture is held". They measure detection of lying occurring.
+- **What a negative means:** none of the window's frames is lying. A window is not-lying only if lying never occurred in it, so a window next to a lying episode can be a negative.
+- Windows overlap by half, so one lying frame can label two neighbouring windows. The 37 lying windows come from 33 lying frames in 6 recordings, so they are not independent.
+- Windows are cut after the preprocessing filters, so recordings without a known person are never windowed.
+- Checkpoints record the label rule. Checkpoints saved before the rule existed are treated as `last`.
 
 ## Baking the dataset
 
@@ -128,19 +150,27 @@ Two columns of the baked dataset are not in the raw data: they were annotated by
 - **`person`** is one value per recording. The notebook shows the best face crops of each recording and you pick a name from a fixed list of pseudonyms. Unlabelled recordings always stay in the train set of the person-wise split.
 - **`person_present`** is stored as `enter` and `leave` events on frame indices. A person is present from each `enter` until the next `leave` (or the end of the recording), so a recording that starts with someone already in view needs an `enter` on frame 0. Recordings without any events get `None`, not `False`, so filter on `person_present.notna()` before training on it. This is separate from the raw `label_presence` track, which is not reliable (it is `False` wherever it exists).
 
-## Comparing models
+## Evaluation workflow
 
-```bash
-python -m utils.compare 'checkpoints=["results/rnn.pt"]'
-python -m utils.compare 'checkpoints=["results/rnn_a.pt","results/rnn_b.pt"]'
-python -m utils.compare  # baseline only
-```
+Everything is split by person, and there are four known people, so we use nested leave-one-person-out cross-validation.
 
-Loads saved models and evaluates them on the prepared test partition. The majority-class
-baseline is always included. No models are trained.
+1. **Outer loop (testing).** Hold out one person as the test person.
+2. **Inner loop (tuning).** On the remaining people, run leave-one-person-out again: each of them is the validation person once, the others train. Compare hyperparameters on the pooled validation predictions and pick the best settings. Early stopping and the epoch count also come from the inner loop.
+3. **Refit.** Train on all the remaining people with the best settings and score on the test person.
+4. **Report** the outer scores: the per-person table first (lying recall with its support), then the pooled score over all test predictions.
+5. **Final model.** Train on all people with the settings that won most often in the inner loops. There is no validation person for this run, so it uses the median epoch count from the inner loops. It has no held-out score of its own; we assume that more training data does not make it worse than the cross-validated models.
 
-Test set defaults to `data/processed/floor_posture_person_split`; override it with `partitions=/path/to/split`.
-Unknown participants stay in the training partition and are not evaluated.
+The test person is never used to choose settings, so the outer scores are not inflated by tuning.
+
+Caveats:
+
+- With 4 people the inner loop validates on one person at a time, who has only a few lying windows (they overlap, see "How windows are labelled"). Tuning is noisy, so keep the search small.
+- The cost is (people - 1) trainings per setting and per outer fold, plus one refit, so 4 x 3 = 12 trainings per setting for 4 people.
+- The outer scores describe the whole procedure (tuning included) on a new person, not the one final model.
+- The nested loop is not implemented yet: `main.py` currently runs only the outer loop, with no tuning.
+
+Recordings from sensor configs other than Config 4, and recordings without a known participant, are dropped
+by the preprocessing pipeline (`data.preprocess` in the config) before windowing.
 
 After training a model, save it with the task settings used for that run:
 
