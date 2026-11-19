@@ -19,7 +19,7 @@ TODO:
 import sys
 import logging
 from collections import Counter
-from dataclasses import asdict, fields, replace
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import cast
@@ -33,10 +33,10 @@ from data.resample import RandomOversampler
 from data.windows import collapse_lying, make_windows, window_timing
 from models.factory import MODELS, build_model
 from models.model import BaseModel
-from utils.config import Config, ModelConfig, RNNConfig
+from utils.config import Config, ModelConfig
 from utils.splitter import GroupKFoldSplitter
 from utils.trainer import Trainer
-from utils.tuning import Tuner, apply_tuned, load_tuned, save_tuned, validate_grid
+from utils.tuning import Tuner, apply_tuned, hyperparameter_names, load_tuned, save_tuned, validate_grid, with_setting
 
 logging.basicConfig(
     level=logging.INFO,
@@ -52,13 +52,12 @@ def tuned_model_config(cfg: Config, task: dict) -> tuple[ModelConfig, dict]:
     """The model config with the setting saved by a tuning run applied, for `train.full_run`.
 
     Raises:
-        ValueError: If tuning is also requested, the model is not an RNN, the tuned file is missing, or it
+        ValueError: If tuning is also requested, the model cannot be tuned, the tuned file is missing, or it
             was tuned for a different model or task than the current settings.
     """
     if cfg.tune.grid:
         raise ValueError("train.full_run and tune.grid cannot be combined: tune first, then run the full run")
-    if cfg.model.name != "rnn":
-        raise ValueError(f"train.full_run needs a tuned setting, which only exists for model.name=rnn, got {cfg.model.name!r}")
+    hyperparameter_names(cfg.model)  # raises for a model that has nothing to tune, so there is no tuned setting
     path = REPO / cfg.tune.best_path
     try:
         tuned = load_tuned(path)
@@ -136,13 +135,11 @@ def run(cfg: Config) -> None:
     tuner = None
     if cfg.tune.grid:
         try:
-            if cfg.model.name != "rnn":
-                raise ValueError(f"tuning is only defined for model.name=rnn, got {cfg.model.name!r}")
-            validate_grid(cfg.tune.grid, [f.name for f in fields(RNNConfig)])
+            validate_grid(cfg.tune.grid, hyperparameter_names(cfg.model))
         except ValueError as e:
             logger.error("%s", e)
             sys.exit(1)
-        tuner = Tuner(lambda setting: build_model(replace(cfg.model, rnn=replace(cfg.model.rnn, **setting))),
+        tuner = Tuner(lambda setting: build_model(with_setting(cfg.model, setting)),
                       cfg.tune.grid, resampler)
     trainer = Trainer(make_model, splitter=splitter, out_dir=out_dir, task=task, seed=cfg.eval.seed,
                       resampler=resampler, validate=cfg.train.validation, tuner=tuner,

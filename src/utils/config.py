@@ -67,7 +67,7 @@ class TrainConfig:
 
 @dataclass
 class TuneConfig:
-    # Nested cross-validation: a list of hyperparameter overrides of model.rnn, e.g.
+    # Nested cross-validation: a list of hyperparameter overrides of the chosen model (model.rnn or model.pointnet), e.g.
     # [{hidden: 64}, {hidden: 128, lr: 0.0003}]. Every outer fold tries each setting with leave-one-person-out
     # over its training people, keeps the best and refits it for the median best epoch. Empty: no tuning.
     grid: list[dict[str, Any]] = field(default_factory=list)

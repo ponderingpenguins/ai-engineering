@@ -25,13 +25,33 @@ from omegaconf import OmegaConf
 
 from data.resample import RandomOversampler
 from models.model import BaseModel, History
-from utils.config import ModelConfig, RNNConfig
+from utils.config import ModelConfig
 from utils.metrics import macro_f1
 from utils.splitter import inner_splits
 
 logger = logging.getLogger(__name__)
 
 Setting = dict[str, Any]  # overrides of the model's hyperparameters, e.g. {"hidden": 64, "lr": 3e-4}
+
+
+TUNABLE_MODELS = ("rnn", "pointnet")  # the models whose hyperparameters live in `ModelConfig.<name>`
+
+
+def hyperparameter_names(model_cfg: ModelConfig) -> list[str]:
+    """The names of the chosen model's hyperparameters, which a tuning setting may override.
+
+    Raises:
+        ValueError: If the model has no tunable hyperparameters (the baseline).
+    """
+    if model_cfg.name not in TUNABLE_MODELS:
+        raise ValueError(f"tuning is only defined for model.name in {TUNABLE_MODELS}, got {model_cfg.name!r}")
+    return [f.name for f in fields(getattr(model_cfg, model_cfg.name))]
+
+
+def with_setting(model_cfg: ModelConfig, setting: Setting) -> ModelConfig:
+    """The model config with `setting` applied on top of the chosen model's hyperparameters."""
+    hyperparameter_names(model_cfg)  # raises for models that cannot be tuned
+    return replace(model_cfg, **{model_cfg.name: replace(getattr(model_cfg, model_cfg.name), **setting)})
 
 
 def validate_grid(grid: Sequence[Setting], allowed: Sequence[str]) -> None:
@@ -179,8 +199,8 @@ def apply_tuned(model_cfg: ModelConfig, tuned: dict[str, Any], task: dict[str, A
     if tuned.get("model") != model_cfg.name or tuned.get("task") != task:
         raise ValueError(f"the tuned config is for model {tuned.get('model')!r} and task {tuned.get('task')}, "
                          f"but this run is {model_cfg.name!r} with {task}; tune again")
-    validate_grid([tuned["setting"]], [f.name for f in fields(RNNConfig)])
-    return replace(model_cfg, rnn=replace(model_cfg.rnn, **{**tuned["setting"], "epochs": tuned["epochs"]}))
+    validate_grid([tuned["setting"]], hyperparameter_names(model_cfg))
+    return with_setting(model_cfg, {**tuned["setting"], "epochs": tuned["epochs"]})
 
 
 def load_tuned(path: Path) -> dict[str, Any]:
