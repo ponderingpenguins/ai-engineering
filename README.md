@@ -116,7 +116,7 @@ Every `python main.py` run writes a folder `results/<timestamp>_<model>/` contai
 | `results.json` | Everything above in machine-readable form, including the full per-step loss history of each fold. |
 | `checkpoints/fold<k>_<test person>.pt` | The best weights of each fold (the ones kept after early stopping). |
 
-Rebuild the report and figures of an old run with `python -m utils.run_report results/<run>`. The checkpoints load with `BaseModel.load` and can go straight into `python -m utils.compare`.
+Rebuild the report and figures of an old run with `python -m utils.run_report results/<run>`. The checkpoints load with `BaseModel.load`.
 
 How training works for the `rnn` model:
 
@@ -151,7 +151,6 @@ Things worth knowing:
 
 - The PC's ssh config logs you straight into WSL, which blocks `ssh host '<command>'`. The scripts override that per call and pipe the script into `bash` in WSL, so `~/.ssh/config` is untouched. `PC_HOST` and `PC_DIR` (default `/home/haukur/rug/ai-engineering`) can be overridden in the environment.
 - WSL shuts the whole Linux instance down about 15 seconds after the last SSH session closes, which kills every process, including `nohup`, `setsid`, `tmux` and systemd services (all tested). So `job.sh` leaves one SSH session open in the background on this machine for exactly as long as the job runs (it ends by itself with the job). **The Mac must stay awake and connected (Tailscale on) until the job finishes**; the scripts deliberately do not stop it from sleeping, so if it sleeps or the connection drops, the job dies about 15 seconds later. Jobs run as `systemd-run --user` units so that `status.sh` and `stop.sh` can see and stop them. A permanent fix would be on the PC itself (Windows side), for example an idle-timeout setting in `.wslconfig` or a keep-alive task; the scripts do not change anything there.
-- The code copy has no `.git`, so `python -m utils.compare` cannot record a commit there. `main.py` does not need it.
 
 ## Baking the dataset
 

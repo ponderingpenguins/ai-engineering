@@ -99,7 +99,7 @@ def write_report(results: dict[str, Any], out_dir: Path) -> Path:
 
     checkpoints = [(fold["fold"], fold["checkpoint"]) for fold in folds if fold.get("checkpoint")]
     if checkpoints:
-        lines += ["## Checkpoints", "", "Best weights of each fold; load with `BaseModel.load` or compare with `python -m utils.compare`.", ""]
+        lines += ["## Checkpoints", "", "Best weights of each fold; load with `BaseModel.load`.", ""]
         lines += [f"- Fold {number}: `{path}`" for number, path in checkpoints] + [""]
 
     report = out_dir / "report.md"

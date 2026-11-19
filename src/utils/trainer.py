@@ -139,7 +139,7 @@ class Trainer:
         """Saves the fold's trained model (its best weights) under `out_dir/checkpoints`.
 
         Returns the path relative to `out_dir`, or None if nothing is saved. Load it with
-        `BaseModel.load`, or compare it with `python -m utils.compare`.
+        `BaseModel.load`.
         """
         if self.out_dir is None or self.task is None:
             return None
