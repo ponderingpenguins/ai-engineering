@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from utils.splitter import GroupKFoldSplitter
+from utils.splitter import GroupKFoldSplitter, inner_splits
 
 PEOPLE = {"Bob": 40, "Dave": 30, "Frank": 60, "Ian": 70}
 LYING = {"Bob": 1, "Dave": 1, "Frank": 3, "Ian": 2}
@@ -55,3 +55,20 @@ def test_k_out_of_range_raises(data, k):
     y, groups = data
     with pytest.raises(ValueError, match="between 2 and the number of groups"):
         GroupKFoldSplitter(k=k).split(y, groups)
+
+
+def test_inner_splits_hold_out_each_training_person_once(data):
+    y, groups = data
+    train = np.flatnonzero(groups != "Ian")  # Ian is the outer test person
+    folds = inner_splits(train, groups)
+    assert [tuple(np.unique(groups[val])) for _, val in folds] == [("Bob",), ("Dave",), ("Frank",)]
+    for fit, val in folds:
+        assert not set(groups[fit]) & set(groups[val])  # no person in both parts
+        assert sorted(np.concatenate([fit, val])) == sorted(train)  # together they are the training fold
+    assert "Ian" not in {g for fit, val in folds for g in groups[np.concatenate([fit, val])]}
+
+
+def test_inner_splits_need_two_people(data):
+    y, groups = data
+    with pytest.raises(ValueError, match="at least two people"):
+        inner_splits(np.flatnonzero(groups == "Bob"), groups)

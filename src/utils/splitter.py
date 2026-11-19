@@ -68,6 +68,31 @@ def validation_split(train: np.ndarray, groups: np.ndarray, seed: int) -> tuple[
     people = np.unique(groups[train])
     if len(people) < 2:
         return train, None
-    held_out = np.random.default_rng(seed).choice(people)
-    is_val = groups[train] == held_out
+    return _hold_out(train, groups, np.random.default_rng(seed).choice(people))
+
+
+def inner_splits(train: np.ndarray, groups: np.ndarray) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Leave-one-person-out inside a training fold, for tuning without touching the test person.
+
+    Every person in the training fold is the validation person once, and the others are fit on.
+
+    Args:
+        train: Indices of the training fold (the outer test person is not in it).
+        groups: The person of every window, indexed like the full dataset.
+
+    Returns:
+        One `(fit_idx, val_idx)` pair per person in `train`, sorted by the person's name.
+
+    Raises:
+        ValueError: If `train` has fewer than two people, so there is nothing to fit on or validate with.
+    """
+    people = np.unique(groups[train])
+    if len(people) < 2:
+        raise ValueError(f"inner splits need at least two people, got {len(people)}")
+    return [_hold_out(train, groups, person) for person in people]
+
+
+def _hold_out(train: np.ndarray, groups: np.ndarray, person: str) -> tuple[np.ndarray, np.ndarray]:
+    """`(fit_idx, val_idx)` with all of `person`'s windows in `val_idx`."""
+    is_val = groups[train] == person
     return train[~is_val], train[is_val]
