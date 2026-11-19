@@ -9,9 +9,10 @@ from models.rnn import RNN
 from utils.curves import mean_curves, plot_fold_curves, plot_mean_curves
 from utils.run_report import write_report
 from utils.splitter import GroupKFoldSplitter, validation_split
+from utils.task import Task
 from utils.trainer import Trainer
 
-TASK = {"target": "label_pose", "collapse_lying": True, "window_len": 16, "label_rule": "any_lying"}
+TASK = Task(target="label_pose", collapse_lying=True, window_len=16, label_rule="any_lying")
 
 
 # ---- validation split -------------------------------------------------------------------------
@@ -107,7 +108,7 @@ def test_trainer_writes_checkpoints_results_and_report(tmp_path):
         assert fold["val_groups"] and not set(fold["val_groups"]) & set(fold["test_groups"])
         assert (out / fold["checkpoint"]).exists()
         model, task = BaseModel.load(out / fold["checkpoint"])
-        assert task["window_len"] == 16 and task["label_rule"] == "any_lying"
+        assert task == TASK
     assert json.loads((out / "results.json").read_text())["pooled"]["n"] == len(y)
     report = (out / "report.md").read_text()
     assert "## Per fold" in report and "## Pooled results" in report and "Recall lying" in report

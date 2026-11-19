@@ -1,6 +1,6 @@
 """Build a model from the config, so the model can be picked from the command line."""
 
-from dataclasses import asdict
+from dataclasses import asdict, is_dataclass
 
 from utils.config import ModelConfig
 
@@ -15,10 +15,8 @@ MODELS = tuple(MODEL_CLASSES)
 
 def build_model(cfg: ModelConfig) -> BaseModel:
     """A fresh, untrained model."""
-    if cfg.name == "baseline":
-        return MajorityClass()
-    if cfg.name == "rnn":
-        return RNN(**asdict(cfg.rnn))
-    if cfg.name == "pointnet":
-        return PointNet(**asdict(cfg.pointnet))
-    raise ValueError(f"unknown model {cfg.name!r}, choose one of {MODELS}")
+    model_class = MODEL_CLASSES.get(cfg.name)
+    if model_class is None:
+        raise ValueError(f"unknown model {cfg.name!r}, choose one of {MODELS}")
+    params = getattr(cfg, cfg.name, None)  # the model's own hyperparameters, if it has any
+    return model_class(**asdict(params)) if is_dataclass(params) else model_class()

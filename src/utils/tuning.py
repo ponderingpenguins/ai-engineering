@@ -26,6 +26,7 @@ from omegaconf import OmegaConf
 from data.resample import RandomOversampler
 from models.model import BaseModel, History
 from utils.config import ModelConfig
+from utils.task import Task
 from utils.metrics import macro_f1
 from utils.splitter import inner_splits
 
@@ -34,18 +35,15 @@ logger = logging.getLogger(__name__)
 Setting = dict[str, Any]  # overrides of the model's hyperparameters, e.g. {"hidden": 64, "lr": 3e-4}
 
 
-TUNABLE_MODELS = ("rnn", "pointnet")  # the models whose hyperparameters live in `ModelConfig.<name>`
-
-
 def hyperparameter_names(model_cfg: ModelConfig) -> list[str]:
     """The names of the chosen model's plain hyperparameters, which a tuning setting may override.
 
     Raises:
         ValueError: If the model has no tunable hyperparameters (the baseline).
     """
-    if model_cfg.name not in TUNABLE_MODELS:
-        raise ValueError(f"tuning is only defined for model.name in {TUNABLE_MODELS}, got {model_cfg.name!r}")
-    params = getattr(model_cfg, model_cfg.name)
+    params = getattr(model_cfg, model_cfg.name, None)  # a model has hyperparameters if ModelConfig has a field for it
+    if not is_dataclass(params):
+        raise ValueError(f"tuning is only defined for models that have hyperparameters, not {model_cfg.name!r}")
     return [f.name for f in fields(params) if not is_dataclass(getattr(params, f.name))]  # no nested sub-configs
 
 
@@ -184,22 +182,26 @@ def best_overall(tunings: Sequence[dict[str, Any]]) -> dict[str, Any]:
             "wins": len(won), "of_folds": len(tunings), "mean_val_loss": float(np.mean([t["score"] for t in won]))}
 
 
-def save_tuned(path: Path, best: dict[str, Any], model: str, task: dict[str, Any]) -> None:
+def save_tuned(path: Path, best: dict[str, Any], model: str, task: Task) -> None:
     """Writes the chosen setting to a YAML file, with the model and task it was tuned for."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    OmegaConf.save(OmegaConf.create({"model": model, "task": task, **best}), path)
+    OmegaConf.save(OmegaConf.create({"model": model, "task": task.to_dict(), **best}), path)
 
 
-def apply_tuned(model_cfg: ModelConfig, tuned: dict[str, Any], task: dict[str, Any]) -> ModelConfig:
+def apply_tuned(model_cfg: ModelConfig, tuned: dict[str, Any], task: Task) -> ModelConfig:
     """The model config with a tuned setting and epoch count applied, for the full run.
 
     Raises:
         ValueError: If the setting was tuned for a different model or task than the current run, or names
             a hyperparameter the model does not have.
     """
-    if tuned.get("model") != model_cfg.name or tuned.get("task") != task:
+    try:
+        tuned_task = Task.from_dict(tuned.get("task"))
+    except ValueError:
+        tuned_task = None
+    if tuned.get("model") != model_cfg.name or tuned_task != task:
         raise ValueError(f"the tuned config is for model {tuned.get('model')!r} and task {tuned.get('task')}, "
-                         f"but this run is {model_cfg.name!r} with {task}; tune again")
+                         f"but this run is {model_cfg.name!r} with {task.to_dict()}; tune again")
     validate_grid([tuned["setting"]], hyperparameter_names(model_cfg))
     return with_setting(model_cfg, {**tuned["setting"], "epochs": tuned["epochs"]})
 

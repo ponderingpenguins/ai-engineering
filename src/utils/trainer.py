@@ -16,6 +16,7 @@ from models.model import BaseModel
 from utils.metrics import accuracy, macro_f1, per_class, scores
 from utils.run_report import write_report
 from utils.splitter import GroupKFoldSplitter, validation_split
+from utils.task import Task
 from utils.tuning import Tuner, best_overall
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,7 @@ class Trainer:
     metrics: dict[str, Metric] = field(default_factory=lambda: {"accuracy": accuracy, "macro_f1": macro_f1})
     out_dir: Path | None = None  # results, checkpoints, loss curves and the report are saved here when set
     config: dict[str, Any] | None = None  # saved together with the results
-    task: dict[str, Any] | None = None  # evaluation settings stored in each checkpoint (target, window_len, ...)
+    task: Task | None = None  # stored in each checkpoint
     seed: int = 0  # picks the validation person of each fold
     resampler: RandomOversampler | None = None  # applied to each fold's training windows only
     validate: bool = True  # False: no validation person, the model trains on all training people for its epochs
@@ -153,7 +154,7 @@ class Trainer:
         if self.out_dir is not None:
             self.out_dir.mkdir(parents=True, exist_ok=True)
             if self.task is not None:
-                model.save(self.out_dir / "final.pt", evaluation=self.task)
+                model.save(self.out_dir / "final.pt", self.task)
                 info["checkpoint"] = "final.pt"
             (self.out_dir / "final.json").write_text(json.dumps(info, indent=2))
         logger.info("final model trained on %d windows in %.1f s; checkpoint %s", len(idx), train_seconds,
@@ -169,7 +170,7 @@ class Trainer:
         if self.out_dir is None or self.task is None:
             return None
         relative = Path("checkpoints") / f"fold{fold}_{'+'.join(sorted(held_out))}.pt"
-        model.save(self.out_dir / relative, evaluation=self.task)
+        model.save(self.out_dir / relative, self.task)
         return str(relative)
 
     def _save(self, results: dict[str, Any]) -> None:

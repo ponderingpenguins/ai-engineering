@@ -29,9 +29,9 @@ def _settings(results: dict[str, Any]) -> list[str]:
     validation = (config.get("train") or {}).get("validation", True)
     tuned = "tuned" in results
     lines = [f"- Model: `{model.get('name', 'unknown')}`."]
-    if model.get("name") in ("rnn", "pointnet"):
-        rnn = model.get(model["name"], {})  # the chosen model's own hyperparameters
-        if model["name"] == "pointnet":
+    rnn = model.get(model.get("name"))  # the chosen model's own hyperparameters; the baseline has none
+    if isinstance(rnn, dict):
+        if config.get("input_type") == "pointcloud":
             lines.append(f"- Input: the radar point cloud of each window, up to {(config.get('eval') or {}).get('max_points')} "
                          "points (x, y, z, doppler, snr, time in window), not the heatmaps.")
         if tuned:

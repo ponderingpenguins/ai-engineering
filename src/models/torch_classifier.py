@@ -3,7 +3,7 @@
 import copy
 import logging
 from abc import abstractmethod
-from typing import Any, Callable
+from typing import Any, Callable, Self
 
 import numpy as np
 import torch
@@ -41,6 +41,11 @@ class TorchClassifier(BaseModel):
     classes_: np.ndarray
     # applied to each training batch (never to validation or test data); a subclass may set it
     augment: Callable[[torch.Tensor], torch.Tensor] | None = None
+    # names the checkpoint must hold so that the model can be rebuilt: the `__init__` arguments of the subclass,
+    # with `augment` kept as its settings dict (`augment_settings`)
+    parameter_names: tuple[str, ...] = ()
+    # tags what the network expects as input; a checkpoint with another tag is refused
+    preprocessing: str
 
     def __init__(
         self,
@@ -73,9 +78,42 @@ class TorchClassifier(BaseModel):
         self.evals_per_epoch = evals_per_epoch
         self.device = pick_device()
 
+    def _set_augment(self, settings: dict[str, Any] | None, augment_class: Callable[..., Any]) -> None:
+        """Builds the batch augmentation from its settings. None, or all transforms off, means no augmentation."""
+        self.augment_settings = settings
+        augment = augment_class(**settings) if settings else None
+        self.augment = augment if augment is not None and augment.active else None
+
     @abstractmethod
     def _build_net(self, n_classes: int) -> nn.Module:
         """A new, untrained network with `n_classes` outputs."""
+
+    def _checkpoint_state(self) -> dict[str, Any]:
+        """The hyperparameters, class names and weights. A subclass only lists its `parameter_names`."""
+        if not hasattr(self, "net"):
+            raise ValueError("Train the model before saving it.")
+        parameters = {name: getattr(self, "augment_settings" if name == "augment" else name)
+                      for name in self.parameter_names}
+        return {
+            "parameters": parameters,
+            "classes": self.classes_.tolist(),
+            "state_dict": self.net.state_dict(),
+            "preprocessing": self.preprocessing,
+        }
+
+    @classmethod
+    def _from_checkpoint(cls, checkpoint: dict[str, Any]) -> Self:
+        """Rebuilds the model from a checkpoint made by `_checkpoint_state`."""
+        if checkpoint.get("preprocessing") != cls.preprocessing:
+            raise ValueError("Checkpoint preprocessing does not match the current pipeline.")
+        model = cls(**checkpoint["parameters"])
+        model.classes_ = np.asarray(checkpoint["classes"], dtype=str)
+        if len(model.classes_) == 0:
+            raise ValueError("Checkpoint has no class labels.")
+        model.net = model._build_net(len(model.classes_)).to(model.device)
+        model.net.load_state_dict(checkpoint["state_dict"])
+        model.net.eval()
+        return model
 
     def _set_input_stats(self, x: np.ndarray) -> None:
         """Hook: set the network's input standardisation from the training windows. Does nothing by default."""
