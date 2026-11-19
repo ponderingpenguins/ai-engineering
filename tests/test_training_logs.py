@@ -1,3 +1,4 @@
+from dataclasses import replace
 import json
 
 import numpy as np
@@ -7,6 +8,7 @@ from models.baseline import MajorityClass
 from models.model import BaseModel, History
 from models.rnn import RNN
 from utils.curves import mean_curves, plot_fold_curves, plot_mean_curves
+from utils.results import FoldResult, Pooled, RunResults
 from utils.run_report import write_report
 from utils.splitter import GroupKFoldSplitter, validation_split
 from utils.task import Task
@@ -103,13 +105,15 @@ def test_trainer_writes_checkpoints_results_and_report(tmp_path):
                       config={"model": {"name": "baseline"}, "eval": {"folds": None, "seed": 0}})
     results = trainer.cross_validate(x, y, groups)
 
-    assert len(results["folds"]) == 4
-    for fold in results["folds"]:
-        assert fold["val_groups"] and not set(fold["val_groups"]) & set(fold["test_groups"])
-        assert (out / fold["checkpoint"]).exists()
-        model, task = BaseModel.load(out / fold["checkpoint"])
+    assert len(results.folds) == 4
+    for fold in results.folds:
+        assert fold.val_groups and not set(fold.val_groups) & set(fold.test_groups)
+        assert (out / fold.checkpoint).exists()
+        model, task = BaseModel.load(out / fold.checkpoint)
         assert task == TASK
-    assert json.loads((out / "results.json").read_text())["pooled"]["n"] == len(y)
+    stored = json.loads((out / "results.json").read_text())
+    assert stored["pooled"]["n"] == len(y)
+    assert RunResults.from_dict(stored).to_dict() == stored  # the file round-trips through the records
     report = (out / "report.md").read_text()
     assert "## Per fold" in report and "## Pooled results" in report and "Recall lying" in report
     assert "does not train iteratively" in report  # the baseline has no loss curves
@@ -118,7 +122,7 @@ def test_trainer_writes_checkpoints_results_and_report(tmp_path):
 def test_trainer_without_out_dir_saves_nothing(tmp_path):
     x, y, groups = make_cv_data()
     results = Trainer(MajorityClass).cross_validate(x, y, groups)
-    assert all(fold["checkpoint"] is None for fold in results["folds"])
+    assert all(fold.checkpoint is None for fold in results.folds)
     assert not list(tmp_path.iterdir())
 
 
@@ -130,20 +134,20 @@ def fake_history(steps, steps_per_epoch, val_every, stopped=False):
     val_steps = list(range(val_every, steps + 1, val_every))
     return History(steps_per_epoch=steps_per_epoch, train_steps=list(range(1, steps + 1)), train_loss=train,
                    val_steps=val_steps, val_loss=[1.0 / (i + 1) + 0.1 for i in range(len(val_steps))],
-                   best_step=val_steps[-1], stopped_early=stopped).to_dict()
+                   best_step=val_steps[-1], stopped_early=stopped)
 
 
 def fake_folds():
     return [
-        {"fold": 1, "test_groups": ["Bob"], "val_groups": ["Dave"], "history": fake_history(40, 10, 10)},
-        {"fold": 2, "test_groups": ["Dave"], "val_groups": ["Ian"], "history": fake_history(30, 6, 6, stopped=True)},
-        {"fold": 3, "test_groups": ["Frank"], "val_groups": ["Ian"], "history": fake_history(50, 10, 10)},
+        FoldResult(1, ["Bob"], ["Dave"], history=fake_history(40, 10, 10)),
+        FoldResult(2, ["Dave"], ["Ian"], history=fake_history(30, 6, 6, stopped=True)),
+        FoldResult(3, ["Frank"], ["Ian"], history=fake_history(50, 10, 10)),
     ]
 
 
 def test_mean_curves_use_only_real_val_points_and_need_two_folds():
     folds = fake_folds()
-    folds[2]["history"] = fake_history(60, 10, 10)  # fold 3 trains for 6 epochs, fold 1 for 4, fold 2 for 5
+    folds[2].history = fake_history(60, 10, 10)  # fold 3 trains for 6 epochs, fold 1 for 4, fold 2 for 5
     curves = mean_curves(folds)
     assert curves is not None
     assert list(curves["val_epoch"]) == [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]  # evaluated once per epoch, no interpolation
@@ -153,30 +157,31 @@ def test_mean_curves_use_only_real_val_points_and_need_two_folds():
 
 
 def test_mean_curves_none_without_histories():
-    assert mean_curves([{"fold": 1, "history": None}]) is None
+    assert mean_curves([FoldResult(1, ["Bob"])]) is None
 
 
 def test_figures_are_written(tmp_path):
     folds = fake_folds()
     assert plot_fold_curves(folds, tmp_path / "a.png").stat().st_size > 0
     assert plot_mean_curves(folds, tmp_path / "b.png").stat().st_size > 0
-    assert plot_fold_curves([{"fold": 1, "history": None}], tmp_path / "c.png") is None
+    assert plot_fold_curves([FoldResult(1, ["Bob"])], tmp_path / "c.png") is None
 
 
 def test_report_embeds_both_figures_when_there_are_histories(tmp_path):
-    folds = [dict(f, n_test=5, metrics={"accuracy": 0.9, "macro_f1": 0.5}, checkpoint=f"checkpoints/f{f['fold']}.pt",
-                  per_class={"lying": {"recall": 0.5, "support": 2}, "not_lying": {"recall": 1.0, "support": 3}})
+    folds = [replace(f, n_test=5, metrics={"accuracy": 0.9, "macro_f1": 0.5}, checkpoint=f"checkpoints/f{f.fold}.pt",
+                     per_class={"lying": {"recall": 0.5, "support": 2}, "not_lying": {"recall": 1.0, "support": 3}})
              for f in fake_folds()]
-    results = {"config": {"model": {"name": "rnn", "rnn": {"epochs": 30, "patience": 5, "batch_size": 32,
-                                                          "lr": 0.001, "evals_per_epoch": 1}},
-                          "eval": {"folds": None, "seed": 0, "window_len": 16, "stride": 8, "label_rule": "any_lying"},
-                          "window_timing": {"window_s": 3.2, "stride_s": 1.6}},
-               "folds": folds,
-               "pooled": {"n": 15, "metrics": {"accuracy": 0.9, "macro_f1": 0.5},
-                          "per_class": {"lying": {"precision": 0.5, "recall": 0.5, "f1": 0.5, "support": 6},
-                                        "not_lying": {"precision": 1.0, "recall": 1.0, "f1": 1.0, "support": 9}}},
-               "per_person": {"Bob": {"n": 5, "lying_recall": 0.5, "lying_support": 2,
-                                      "not_lying_recall": 1.0, "not_lying_support": 3}}}
+    results = RunResults(
+        config={"model": {"name": "rnn", "rnn": {"epochs": 30, "patience": 5, "batch_size": 32,
+                                                 "lr": 0.001, "evals_per_epoch": 1}},
+                "eval": {"folds": None, "seed": 0, "window_len": 16, "stride": 8, "label_rule": "any_lying"},
+                "window_timing": {"window_s": 3.2, "stride_s": 1.6}},
+        folds=folds,
+        pooled=Pooled(15, {"accuracy": 0.9, "macro_f1": 0.5},
+                      {"lying": {"precision": 0.5, "recall": 0.5, "f1": 0.5, "support": 6},
+                       "not_lying": {"precision": 1.0, "recall": 1.0, "f1": 1.0, "support": 9}}),
+        per_person={"Bob": {"n": 5, "lying_recall": 0.5, "lying_support": 2,
+                            "not_lying_recall": 1.0, "not_lying_support": 3}})
     report = write_report(results, tmp_path).read_text()
     assert "![Loss per fold](loss_per_fold.png)" in report and "![Loss across folds](loss_mean.png)" in report
     assert "3.2 s" in report and "patience 5" in report and "early" in report
@@ -196,22 +201,22 @@ def test_without_validation_every_fold_trains_on_all_its_training_people():
 
     results = Trainer(Recorder, splitter=GroupKFoldSplitter(), validate=False).cross_validate(x, y, groups)
     assert all(val is None for val in seen)
-    assert all(fold["val_groups"] == [] and fold["n_val"] == 0 for fold in results["folds"])
-    assert all(fold["n_train"] == 18 for fold in results["folds"])  # 3 of 4 people, 6 windows each
+    assert all(fold.val_groups == [] and fold.n_val == 0 for fold in results.folds)
+    assert all(fold.n_train == 18 for fold in results.folds)  # 3 of 4 people, 6 windows each
 
 
 def test_report_and_figures_work_without_validation_loss(tmp_path):
     folds = []
     for f in fake_folds():
-        h = dict(f["history"], val_steps=[], val_loss=[], best_step=None, stopped_early=False)
-        folds.append(dict(f, val_groups=[], history=h, n_test=5, metrics={"accuracy": 0.9, "macro_f1": 0.5},
-                          per_class={"lying": {"recall": 0.5, "support": 2}}, checkpoint=None))
-    results = {"config": {"model": {"name": "rnn", "rnn": {"epochs": 3, "batch_size": 32, "lr": 0.001, "seed": 0}},
-                          "train": {"validation": False}, "eval": {"folds": None, "seed": 0}},
-               "folds": folds,
-               "pooled": {"n": 15, "metrics": {"accuracy": 0.9, "macro_f1": 0.5},
-                          "per_class": {"lying": {"precision": 0.5, "recall": 0.5, "f1": 0.5, "support": 6}}},
-               "per_person": {}}
+        h = replace(f.history, val_steps=[], val_loss=[], best_step=None, stopped_early=False)
+        folds.append(replace(f, val_groups=[], history=h, n_test=5, metrics={"accuracy": 0.9, "macro_f1": 0.5},
+                             per_class={"lying": {"recall": 0.5, "support": 2}}, checkpoint=None))
+    results = RunResults(
+        config={"model": {"name": "rnn", "rnn": {"epochs": 3, "batch_size": 32, "lr": 0.001, "seed": 0}},
+                "train": {"validation": False}, "eval": {"folds": None, "seed": 0}},
+        folds=folds,
+        pooled=Pooled(15, {"accuracy": 0.9, "macro_f1": 0.5},
+                      {"lying": {"precision": 0.5, "recall": 0.5, "f1": 0.5, "support": 6}}))
     report = write_report(results, tmp_path).read_text()
     assert "exactly 3 epochs" in report and "No validation data and no early stopping" in report
     assert "Every fold trains on all its training people" in report

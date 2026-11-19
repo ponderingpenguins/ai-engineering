@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Self
 
@@ -28,6 +28,12 @@ class History:
     def to_dict(self) -> dict[str, Any]:
         """Plain lists and numbers, ready for JSON."""
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, values: dict[str, Any]) -> "History":
+        """A history from `to_dict` output; keys it does not know are ignored."""
+        names = {f.name for f in fields(cls)}
+        return cls(**{key: value for key, value in values.items() if key in names})
 
 
 class BaseModel(ABC):

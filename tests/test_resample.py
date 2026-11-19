@@ -56,11 +56,11 @@ def test_trainer_oversamples_training_windows_only():
     x = np.zeros((len(y), 4), dtype=np.float32)
     Recorder.seen = []
     results = Trainer(Recorder, splitter=GroupKFoldSplitter(), resampler=RandomOversampler(1.0)).cross_validate(x, y, groups)
-    for (train_y, val_y), fold in zip(Recorder.seen, results["folds"]):
+    for (train_y, val_y), fold in zip(Recorder.seen, results.folds):
         assert counts(train_y)["lying"] == counts(train_y)["not_lying"]  # balanced
         assert counts(val_y) == {"lying": 2, "not_lying": 10}  # validation untouched
-        assert fold["n_test"] == 12  # test untouched
-        assert fold["n_train_after_resampling"] > fold["n_train"]
+        assert fold.n_test == 12  # test untouched
+        assert fold.n_train_after_resampling > fold.n_train
 
 
 # ---- the validation loss no longer depends on the training weights ----------------------------

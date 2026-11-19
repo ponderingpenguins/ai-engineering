@@ -2,7 +2,6 @@
 
 import warnings
 from pathlib import Path
-from typing import Any
 
 import matplotlib
 
@@ -11,20 +10,23 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from models.model import History
+from utils.results import FoldResult
+
 GRID_PER_EPOCH = 10  # points per epoch on the common axis of the train curve in the mean figure
 
 
-def fold_histories(folds: list[dict[str, Any]]) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+def fold_histories(folds: list[FoldResult]) -> list[tuple[FoldResult, History]]:
     """The `(fold, history)` pairs of the folds that have a loss history (iterative models only)."""
-    return [(fold, fold["history"]) for fold in folds if fold.get("history")]
+    return [(fold, fold.history) for fold in folds if fold.history]
 
 
-def _title(fold: dict[str, Any]) -> str:
-    val = f", val {'+'.join(fold['val_groups'])}" if fold.get("val_groups") else ""
-    return f"Fold {fold['fold']}: test {'+'.join(fold['test_groups'])}{val}"
+def _title(fold: FoldResult) -> str:
+    val = f", val {'+'.join(fold.val_groups)}" if fold.val_groups else ""
+    return f"Fold {fold.fold}: test {'+'.join(fold.test_groups)}{val}"
 
 
-def plot_fold_curves(folds: list[dict[str, Any]], path: Path) -> Path | None:
+def plot_fold_curves(folds: list[FoldResult], path: Path) -> Path | None:
     """One panel per fold: train loss at every step, val loss at every evaluation.
 
     A dashed line marks the step whose weights were kept (the lowest val loss).
@@ -39,14 +41,14 @@ def plot_fold_curves(folds: list[dict[str, Any]], path: Path) -> Path | None:
     rows = int(np.ceil(len(pairs) / cols))
     fig, axes = plt.subplots(rows, cols, figsize=(6.5 * cols, 3.6 * rows), squeeze=False, sharey=True)
     for ax, (fold, history) in zip(axes.flat, pairs):
-        ax.plot(history["train_steps"], history["train_loss"], color="tab:blue", alpha=0.45, lw=0.8, label="train (every step)")
-        if history["val_loss"]:
-            ax.plot(history["val_steps"], history["val_loss"], color="tab:orange", marker="o", ms=3, lw=1.4,
+        ax.plot(history.train_steps, history.train_loss, color="tab:blue", alpha=0.45, lw=0.8, label="train (every step)")
+        if history.val_loss:
+            ax.plot(history.val_steps, history.val_loss, color="tab:orange", marker="o", ms=3, lw=1.4,
                     label="validation")
-        if history["best_step"] is not None:
-            ax.axvline(history["best_step"], color="gray", ls="--", lw=1, label="kept weights")
-        if history["stopped_early"]:
-            ax.axvline(history["train_steps"][-1], color="tab:red", ls=":", lw=1, label="early stop")
+        if history.best_step is not None:
+            ax.axvline(history.best_step, color="gray", ls="--", lw=1, label="kept weights")
+        if history.stopped_early:
+            ax.axvline(history.train_steps[-1], color="tab:red", ls=":", lw=1, label="early stop")
         ax.set(title=_title(fold), xlabel="Training step", ylabel="Weighted cross-entropy")
         ax.legend(fontsize=7)
     for ax in axes.flat[len(pairs):]:
@@ -62,7 +64,7 @@ def _on_grid(x: np.ndarray, values: np.ndarray, grid: np.ndarray) -> np.ndarray:
     return np.interp(grid, x, values, left=np.nan, right=np.nan)
 
 
-def mean_curves(folds: list[dict[str, Any]]) -> dict[str, np.ndarray] | None:
+def mean_curves(folds: list[FoldResult]) -> dict[str, np.ndarray] | None:
     """Mean and standard deviation over folds of the train and val loss, on an epoch axis.
 
     Folds have different numbers of steps per epoch and stop at different times, so every curve is put on
@@ -79,9 +81,9 @@ def mean_curves(folds: list[dict[str, Any]]) -> dict[str, np.ndarray] | None:
     pairs = fold_histories(folds)
     if not pairs:
         return None
-    last_epoch = max(h["train_steps"][-1] / h["steps_per_epoch"] for _, h in pairs)
+    last_epoch = max(h.train_steps[-1] / h.steps_per_epoch for _, h in pairs)
     grid = np.arange(1, int(np.ceil(last_epoch * GRID_PER_EPOCH)) + 1) / GRID_PER_EPOCH
-    val_epochs = np.unique(np.round([step / h["steps_per_epoch"] for _, h in pairs for step in h["val_steps"]], 2))
+    val_epochs = np.unique(np.round([step / h.steps_per_epoch for _, h in pairs for step in h.val_steps], 2))
 
     def reduce(curves: list[np.ndarray], width: int) -> tuple[np.ndarray, np.ndarray]:
         stack = np.vstack(curves) if curves else np.full((1, width), np.nan)
@@ -94,19 +96,19 @@ def mean_curves(folds: list[dict[str, Any]]) -> dict[str, np.ndarray] | None:
 
     train, val = [], []
     for _, h in pairs:
-        spe = h["steps_per_epoch"]
-        smooth = np.asarray(pd.Series(h["train_loss"]).rolling(spe, min_periods=1).mean())
-        train.append(_on_grid(np.asarray(h["train_steps"]) / spe, smooth, grid))
-        if h["val_loss"]:
-            at = np.round(np.asarray(h["val_steps"]) / spe, 2)
-            val.append(np.array([h["val_loss"][list(at).index(e)] if e in at else np.nan for e in val_epochs]))
+        spe = h.steps_per_epoch
+        smooth = np.asarray(pd.Series(h.train_loss).rolling(spe, min_periods=1).mean())
+        train.append(_on_grid(np.asarray(h.train_steps) / spe, smooth, grid))
+        if h.val_loss:
+            at = np.round(np.asarray(h.val_steps) / spe, 2)
+            val.append(np.array([h.val_loss[list(at).index(e)] if e in at else np.nan for e in val_epochs]))
     train_mean, train_std = reduce(train, len(grid))
     val_mean, val_std = reduce(val, len(val_epochs))
     return {"epoch": grid, "train_mean": train_mean, "train_std": train_std,
             "val_epoch": val_epochs, "val_mean": val_mean, "val_std": val_std}
 
 
-def plot_mean_curves(folds: list[dict[str, Any]], path: Path) -> Path | None:
+def plot_mean_curves(folds: list[FoldResult], path: Path) -> Path | None:
     """Train and val loss against epochs, as the mean over folds with a shaded band of ±1 standard deviation.
 
     Returns:

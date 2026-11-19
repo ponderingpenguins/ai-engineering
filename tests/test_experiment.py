@@ -8,6 +8,7 @@ from datasets import Dataset
 from data.preprocess import CONFIG_4
 from utils.config import Config, EvalConfig
 from utils.experiment import check_config, run, tuned_model_config
+from utils.results import BestSetting
 from utils.task import Task
 from utils.tuning import save_tuned
 
@@ -86,7 +87,7 @@ def test_label_dependent_augmentations_need_the_right_task():
 # ---- tuned_model_config ----------------------------------------------------------------------------
 
 TASK = Task.from_eval(Config().eval)
-BEST = {"setting": {"hidden": 16}, "epochs": 3, "wins": 1, "of_folds": 1, "mean_val_loss": 0.5}
+BEST = BestSetting({"hidden": 16}, 3, 1, 1, 0.5)
 
 
 def test_tuned_config_needs_a_tuned_file_and_no_grid(tmp_path):
@@ -122,7 +123,7 @@ def test_the_baseline_has_no_tuned_setting(tmp_path):
 def test_run_cross_validates_and_writes_the_results(tmp_path):
     tiny_dataset(tmp_path / "baked")
     results = run(make_cfg(tmp_path), tmp_path)
-    assert len(results["folds"]) == 4 and results["pooled"]["n"] > 0
+    assert len(results.folds) == 4 and results.pooled.n > 0
     out = next((tmp_path / "results").iterdir())
     assert json.loads((out / "results.json").read_text())["config"]["input_type"] == "none"
     assert (out / "report.md").is_file()
@@ -142,4 +143,4 @@ def test_run_reports_too_many_folds(tmp_path):
 def test_run_limits_the_windows_per_person(tmp_path):
     tiny_dataset(tmp_path / "baked")
     results = run(make_cfg(tmp_path, max_windows_per_person=2), tmp_path)
-    assert results["pooled"]["n"] == 4 * 2
+    assert results.pooled.n == 4 * 2

@@ -1,4 +1,4 @@
-from dataclasses import replace
+from dataclasses import asdict, replace
 import numpy as np
 import pytest
 
@@ -6,6 +6,7 @@ from models.baseline import MajorityClass
 from models.model import History
 from utils.splitter import GroupKFoldSplitter
 from utils.trainer import Trainer
+from utils.results import BestSetting, Tuning
 from utils.task import Task
 from utils.tuning import (Tuner, apply_tuned, best_epoch, best_overall, kept_val_loss, load_tuned, median_epoch, save_tuned,
                           validate_grid)
@@ -52,9 +53,9 @@ def test_tuner_picks_the_lowest_validation_loss_not_the_best_macro_f1():
     tuning = Tuner(Fake, grid).tune(x, y, groups, train, CLASSES)
     assert tuning.setting == grid[1]  # it predicts badly, but its loss is the lowest
     assert tuning.score == pytest.approx(0.4)
-    assert [c["setting"] for c in tuning.candidates] == grid
-    assert tuning.candidates[0]["macro_f1"] == 1.0 and tuning.candidates[1]["macro_f1"] < 1.0
-    assert [f["val_group"] for f in tuning.candidates[0]["folds"]] == ["Bob", "Dave", "Frank"]
+    assert [c.setting for c in tuning.candidates] == grid
+    assert tuning.candidates[0].macro_f1 == 1.0 and tuning.candidates[1].macro_f1 < 1.0
+    assert [f.val_group for f in tuning.candidates[0].folds] == ["Bob", "Dave", "Frank"]
 
 
 def test_ties_go_to_the_earlier_setting():
@@ -122,28 +123,28 @@ def test_empty_grid_and_unknown_or_duplicate_settings_raise():
 
 
 def tuning(setting, epochs, score):
-    return {"setting": setting, "epochs": epochs, "score": score}
+    return Tuning(setting, epochs, score)
 
 
 def test_best_overall_is_the_setting_that_won_most_folds_with_the_median_epoch():
     a, b = {"hidden": 32}, {"hidden": 64}
     best = best_overall([tuning(a, 3, 0.5), tuning(b, 9, 0.4), tuning(a, 7, 0.6), tuning(a, 5, 0.5)])
-    assert best["setting"] == a and best["epochs"] == 5  # median of 3, 7, 5
-    assert (best["wins"], best["of_folds"]) == (3, 4)
-    assert best["mean_val_loss"] == pytest.approx((0.5 + 0.6 + 0.5) / 3)
+    assert best.setting == a and best.epochs == 5  # median of 3, 7, 5
+    assert (best.wins, best.of_folds) == (3, 4)
+    assert best.mean_val_loss == pytest.approx((0.5 + 0.6 + 0.5) / 3)
 
 
 def test_best_overall_breaks_a_tie_by_the_lower_mean_loss():
     a, b = {"hidden": 32}, {"hidden": 64}
-    assert best_overall([tuning(a, 3, 0.5), tuning(b, 3, 0.4)])["setting"] == b
+    assert best_overall([tuning(a, 3, 0.5), tuning(b, 3, 0.4)]).setting == b
 
 
 def test_tuned_setting_round_trips_through_the_yaml_file(tmp_path):
-    best = {"setting": {"hidden": 64, "lr": 0.0003}, "epochs": 7, "wins": 3, "of_folds": 4, "mean_val_loss": 0.5}
+    best = BestSetting({"hidden": 64, "lr": 0.0003}, 7, 3, 4, 0.5)
     task = Task(target="label_pose", collapse_lying=True, window_len=16, label_rule="any_lying")
     path = tmp_path / "sub" / "tuned.yaml"
     save_tuned(path, best, "rnn", task)
-    assert load_tuned(path) == {"model": "rnn", "task": task.to_dict(), **best}
+    assert load_tuned(path) == {"model": "rnn", "task": task.to_dict(), **asdict(best)}
 
 
 def test_loading_a_missing_tuned_file_says_to_tune_first(tmp_path):
@@ -156,23 +157,23 @@ def test_trainer_tunes_each_outer_fold_on_its_training_people_only():
     Fake.seen = []
     tuner = Tuner(Fake, [{"loss": 0.8, "good": False}, {"loss": 0.3, "good": True}])
     results = Trainer(lambda: Fake({}), splitter=GroupKFoldSplitter(), tuner=tuner).cross_validate(x, y, groups)
-    assert len(results["folds"]) == 4
-    for fold in results["folds"]:
-        assert fold["tuning"]["setting"] == {"loss": 0.3, "good": True}
-        assert fold["val_groups"] == [] and fold["n_val"] == 0  # the refit has no validation person
-        assert fold["n_train"] == 36  # all three training people
-        assert fold["metrics"]["macro_f1"] == 1.0
-    assert results["tuned"]["setting"] == {"loss": 0.3, "good": True}
-    assert (results["tuned"]["wins"], results["tuned"]["of_folds"]) == (4, 4)
+    assert len(results.folds) == 4
+    for fold in results.folds:
+        assert fold.tuning.setting == {"loss": 0.3, "good": True}
+        assert fold.val_groups == [] and fold.n_val == 0  # the refit has no validation person
+        assert fold.n_train == 36  # all three training people
+        assert fold.metrics["macro_f1"] == 1.0
+    assert results.tuned.setting == {"loss": 0.3, "good": True}
+    assert (results.tuned.wins, results.tuned.of_folds) == (4, 4)
 
 
 def test_train_final_fits_on_all_windows_and_saves_a_checkpoint(tmp_path):
     x, y, groups = make_data()
     task = Task(target="label_pose", collapse_lying=True, window_len=16, label_rule="any_lying")
     info = Trainer(MajorityClass, out_dir=tmp_path, task=task).train_final(x, y)
-    assert info["n_windows"] == len(y) and info["checkpoint"] == "final.pt"
+    assert info.n_windows == len(y) and info.checkpoint == "final.pt"
     assert (tmp_path / "final.pt").is_file() and (tmp_path / "final.json").is_file()
-    assert info["train_classes"] == {"lying": 8, "not_lying": 40}
+    assert info.train_classes == {"lying": 8, "not_lying": 40}
 
 
 def test_report_has_a_tuning_section_with_every_setting(tmp_path):

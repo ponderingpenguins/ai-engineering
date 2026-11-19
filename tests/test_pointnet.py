@@ -180,8 +180,8 @@ def test_trainer_runs_cross_validation_with_the_pointnet(tmp_path):
                       config={"model": {"name": "pointnet", "pointnet": {"epochs": 2, "batch_size": 16, "lr": 0.001,
                                                                           "patience": 5, "evals_per_epoch": 1}},
                               "eval": {"folds": None, "seed": 0, "max_points": 12}, "input_type": "pointcloud"}).cross_validate(x, y, groups)
-    assert len(results["folds"]) == 4 and all(f["history"] for f in results["folds"])
-    assert all((tmp_path / f["checkpoint"]).exists() for f in results["folds"])
+    assert len(results.folds) == 4 and all(f.history for f in results.folds)
+    assert all((tmp_path / f.checkpoint).exists() for f in results.folds)
     assert "point cloud" in (tmp_path / "report.md").read_text()
 
 
