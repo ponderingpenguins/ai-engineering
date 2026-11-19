@@ -4,17 +4,12 @@ import numpy as np
 import pandas as pd
 from datasets import Dataset
 
-# Every labelled recording is Config_4: 256 range bins x 16 Doppler bins. Other sensor
-# configs (64/128 range bins) carry no pose labels, so they are dropped.
+# Every labelled recording is Config_4: 256 range bins x 16 Doppler bins (see data/preprocess.py, which drops
+# the other sensor configs).
 HEATMAP_SHAPE = (256, 16)  # (range_bins, doppler_bins)
 
-# How a window gets its label from the labels of its frames:
-#   "last":      the label of the last frame.
-#   "any_lying": the task becomes "did lying occur within the window?". A window gets a lying label
-#                if at least one frame in it is lying (the last such frame's label, so lying_left vs
-#                lying_right survives), otherwise the label of its last frame. It does not mean the
-#                whole window is lying. Meant for `label_pose`. Lying is annotated in runs of only
-#                1-5 frames (0.2-1 s), so "last" keeps almost none of it, while a 3.2 s window sees it.
+# How a window gets its label from the labels of its frames: "last" or "any_lying".
+# See "How windows are labelled" in the README and `_window_label`.
 LABEL_RULES = ("last", "any_lying")
 
 

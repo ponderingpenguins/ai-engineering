@@ -75,7 +75,6 @@ Defaults come from `config/config.yaml`; `key=value` arguments on the command li
 | Parameter  | Default                        | Description                                                                             |
 | ---------- | ------------------------------ | --------------------------------------------------------------------------------------- |
 | `data.baked` | `data/processed/floor_posture` | Baked dataset folder. Relative paths are resolved against the repo root.                |
-
 | `data.preprocess` | `[config_4, known_person]` | Frame filters run once after loading, before windowing (`src/data/preprocess.py`). |
 | `eval.folds` | `null` | Cross-validation folds over people. `null` is one fold per person; an integer `k` gives stratified k-fold. |
 | `eval.window_len` / `eval.stride` | `16` / `8` | Window length and step in frames. One frame is about 0.2 s, so this is 3.2 s windows every 1.6 s. The run logs the exact seconds. |
