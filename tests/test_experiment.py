@@ -153,3 +153,22 @@ def test_run_leaves_out_the_excluded_recordings(tmp_path):
     results = run(cfg, tmp_path)
     assert len(results.folds) == 3  # one fold per remaining person
     assert all("Bob" not in fold.test_groups for fold in results.folds)
+
+
+def test_the_report_names_the_target_and_the_recordings_it_used(tmp_path, caplog):
+    tiny_dataset(tmp_path / "baked")
+    ds = Dataset.load_from_disk(str(tmp_path / "baked"))
+    # a second target in which only three of the four recordings are labelled, like a partly reviewed track
+    labels = [None if rec == "rec_Ian" else "not_lying" for rec in ds["recording"]]
+    ds.add_column("lying_annotation", labels).save_to_disk(str(tmp_path / "with_annotation"))
+    cfg = make_cfg(tmp_path)
+    cfg.data.baked = str(tmp_path / "with_annotation")
+    cfg.eval.target = "lying_annotation"
+    with caplog.at_level("WARNING"):
+        results = run(cfg, tmp_path)
+    assert results.config["recordings_used"] == ["rec_Bob", "rec_Dave", "rec_Frank"]
+    assert results.config["recordings_unlabelled"] == ["rec_Ian"]
+    assert "rec_Ian" in caplog.text and "not used" in caplog.text
+    report = (next((tmp_path / "results").iterdir()) / "report.md").read_text()
+    assert "Target: `lying_annotation`. 3 recordings used" in report
+    assert "no labels for this target: rec_Ian" in report
