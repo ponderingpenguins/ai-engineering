@@ -16,13 +16,11 @@ Tune first, then train the final model with the best setting (see "Evaluation wo
 import logging
 import sys
 from pathlib import Path
-from typing import cast
 
-from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
 
 from models.factory import MODELS
-from utils.config import Config
+from utils.config import load_config
 from utils.experiment import check_config, run
 
 logging.basicConfig(
@@ -37,13 +35,8 @@ REPO = Path(__file__).resolve().parent
 
 def main() -> None:
     """Reads the configuration, runs the experiment and turns errors into exit codes."""
-    schema = OmegaConf.structured(Config)
-    file_cfg = OmegaConf.load(REPO / "config" / "config.yaml")
-    cli_cfg = OmegaConf.from_cli()
     try:
-        # unknown keys fail the merge (ConfigKeyError), bad types fail to_object
-        merged = OmegaConf.merge(schema, file_cfg, cli_cfg)
-        cfg = cast(Config, OmegaConf.to_object(merged))
+        cfg = load_config(REPO, sys.argv[1:])  # unknown keys and bad types raise here
         check_config(cfg)
     except (TypeError, ValueError, OmegaConfBaseException) as e:  # pylint: disable=broad-exception-raised
         logger.error(

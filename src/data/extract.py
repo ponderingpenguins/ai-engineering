@@ -25,6 +25,7 @@ from datasets import Dataset, Features, Image, Sequence, Value
 from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
 
+from data.annotation import LYING_INTERVALS, lying_labels, read_annotations
 from utils.config import DataConfig
 
 logging.basicConfig(
@@ -305,6 +306,23 @@ def _add_presence(ds: Dataset) -> Dataset:
     return ds.add_column("person_present", present.tolist()).cast_column("person_present", Value("bool"))
 
 
+def _add_lying_annotation(ds: Dataset) -> Dataset:
+    """Add a `lying_annotation` column from lying_intervals.csv: "lying", "not_lying", or None if not reviewed.
+
+    See `data.annotation`. Recordings that are not reviewed get None, so they are not mistaken for
+    recordings without lying.
+    """
+    annotations = read_annotations(LYING_INTERVALS)
+    meta = ds.select_columns(["recording", "frame_idx", "timestamp"]).to_pandas()
+    labels = lying_labels(meta, annotations)
+    reviewed = {rec for rec, marks in annotations.items() if marks.reviewed} & set(meta.recording)
+    if not reviewed:
+        logger.warning("no reviewed recordings in %s, lying_annotation is None everywhere", LYING_INTERVALS.name)
+    logger.info("lying_annotation: %d recordings reviewed, %d not reviewed", len(reviewed),
+                meta.recording.nunique() - len(reviewed))
+    return ds.add_column("lying_annotation", labels).cast_column("lying_annotation", Value("string"))
+
+
 def _recordings(root: Path, only: list[str]) -> list[dict[str, Any]]:
     """Lists the recordings that are present on disk.
 
@@ -370,6 +388,7 @@ def extract(cfg: ExtractConfig) -> None:
     )
     ds = _add_person(ds)
     ds = _add_presence(ds)
+    ds = _add_lying_annotation(ds)
     ds.save_to_disk(str(out))
     shutil.rmtree(cache, ignore_errors=True)
     logger.info("saved %d rows to %s", len(ds), out)
