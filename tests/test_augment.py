@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import torch
 
-from data.augment import HeatmapAugment
+from data.augment import HeatmapAugment, _pick_one_per_group
 from models.factory import build_model
 from utils.config import ModelConfig
 
@@ -47,7 +47,7 @@ def test_range_shift_moves_a_person_and_fills_with_the_floor():
 def test_integer_range_shift_is_an_exact_shift_with_no_wraparound(monkeypatch):
     x = windows()
     monkeypatch.setattr(torch, "rand", lambda n, device=None: torch.full((n,), 0.75))  # delta = (0.75*2-1)*6 = 3
-    out = HeatmapAugment(range_shift_bins=6)._shift(x)
+    out = HeatmapAugment(range_shift_bins=6)._shift(x, torch.ones(B, dtype=torch.bool))
     assert torch.allclose(out[..., 3:, :], x[..., :-3, :], atol=1e-5)
     fill = x.permute(0, 4, 1, 2, 3).reshape(B, D, -1).median(-1).values
     assert torch.allclose(out[..., :3, :], fill.view(B, 1, 1, 1, D).expand(B, T, 1, 3, D), atol=1e-5)
@@ -207,3 +207,32 @@ def test_pointnet_trains_with_augmentation_and_prediction_ignores_it():
     model.fit(x, y)
     assert torch.equal(torch.as_tensor(model.predict(x) == model.predict(x)).all(), torch.tensor(True))
     assert build_model(ModelConfig(name="pointnet")).augment is None
+
+
+def test_conflict_group_gives_each_window_exactly_one_enabled_member():
+    run = _pick_one_per_group(256, ["a", "b", "c"], (("a", "b"),), torch.device("cpu"))
+    assert torch.equal(run["a"] ^ run["b"], torch.ones(256, dtype=torch.bool))  # one of the two, never both or none
+    assert run["a"].any() and run["b"].any()
+    assert run["c"].all()  # not in a group, runs everywhere
+
+
+def test_a_group_with_one_enabled_member_runs_it_everywhere():
+    run = _pick_one_per_group(8, ["a", "c"], (("a", "b"),), torch.device("cpu"))
+    assert run["a"].all() and run["c"].all()
+
+
+def test_both_conflicting_point_transforms_are_used_across_windows():
+    x = points(batch=64)
+    torch.manual_seed(0)
+    out = PointAugment(mirror=True, yaw_deg=90)(x)
+    mirrored = torch.isclose(out[:, 0, 0], -x[:, 0, 0]) & (x[:, 0, 0] != 0)
+    yawed = ~torch.isclose(out[:, 0, 2], x[:, 0, 2])
+    # a window gets at most one of the two: mirror leaves z alone, yaw leaves a mirrored window's z changed
+    assert not (mirrored & yawed).any()
+    assert yawed.any() and (~yawed).any()
+
+
+def test_non_conflicting_point_transforms_still_stack():
+    x = points(batch=16)
+    out = PointAugment(shift_m=0.3, tilt_deg=5)(x)
+    assert not torch.equal(out[..., :3], x[..., :3])
