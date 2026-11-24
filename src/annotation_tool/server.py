@@ -8,6 +8,7 @@ It uses only the standard library and listens on the local machine only. The pag
     PUT  /api/recording/<recording>  {"intervals": [[first, last], ...], "reviewed": bool}: saves the marks
 """
 
+import ipaddress
 import json
 import logging
 import threading
@@ -15,7 +16,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 import numpy as np
 from datasets import Dataset
@@ -107,8 +108,32 @@ class Annotator:
         return {"name": recording, "intervals": [list(i) for i in marks.intervals], "reviewed": marks.reviewed}
 
 
+def host_allowed(header: str | None, port: int, lan: bool) -> bool:
+    """Is `Host` a name for this machine? On the LAN only an IP address of a private network is accepted, not a
+    domain name, so a web page cannot rebind its own domain name to us and read the frames in the browser."""
+    if not header:
+        return False
+    try:
+        parts = urlsplit("//" + header)
+        name, given_port = parts.hostname, parts.port
+    except ValueError:
+        return False
+    if name is None or given_port != port:
+        return False
+    if name in ("127.0.0.1", "localhost", "::1"):
+        return True
+    if not lan:
+        return False
+    try:
+        return ipaddress.ip_address(name).is_private
+    except ValueError:
+        return name.endswith(".local")  # mDNS name of the machine, e.g. my-mac.local
+
+
 def make_server(annotator: Annotator, port: int = 8765, host: str = "127.0.0.1") -> ThreadingHTTPServer:
-    """A server on the local machine. Use `port=0` to let the system pick a free port."""
+    """A server on the local machine, or on every network interface when `host` is `0.0.0.0`.
+    Use `port=0` to let the system pick a free port."""
+    lan = host not in ("127.0.0.1", "localhost", "::1")
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args: Any) -> None:  # the frames would flood the terminal
@@ -127,8 +152,7 @@ def make_server(annotator: Annotator, port: int = 8765, host: str = "127.0.0.1")
 
         def allowed(self) -> bool:
             """Only requests addressed to this machine: it blocks other sites from using the browser to reach us."""
-            allowed = {f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}"}
-            if self.headers.get("Host") in allowed:
+            if host_allowed(self.headers.get("Host"), self.server.server_port, lan):
                 return True
             self.reply_json(HTTPStatus.FORBIDDEN, {"error": "wrong Host header"})
             return False

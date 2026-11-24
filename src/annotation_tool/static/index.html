@@ -2,45 +2,79 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Lying annotation</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font: 16px/1.4 system-ui, sans-serif; margin: 0 auto; padding: 8px; max-width: 720px; }
+  .row { display: flex; gap: 6px; margin: 6px 0; align-items: center; flex-wrap: wrap; }
+  .row > * { flex: 1 1 auto; }
+  button, select { font: inherit; min-height: 44px; padding: 0 10px; touch-action: manipulation; }
+  select#recSelect { flex: 3 1 160px; min-width: 0; }
+  #frame { width: 100%; height: auto; aspect-ratio: 4 / 3; background: #222; display: block; }
+  #strip { width: 100%; height: 56px; display: block; touch-action: none; }
+  h2 { margin: 6px 0; }
+  #info, #message { margin: 4px 0; word-break: break-word; }
+  #message { color: #a50f15; min-height: 1.4em; }
+  .mark { background: #d7301f; color: #fff; }
+  #pad button { min-height: 56px; }
+  #pad .wide { flex: 2 1 0; }
+  details { margin: 10px 0; }
+  .keys { display: none; }
+  @media (hover: hover) and (pointer: fine) { .keys { display: block; } }
+</style>
 </head>
 <body>
-<p>
-  <button id="prevRec">&lt; recording</button>
+<div class="row">
+  <button id="prevRec">&lt;</button>
   <select id="recSelect"></select>
-  <button id="nextRec">recording &gt;</button>
-  <button id="nextOpen">next not reviewed (n)</button>
-</p>
-<p>
-  <button id="play">play</button>
-  speed <select id="speed"><option>0.5</option><option selected>1</option><option>2</option><option>4</option></select>
-  <button id="undo">undo</button>
-  <button id="redo">redo</button>
-  <button id="reviewed">mark reviewed (r)</button>
-  <span id="save"></span>
-</p>
-<p><img id="frame" width="640" height="480" alt="camera frame"></p>
+  <button id="nextRec">&gt;</button>
+  <button id="nextOpen">next open</button>
+</div>
+<img id="frame" alt="camera frame">
 <h2 id="label"></h2>
+<canvas id="strip" width="900" height="56"></canvas>
+<div id="pad">
+  <div class="row">
+    <button id="back10">-10</button><button id="back1">-1</button>
+    <button id="play" class="wide">play</button>
+    <button id="fwd1">+1</button><button id="fwd10">+10</button>
+  </div>
+  <div class="row">
+    <button id="first">first lying (i)</button><button id="last">last lying (o)</button>
+    <button id="toggle">toggle frame (x)</button><button id="remove">remove interval</button>
+  </div>
+  <div class="row">
+    <button id="undo">undo</button><button id="redo">redo</button>
+    <button id="reviewed">mark reviewed (r)</button>
+    speed <select id="speed"><option>0.5</option><option selected>1</option><option>2</option><option>4</option></select>
+    <span id="save"></span>
+  </div>
+</div>
 <p id="info"></p>
 <p id="message"></p>
-<canvas id="strip" width="900" height="40"></canvas>
-<p>
-  Keys: i = first lying frame, o = last lying frame, x = toggle this frame, Delete = remove the interval here,
-  r = mark the recording reviewed (or not), n = next recording that is not reviewed, Ctrl/Cmd+Z = undo,
-  Ctrl/Cmd+Shift+Z = redo, space = play/pause, left/right = one frame (shift = ten), up/down = recording.
-  Click the strip to jump. Positions are counted from 0 in capture order. The strip shows only your marks.
-  Every change is saved at once.
-</p>
-<p>
-  Lying means the torso is on the floor and roughly horizontal (face up, face down or on the side). The first
-  lying frame of a fall is the first one with the torso at floor level, and the last is the last one before the
-  torso starts to lift. Sitting, kneeling, crawling and leaning on the hands are not lying. When unsure, do not mark.
-</p>
+<details>
+  <summary>Help</summary>
+  <p class="keys">
+    Keys: i = first lying frame, o = last lying frame, x = toggle this frame, Delete = remove the interval here,
+    r = mark the recording reviewed (or not), n = next recording that is not reviewed, Ctrl/Cmd+Z = undo,
+    Ctrl/Cmd+Shift+Z = redo, space = play/pause, left/right = one frame (shift = ten), up/down = recording.
+  </p>
+  <p>
+    Tap or drag on the strip to jump. Positions are counted from 0 in capture order. The strip shows only your marks.
+    Every change is saved at once.
+  </p>
+  <p>
+    Lying means the torso is on the floor and roughly horizontal (face up, face down or on the side). The first
+    lying frame of a fall is the first one with the torso at floor level, and the last is the last one before the
+    torso starts to lift. Sitting, kneeling, crawling and leaning on the hands are not lying. When unsure, do not mark.
+  </p>
+</details>
 <script src="logic.js"></script>
 <script>
 "use strict";
 const A = Annotation, $ = id => document.getElementById(id);
-const PERIOD = 0.2, STRIP_W = 900, STRIP_H = 40;
+const PERIOD = 0.2, STRIP_W = 900, STRIP_H = 56;
 const ctx = $("strip").getContext("2d");
 let recs = [], rec = 0, pos = 0, playing = false, timer = 0, speed = 1;
 const stores = {};          // recording name -> {flags, reviewed, pending, history}
@@ -94,16 +128,16 @@ function refreshMenu() { recs.forEach((r, i) => { $("recSelect").options[i].text
 function drawStrip() {
   const n = recs[rec].frames, w = STRIP_W / n, s = store();
   ctx.clearRect(0, 0, STRIP_W, STRIP_H);
-  ctx.fillStyle = "#e8e8e8"; ctx.fillRect(0, 10, STRIP_W, 30);
+  ctx.fillStyle = "#e8e8e8"; ctx.fillRect(0, 12, STRIP_W, 44);
   ctx.fillStyle = "red";
-  for (const [a, b] of A.toIntervals(s.flags)) ctx.fillRect(a * w, 10, Math.max(3, (b - a + 1) * w), 30);   // at least 3 px, so one frame can be seen
-  if (s.pending !== null) { ctx.fillStyle = "blue"; ctx.fillRect(s.pending * w - 1, 0, 3, 40); }
-  ctx.fillStyle = "black"; ctx.fillRect(pos * w - 1, 10, 3, 30);
+  for (const [a, b] of A.toIntervals(s.flags)) ctx.fillRect(a * w, 12, Math.max(3, (b - a + 1) * w), 44);   // at least 3 px, so one frame can be seen
+  if (s.pending !== null) { ctx.fillStyle = "blue"; ctx.fillRect(s.pending * w - 1, 0, 4, STRIP_H); }
+  ctx.fillStyle = "black"; ctx.fillRect(pos * w - 1, 12, 4, 44);
 }
 function show() {
   const r = recs[rec], s = store(), lying = !!s.flags[pos];
   $("frame").src = image(r.name, pos).src;
-  $("label").replaceChildren(lying ? Object.assign(document.createElement("mark"), {textContent: "LYING"}) : "not lying");
+  $("label").replaceChildren(lying ? Object.assign(document.createElement("mark"), {textContent: "LYING", className: "mark"}) : "not lying");
   $("info").textContent = r.name + " | " + r.person + " | position " + pos + " (0 to " + (r.frames - 1) + ") | " +
     (pos * PERIOD).toFixed(1) + " s | " + A.toIntervals(s.flags).length + " intervals | " +
     (s.reviewed ? "REVIEWED" : "not reviewed") + (s.pending !== null ? " | start at " + s.pending : "");
@@ -172,7 +206,17 @@ press($("redo"), () => undoRedo(true));
 press($("reviewed"), () => run(A.toggleReviewed));
 $("speed").onchange = e => { speed = +e.target.value; e.target.blur(); if (playing) { stop(); start(); } };
 $("recSelect").onchange = e => { setRecording(+e.target.value); e.target.blur(); };
-$("strip").onclick = e => { stop(); go(Math.floor(e.offsetX / STRIP_W * recs[rec].frames)); };
+const scrub = e => { const b = $("strip").getBoundingClientRect(); go(Math.floor((e.clientX - b.left) / b.width * recs[rec].frames)); };
+$("strip").onpointerdown = e => { stop(); $("strip").setPointerCapture(e.pointerId); scrub(e); };
+$("strip").onpointermove = e => { if ($("strip").hasPointerCapture(e.pointerId)) scrub(e); };
+press($("back1"), () => { stop(); go(pos - 1); });
+press($("back10"), () => { stop(); go(pos - 10); });
+press($("fwd1"), () => { stop(); go(pos + 1); });
+press($("fwd10"), () => { stop(); go(pos + 10); });
+press($("first"), () => run(s => A.mark(s, pos)));
+press($("last"), () => run(s => A.finish(s, pos)));
+press($("toggle"), () => run(s => A.toggleFrame(s, pos)));
+press($("remove"), () => run(s => A.removeInterval(s, pos)));
 document.onkeydown = e => {
   const k = e.key, modifier = e.ctrlKey || e.metaKey;
   if (modifier && (k === "z" || k === "Z")) { e.preventDefault(); undoRedo(e.shiftKey); return; }

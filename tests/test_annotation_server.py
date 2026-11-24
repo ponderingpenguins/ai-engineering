@@ -9,7 +9,7 @@ from datasets import Dataset
 from datasets import Image as HFImage
 from PIL import Image
 
-from annotation_tool.server import Annotator, Catalogue, make_server
+from annotation_tool.server import Annotator, Catalogue, host_allowed, make_server
 from data.annotation import make_marks, read_annotations, write_annotations
 
 START = datetime(2026, 1, 1)
@@ -208,3 +208,20 @@ def test_two_saves_at_the_same_time_both_arrive(tool):
     [t.join() for t in threads]
     assert results == [200] * 10
     assert set(read_annotations(path)) == {"a", "b"}
+
+
+@pytest.mark.parametrize("header, lan, expected", [
+    ("127.0.0.1:8765", False, True),
+    ("localhost:8765", False, True),
+    ("192.168.1.20:8765", False, False),
+    ("192.168.1.20:8765", True, True),
+    ("10.0.0.5:8765", True, True),
+    ("my-mac.local:8765", True, True),
+    ("8.8.8.8:8765", True, False),
+    ("evil.example:8765", True, False),
+    ("192.168.1.20:9999", True, False),
+    ("192.168.1.20", True, False),
+    (None, True, False),
+])
+def test_host_allowed(header, lan, expected):
+    assert host_allowed(header, 8765, lan) is expected
