@@ -26,6 +26,12 @@ def _settings(results: RunResults) -> list[str]:
     validation = (config.get("train") or {}).get("validation", True)
     tuned = results.tuned is not None
     lines = [f"- Model: `{model.get('name', 'unknown')}`."]
+    used = config.get("recordings_used")
+    if used is not None:
+        short = lambda names: ", ".join(name.split("__")[-1] for name in names) or "none"  # noqa: E731
+        lines.append(f"- Target: `{evaluation.get('target')}`. {len(used)} recordings used: {short(used)}.")
+        if config.get("recordings_unlabelled"):
+            lines.append(f"- Not used, because they have no labels for this target: {short(config['recordings_unlabelled'])}.")
     rnn = model.get(model.get("name"))  # the chosen model's own hyperparameters; the baseline has none
     if isinstance(rnn, dict):
         if config.get("input_type") == "pointcloud":

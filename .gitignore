@@ -252,3 +252,4 @@ data/processed/*
 !data/processed/person_map.csv
 !data/processed/presence_events.csv
 !data/processed/clothing.csv
+!data/processed/lying_intervals.csv

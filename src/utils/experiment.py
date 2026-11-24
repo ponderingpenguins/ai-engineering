@@ -70,6 +70,17 @@ def tuned_model_config(cfg: Config, task: Task, root: Path) -> tuple[ModelConfig
     return apply_tuned(cfg.model, tuned, task), tuned
 
 
+def recordings_by_label(ds: Dataset, target: str) -> tuple[list[str], list[str]]:
+    """The recordings that have at least one label in the `target` column, and the ones that have none.
+
+    The second list is the recordings a run on this target cannot use: for `lying_annotation` these are the
+    recordings that are not reviewed yet.
+    """
+    meta = ds.select_columns(["recording", target]).to_pandas()
+    has_labels = meta.groupby("recording")[target].apply(lambda labels: bool(labels.notna().any()))
+    return sorted(has_labels[has_labels].index), sorted(has_labels[~has_labels].index)
+
+
 def run(cfg: Config, root: Path) -> RunResults | FinalResult:
     """Cross-validates the configured model on the baked dataset, or trains the final model.
 
@@ -89,6 +100,11 @@ def run(cfg: Config, root: Path) -> RunResults | FinalResult:
         raise ValueError(f"No baked dataset at {path}.\nBuild it with: python -m data.extract")
     ds = build_pipeline(cfg.data.preprocess, cfg.data.exclude)(cast(Dataset, load_from_disk(str(path))))
 
+    used, unlabelled = recordings_by_label(ds, cfg.eval.target)
+    logger.info("target %s: %d recordings used", cfg.eval.target, len(used))
+    if unlabelled:
+        logger.warning("no labels in %s for %d recordings, they are not used: %s", cfg.eval.target, len(unlabelled),
+                       unlabelled)
     task = Task.from_eval(cfg.eval)
     resampler = None if cfg.train.oversample is None else RandomOversampler(cfg.train.oversample, cfg.eval.seed)
     model_cfg, tuned = cfg.model, None
@@ -124,7 +140,8 @@ def run(cfg: Config, root: Path) -> RunResults | FinalResult:
         timing["frame_period_s"], cfg.eval.label_rule,
     )
     logger.info("%d windows from %d groups, classes: %s", len(y), len(set(groups)), dict(Counter(y.tolist())))
-    config = {**asdict(cfg), "window_timing": timing, "input_type": input_type}
+    config = {**asdict(cfg), "window_timing": timing, "input_type": input_type,
+              "recordings_used": used, "recordings_unlabelled": unlabelled}
     stamp = f"{datetime.now():%Y%m%d-%H%M%S}_{cfg.model.name}"
     if cfg.train.full_run:
         out_dir = root / cfg.eval.out_dir / f"{stamp}_final"

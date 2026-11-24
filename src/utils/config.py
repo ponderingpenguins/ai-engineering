@@ -1,7 +1,9 @@
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from pathlib import Path
+from typing import Any, Optional, cast
 
-from omegaconf import MISSING
+from omegaconf import MISSING, OmegaConf
 
 
 @dataclass
@@ -113,7 +115,7 @@ class TuneConfig:
 class EvalConfig:
     folds: Optional[int] = None  # k for person-wise k-fold cross-validation; None = one fold per person
     seed: int = 0  # shuffles the fold assignment
-    target: str = "label_pose"  # label column to predict
+    target: str = "lying_annotation"  # label column to predict: the hand-made lying annotation (ground truth); "label_pose" is the original pose label
     collapse_lying: bool = True  # True: lying occurred vs. not (with any_lying), False: the original pose classes
     window_len: int = 16  # frames per window
     max_points: int = 128  # radar points kept per window by the point-cloud models (the strongest by SNR)
@@ -131,3 +133,14 @@ class Config:
     train: TrainConfig = field(default_factory=TrainConfig)
     tune: TuneConfig = field(default_factory=TuneConfig)
     eval: EvalConfig = field(default_factory=EvalConfig)
+
+
+def load_config(root: Path, overrides: Sequence[str] = ()) -> Config:
+    """The run configuration: the defaults, then `config/config.yaml`, then `key=value` overrides.
+
+    Raises:
+        ConfigKeyError, ValidationError and other `OmegaConfBaseException`: For an unknown key or a wrong type.
+    """
+    merged = OmegaConf.merge(OmegaConf.structured(Config), OmegaConf.load(root / "config" / "config.yaml"),
+                             OmegaConf.from_dotlist(list(overrides)))
+    return cast(Config, OmegaConf.to_object(merged))

@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from datasets import Dataset
 
+from data.annotation import capture_positions
 from data.extract import NO_PERSON
 
 # Every labelled recording is Config_4: 256 range bins x 16 Doppler bins (see data/preprocess.py, which drops
@@ -139,8 +140,7 @@ def make_windows(
     meta_all = cast(pd.DataFrame, ds.select_columns(
         ["recording", "person", "frame_idx", "timestamp", target]
     ).to_pandas())
-    chronological = meta_all.sort_values(["recording", "timestamp", "frame_idx"], kind="stable")
-    meta_all["capture_idx"] = chronological.groupby("recording", sort=False).cumcount()
+    meta_all["capture_idx"] = capture_positions(meta_all)
     frames_ds = ds.select(np.flatnonzero(keep))
     meta = meta_all.loc[keep].reset_index(drop=True)
 

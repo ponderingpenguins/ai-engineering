@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lying annotation</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font: 16px/1.4 system-ui, sans-serif; margin: 0 auto; padding: 8px; max-width: 720px; }
+  .row { display: flex; gap: 6px; margin: 6px 0; align-items: center; flex-wrap: wrap; }
+  .row > * { flex: 1 1 auto; }
+  button, select { font: inherit; min-height: 44px; padding: 0 10px; touch-action: manipulation; }
+  select#recSelect { flex: 3 1 160px; min-width: 0; }
+  #frame { width: 100%; height: auto; aspect-ratio: 4 / 3; background: #222; display: block; }
+  #strip { width: 100%; height: 56px; display: block; touch-action: none; }
+  h2 { margin: 6px 0; }
+  #info, #message { margin: 4px 0; word-break: break-word; }
+  #message { color: #a50f15; min-height: 1.4em; }
+  .mark { background: #d7301f; color: #fff; }
+  #pad button { min-height: 56px; }
+  #pad .wide { flex: 2 1 0; }
+  details { margin: 10px 0; }
+  .keys { display: none; }
+  @media (hover: hover) and (pointer: fine) { .keys { display: block; } }
+</style>
+</head>
+<body>
+<div class="row">
+  <button id="prevRec">&lt;</button>
+  <select id="recSelect"></select>
+  <button id="nextRec">&gt;</button>
+  <button id="nextOpen">next open</button>
+</div>
+<img id="frame" alt="camera frame">
+<h2 id="label"></h2>
+<canvas id="strip" width="900" height="56"></canvas>
+<div id="pad">
+  <div class="row">
+    <button id="back10">-10</button><button id="back1">-1</button>
+    <button id="play" class="wide">play</button>
+    <button id="fwd1">+1</button><button id="fwd10">+10</button>
+  </div>
+  <div class="row">
+    <button id="first">first lying (i)</button><button id="last">last lying (o)</button>
+    <button id="toggle">toggle frame (x)</button><button id="remove">remove interval</button>
+  </div>
+  <div class="row">
+    <button id="undo">undo</button><button id="redo">redo</button>
+    <button id="reviewed">mark reviewed (r)</button>
+    speed <select id="speed"><option>0.5</option><option selected>1</option><option>2</option><option>4</option></select>
+    <span id="save"></span>
+  </div>
+</div>
+<p id="info"></p>
+<p id="message"></p>
+<details>
+  <summary>Help</summary>
+  <p class="keys">
+    Keys: i = first lying frame, o = last lying frame, x = toggle this frame, Delete = remove the interval here,
+    r = mark the recording reviewed (or not), n = next recording that is not reviewed, Ctrl/Cmd+Z = undo,
+    Ctrl/Cmd+Shift+Z = redo, space = play/pause, left/right = one frame (shift = ten), up/down = recording.
+  </p>
+  <p>
+    Tap or drag on the strip to jump. Positions are counted from 0 in capture order. The strip shows only your marks.
+    Every change is saved at once.
+  </p>
+  <p>
+    Lying means the torso is on the floor and roughly horizontal (face up, face down or on the side). The first
+    lying frame of a fall is the first one with the torso at floor level, and the last is the last one before the
+    torso starts to lift. Sitting, kneeling, crawling and leaning on the hands are not lying. When unsure, do not mark.
+  </p>
+</details>
+<script src="logic.js"></script>
+<script>
+"use strict";
+const A = Annotation, $ = id => document.getElementById(id);
+const PERIOD = 0.2, STRIP_W = 900, STRIP_H = 56;
+const ctx = $("strip").getContext("2d");
+let recs = [], rec = 0, pos = 0, playing = false, timer = 0, speed = 1;
+const stores = {};          // recording name -> {flags, reviewed, pending, history}
+let saving = 0, failed = "";  // saves in flight, and the last error
+
+const url = (name, i) => "/frame/" + encodeURIComponent(name) + "/" + i + ".jpg";
+const store = () => stores[recs[rec].name];
+
+// ---- frames: keep the next ones loaded so playback does not wait
+const cache = new Map();
+function image(name, i) {
+  const k = name + ":" + i;
+  if (!cache.has(k)) { const im = new Image(); im.src = url(name, i); cache.set(k, im); }
+  return cache.get(k);
+}
+function preload() {
+  const name = recs[rec].name, n = recs[rec].frames;
+  for (let i = pos; i < Math.min(n, pos + 40); i++) image(name, i);
+  if (cache.size > 400) for (const k of [...cache.keys()].slice(0, cache.size - 300)) cache.delete(k);
+}
+
+// ---- saving: one request after the other, so the file always ends with the last state
+let chain = Promise.resolve();
+function save() {
+  const r = recs[rec], s = store();
+  const body = JSON.stringify({intervals: A.toIntervals(s.flags), reviewed: s.reviewed});
+  saving++; showSave();
+  chain = chain.then(async () => {
+    try {
+      const response = await fetch("/api/recording/" + encodeURIComponent(r.name), {method: "PUT", body});
+      if (!response.ok) throw new Error((await response.json()).error || response.status);
+      failed = "";
+    } catch (error) { failed = String(error.message || error); }
+    saving--; showSave();
+  });
+}
+function showSave() {
+  $("save").textContent = failed ? "NOT SAVED: " + failed : saving ? "saving..." : "saved";
+}
+addEventListener("beforeunload", e => { if (saving || failed) { e.preventDefault(); e.returnValue = ""; } });
+
+// ---- drawing
+function label(r, i) {
+  const s = stores[r.name], intervals = s ? A.toIntervals(s.flags).length : r.intervals.length;
+  const reviewed = s ? s.reviewed : r.reviewed;
+  return r.name.split("__").pop() + " | " + r.person + " | " + (r.frames * PERIOD / 60).toFixed(1) + " min | " +
+    (reviewed ? "reviewed, " + intervals + " intervals" : intervals ? "not reviewed, " + intervals + " intervals so far" : "not started");
+}
+function refreshMenu() { recs.forEach((r, i) => { $("recSelect").options[i].text = label(r, i); }); }
+
+function drawStrip() {
+  const n = recs[rec].frames, w = STRIP_W / n, s = store();
+  ctx.clearRect(0, 0, STRIP_W, STRIP_H);
+  ctx.fillStyle = "#e8e8e8"; ctx.fillRect(0, 12, STRIP_W, 44);
+  ctx.fillStyle = "red";
+  for (const [a, b] of A.toIntervals(s.flags)) ctx.fillRect(a * w, 12, Math.max(3, (b - a + 1) * w), 44);   // at least 3 px, so one frame can be seen
+  if (s.pending !== null) { ctx.fillStyle = "blue"; ctx.fillRect(s.pending * w - 1, 0, 4, STRIP_H); }
+  ctx.fillStyle = "black"; ctx.fillRect(pos * w - 1, 12, 4, 44);
+}
+function show() {
+  const r = recs[rec], s = store(), lying = !!s.flags[pos];
+  $("frame").src = image(r.name, pos).src;
+  $("label").replaceChildren(lying ? Object.assign(document.createElement("mark"), {textContent: "LYING", className: "mark"}) : "not lying");
+  $("info").textContent = r.name + " | " + r.person + " | position " + pos + " (0 to " + (r.frames - 1) + ") | " +
+    (pos * PERIOD).toFixed(1) + " s | " + A.toIntervals(s.flags).length + " intervals | " +
+    (s.reviewed ? "REVIEWED" : "not reviewed") + (s.pending !== null ? " | start at " + s.pending : "");
+  $("reviewed").textContent = s.reviewed ? "mark NOT reviewed (r)" : "mark reviewed (r)";
+  $("undo").disabled = !s.history.past.length; $("redo").disabled = !s.history.future.length;
+  drawStrip(); preload(); refreshMenu();
+  history.replaceState(null, "", "#rec=" + encodeURIComponent(r.name) + "&f=" + pos);
+}
+
+// ---- editing
+function snapshot(s) { return {flags: s.flags, reviewed: s.reviewed}; }
+function run(command) {   // command: state -> {state, changed, message}
+  const s = store(), result = command(s);
+  $("message").textContent = result.message;
+  if (result.changed) { s.history.record(snapshot(s)); }
+  Object.assign(s, result.state);
+  if (result.changed) save();
+  show();
+}
+function undoRedo(redo) {
+  const s = store(), back = redo ? s.history.redo(snapshot(s)) : s.history.undo(snapshot(s));
+  if (!back) return;
+  Object.assign(s, back, {pending: null}); $("message").textContent = "";
+  save(); show();
+}
+
+// ---- navigation
+function go(p) { pos = Math.max(0, Math.min(recs[rec].frames - 1, p)); show(); }
+function setRecording(i) {
+  stop(); rec = (i + recs.length) % recs.length; $("recSelect").value = rec; $("message").textContent = "";
+  store().pending = null; go(0);
+}
+function nextOpen() {
+  for (let k = 1; k <= recs.length; k++) {
+    const i = (rec + k) % recs.length, s = stores[recs[i].name];
+    if (!s.reviewed) { setRecording(i); return; }
+  }
+  $("message").textContent = "every recording is reviewed";
+}
+
+// ---- playback: the frame follows the clock, and waits for its image if the server is slow
+function stop() { playing = false; clearTimeout(timer); $("play").textContent = "play"; }
+function start() {
+  const last = recs[rec].frames - 1;
+  if (pos >= last) pos = 0;
+  playing = true; $("play").textContent = "pause";
+  const t0 = performance.now(), p0 = pos;
+  const tick = () => {
+    if (!playing) return;
+    const target = p0 + Math.floor((performance.now() - t0) / (PERIOD * 1000 / speed));
+    if (target >= last) { go(last); stop(); return; }
+    if (target !== pos && image(recs[rec].name, target).complete) go(target);
+    timer = setTimeout(tick, 20);
+  };
+  tick();
+}
+
+// ---- wiring
+function press(button, action) { button.onclick = () => { action(); button.blur(); }; }
+press($("prevRec"), () => setRecording(rec - 1));
+press($("nextRec"), () => setRecording(rec + 1));
+press($("nextOpen"), nextOpen);
+press($("play"), () => playing ? stop() : start());
+press($("undo"), () => undoRedo(false));
+press($("redo"), () => undoRedo(true));
+press($("reviewed"), () => run(A.toggleReviewed));
+$("speed").onchange = e => { speed = +e.target.value; e.target.blur(); if (playing) { stop(); start(); } };
+$("recSelect").onchange = e => { setRecording(+e.target.value); e.target.blur(); };
+const scrub = e => { const b = $("strip").getBoundingClientRect(); go(Math.floor((e.clientX - b.left) / b.width * recs[rec].frames)); };
+$("strip").onpointerdown = e => { stop(); $("strip").setPointerCapture(e.pointerId); scrub(e); };
+$("strip").onpointermove = e => { if ($("strip").hasPointerCapture(e.pointerId)) scrub(e); };
+press($("back1"), () => { stop(); go(pos - 1); });
+press($("back10"), () => { stop(); go(pos - 10); });
+press($("fwd1"), () => { stop(); go(pos + 1); });
+press($("fwd10"), () => { stop(); go(pos + 10); });
+press($("first"), () => run(s => A.mark(s, pos)));
+press($("last"), () => run(s => A.finish(s, pos)));
+press($("toggle"), () => run(s => A.toggleFrame(s, pos)));
+press($("remove"), () => run(s => A.removeInterval(s, pos)));
+document.onkeydown = e => {
+  const k = e.key, modifier = e.ctrlKey || e.metaKey;
+  if (modifier && (k === "z" || k === "Z")) { e.preventDefault(); undoRedo(e.shiftKey); return; }
+  if (modifier && (k === "y" || k === "Y")) { e.preventDefault(); undoRedo(true); return; }
+  if (modifier || e.altKey) return;      // leave the browser's own shortcuts alone
+  if (k === " ") { e.preventDefault(); playing ? stop() : start(); }
+  else if (k === "ArrowRight") { stop(); go(pos + (e.shiftKey ? 10 : 1)); }
+  else if (k === "ArrowLeft") { stop(); go(pos - (e.shiftKey ? 10 : 1)); }
+  else if (k === "ArrowDown") { e.preventDefault(); setRecording(rec + 1); }
+  else if (k === "ArrowUp") { e.preventDefault(); setRecording(rec - 1); }
+  else if (k === "i") run(s => A.mark(s, pos));
+  else if (k === "o") run(s => A.finish(s, pos));
+  else if (k === "x") run(s => A.toggleFrame(s, pos));
+  else if (k === "Delete" || k === "Backspace") run(s => A.removeInterval(s, pos));
+  else if (k === "r") run(A.toggleReviewed);
+  else if (k === "n") nextOpen();
+};
+
+async function init() {
+  const response = await fetch("/api/recordings");
+  const data = await response.json();
+  if (!response.ok) { $("message").textContent = "ERROR: " + data.error; return; }
+  recs = data;
+  recs.forEach((r, i) => {
+    stores[r.name] = {flags: A.fromIntervals(r.frames, r.intervals), reviewed: r.reviewed, pending: null, history: new A.History(50)};
+    $("recSelect").add(new Option(label(r, i), i));
+  });
+  // a link can name the start: /#rec=<recording>&f=<position>, and &play=1 starts playing
+  const hash = new URLSearchParams(location.hash.slice(1));
+  const named = recs.findIndex(r => r.name === hash.get("rec"));
+  rec = named >= 0 ? named : Math.max(0, recs.findIndex(r => !r.reviewed));
+  $("recSelect").value = rec;
+  go(+hash.get("f") || 0);
+  showSave();
+  if (hash.get("play")) start();
+}
+init();
+</script>
+</body>
+</html>

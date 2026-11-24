@@ -36,12 +36,14 @@ Keep in mind that the baked data contains identifiable feeds.
 
 ## Manual annotations
 
-Two columns of the baked dataset are not in the raw data: they were annotated by hand and are joined in by `src/data/extract.py`. The source CSVs are small and tracked in git (see `.gitignore`), so rebuild the dataset (`overwrite=true`) after changing them.
+Three columns of the baked dataset are not in the raw data: they were annotated by hand and are joined in by `src/data/extract.py`. The source CSVs are small and tracked in git (see `.gitignore`), so rebuild the dataset (`overwrite=true`) after changing them.
 
 | Column | Source file | Made with | Meaning |
 | ------ | ----------- | --------- | ------- |
 | `person` | `data/processed/person_map.csv` (`recording, person`) | `notebooks/label_persons.ipynb` | Pseudonym of the participant in the recording (for example `Bob`), so evaluation can be split by person. Recordings that are not labelled get `"NA"`. |
 | `person_present` | `data/processed/presence_events.csv` (`recording, frame_idx, event`) | `notebooks/label_presence.ipynb` | `True` while someone is in view of the camera, `False` for an empty scene. |
+| `lying_annotation` | `data/processed/lying_intervals.csv` (`recording, first_capture_idx, last_capture_idx, reviewed`) | `python -m annotation_tool` | `lying` or `not_lying` per frame, made from the camera video. `None` for recordings that are not reviewed yet. Training uses it as the target by default. |
 
 - **`person`** is one value per recording. The notebook shows the best face crops of each recording and you pick a name from a fixed list of pseudonyms. Unlabelled recordings are dropped by the `known_person` preprocessor.
 - **`person_present`** is stored as `enter` and `leave` events on frame indices. A person is present from each `enter` until the next `leave` (or the end of the recording), so a recording that starts with someone already in view needs an `enter` on frame 0. Recordings without any events get `None`, not `False`, so filter on `person_present.notna()` before training on it. This is separate from the raw `label_presence` track, which is not reliable (it is `False` wherever it exists).
+- **`lying_annotation`** is stored as lying intervals on capture positions (the time order of a recording, not always `frame_idx`). In a reviewed recording every frame outside the intervals is `not_lying`. Recordings that are not reviewed get `None`, which is not the same as `not_lying`. Add the column to an existing dataset without a full rebuild by running `_add_lying_annotation` from `data/extract.py` on it, or rebuild with `overwrite=true`.
