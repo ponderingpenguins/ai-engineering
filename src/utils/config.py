@@ -115,7 +115,7 @@ class TuneConfig:
 class EvalConfig:
     folds: Optional[int] = None  # k for person-wise k-fold cross-validation; None = one fold per person
     seed: int = 0  # shuffles the fold assignment
-    target: str = "label_pose"  # label column to predict
+    target: str = "lying_annotation"  # label column to predict: the hand-made lying annotation (ground truth); "label_pose" is the original pose label
     collapse_lying: bool = True  # True: lying occurred vs. not (with any_lying), False: the original pose classes
     window_len: int = 16  # frames per window
     max_points: int = 128  # radar points kept per window by the point-cloud models (the strongest by SNR)

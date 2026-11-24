@@ -17,7 +17,7 @@ PERIOD = 0.2
 
 def tiny_dataset(path: Path, people=("Bob", "Dave", "Frank", "Ian"), frames=48) -> None:
     """One recording per person with a short lying run, saved like the baked dataset (no heatmaps needed)."""
-    rows: dict[str, list] = {k: [] for k in ("recording", "person", "frame_idx", "timestamp", "label_pose",
+    rows: dict[str, list] = {k: [] for k in ("recording", "person", "frame_idx", "timestamp", "label_pose", "lying_annotation",
                                               "heatmap_ok", "num_range_bins", "num_doppler_bins", "cfg_file")}
     start = datetime(2026, 1, 1)
     for person in people:
@@ -26,7 +26,9 @@ def tiny_dataset(path: Path, people=("Bob", "Dave", "Frank", "Ian"), frames=48) 
             rows["person"].append(person)
             rows["frame_idx"].append(i)
             rows["timestamp"].append(start + timedelta(seconds=PERIOD * i))
-            rows["label_pose"].append("lying_left" if 20 <= i < 22 else "standing")
+            lying = 20 <= i < 22
+            rows["label_pose"].append("lying_left" if lying else "standing")
+            rows["lying_annotation"].append("lying" if lying else "not_lying")
             rows["heatmap_ok"].append(True)
             rows["num_range_bins"].append(256)
             rows["num_doppler_bins"].append(16)
@@ -160,7 +162,7 @@ def test_the_report_names_the_target_and_the_recordings_it_used(tmp_path, caplog
     ds = Dataset.load_from_disk(str(tmp_path / "baked"))
     # a second target in which only three of the four recordings are labelled, like a partly reviewed track
     labels = [None if rec == "rec_Ian" else "not_lying" for rec in ds["recording"]]
-    ds.add_column("lying_annotation", labels).save_to_disk(str(tmp_path / "with_annotation"))
+    ds.remove_columns("lying_annotation").add_column("lying_annotation", labels).save_to_disk(str(tmp_path / "with_annotation"))
     cfg = make_cfg(tmp_path)
     cfg.data.baked = str(tmp_path / "with_annotation")
     cfg.eval.target = "lying_annotation"

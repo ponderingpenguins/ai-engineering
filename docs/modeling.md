@@ -2,6 +2,10 @@
 
 Details behind the commands in the README: how windows are labelled, what the models read, how training works and how tuning picks a setting.
 
+## What is predicted
+
+`eval.target` (default `lying_annotation`) is the label column. `lying_annotation` is the hand-made lying label (see `docs/data_notes/baked-dataset.md`) and is the ground truth: it is made from the camera video, per frame, and is `lying` or `not_lying`. Only recordings that are reviewed have it, so only these are used (7 recordings, 4 people: Bob, Dave, Frank, Igor); the log and the report name the recordings that are left out. The original `label_pose` is still there: set `eval.target=label_pose` to use it. A checkpoint stores its target, so a model trained on one target is not reused for the other.
+
 ## How windows are labelled
 
 Frames are cut into windows of `eval.window_len` frames (about 0.2 s each, measured from the capture timestamps). Windows that span a gap of dropped frames are skipped.
@@ -9,7 +13,9 @@ Frames are cut into windows of `eval.window_len` frames (about 0.2 s each, measu
 - **`any_lying` (default):** the classifier predicts whether lying **occurred** within the window's 3.2 s. A window is labelled lying if at least one of its frames is lying, and not lying if none is. If the window has several lying frames, the last one decides between `lying_left` and `lying_right` (when `eval.collapse_lying=false`).
 - **`last`:** a window takes the label of its last frame.
 
-Why `any_lying`: in the labelled data, lying is annotated in short runs of 1 to 5 frames (0.2 to 1 s), scattered through recordings that last about 6 minutes. With `last`, a window is only positive when it happens to end on one of those frames: with 16-frame windows and stride 8, that kept 7 lying windows out of 1268. Requiring most of the window to be lying (majority) kept none. With `any_lying`, the same data gives 37 lying windows, and each person has some.
+Why `any_lying`: in the original `label_pose` labels, lying is annotated in short runs of 1 to 5 frames (0.2 to 1 s), scattered through recordings that last about 6 minutes. With `last`, a window is only positive when it happens to end on one of those frames: with 16-frame windows and stride 8, that kept 7 lying windows out of 1268. Requiring most of the window to be lying (majority) kept none. With `any_lying`, the same data gives 37 lying windows, and each person has some.
+
+The `lying_annotation` target is different: its lying runs are long (median 24 frames, up to a whole recording), so most windows are lying (1186 of 1554 with `any_lying`, and Dave and Igor have almost no not-lying windows). `last` and `any_lying` give nearly the same windows there, so compare them again before relying on the numbers in this section.
 
 Consequences to keep in mind when reading scores:
 
