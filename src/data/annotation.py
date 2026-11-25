@@ -2,7 +2,7 @@
 
 An annotator watches the camera video and marks the stretches where the person is lying. A stretch is an
 interval of capture positions (first and last frame included), see `capture_positions`. The marks are stored in
-`data/processed/lying_intervals.csv`:
+`data/annotations/lying_intervals.csv`:
 
     recording,first_capture_idx,last_capture_idx,reviewed
     2311__20231120_144541,340,341,true
@@ -27,7 +27,7 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 REPO = Path(__file__).resolve().parents[2]
-LYING_INTERVALS = REPO / "data" / "processed" / "lying_intervals.csv"
+LYING_INTERVALS = REPO / "data" / "annotations" / "lying_intervals.csv"
 COLUMNS = ["recording", "first_capture_idx", "last_capture_idx", "reviewed"]
 LYING, NOT_LYING = "lying", "not_lying"  # the labels of the `lying_annotation` column
 

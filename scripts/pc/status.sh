@@ -18,6 +18,6 @@ if [ -n "\$log" ]; then echo "\$log"; tr '\r' '\n' < "\$log" | grep -E '^\[' | t
 echo "--- newest results"
 ls -dt results/*/ 2>/dev/null | head -3 || true
 echo "--- data / venv"
-[ -d data/processed/floor_posture ] && echo "baked dataset: \$(du -sh data/processed/floor_posture | cut -f1)" || echo "baked dataset: missing (scripts/pc/push-data.sh)"
+[ -d data/baked/floor_posture ] && echo "baked dataset: \$(du -sh data/baked/floor_posture | cut -f1)" || echo "baked dataset: missing (scripts/pc/push-data.sh)"
 [ -x .venv/bin/python ] && .venv/bin/python -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available())" 2>&1 | tail -1 || echo "venv: not ready (scripts/pc/setup.sh)"
 REMOTE

@@ -1,6 +1,6 @@
 """Starts the annotation tool.
 
-    python -m annotation_tool [--port 8765] [--csv data/processed/lying_intervals.csv] [--no-browser] [--lan] [key=value ...]
+    python -m annotation_tool [--port 8765] [--csv data/annotations/lying_intervals.csv] [--no-browser] [--lan] [key=value ...]
 
 The recordings offered are the ones the pipeline keeps for the config (`data.preprocess`, `data.exclude`, known
 person). `key=value` pairs override the config like in `main.py`. The marks are saved in the CSV file at once.

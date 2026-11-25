@@ -8,8 +8,10 @@ Radar points can be reflections (ghosts) of a real point. We wanted to find the 
 
 Both ran on 3 `room1` recordings from 3 sessions (`20231115_135843`, `20231120_144541`, `20231120_153152`). Each compares point pairs inside one frame with pairs from frames far apart in time. A real reflection exists only inside one frame.
 
-1. **Bisector planes of point pairs** (`scripts/ghost_plane_spike.py`, `notebooks/spike_ghost_planes.ipynb`). No floor or wall peak.
-2. **Floor ghost straight behind a real point** (`scripts/floor_ghost_spike.py`, `notebooks/spike_floor_ghost.ipynb`). The floor estimate is at a different distance in each recording. The one weak excess is most likely the person's own body.
+These scripts and notebooks are archived for now, I dont know what they add exactly, the notebooks retain their saved figures and results. if anyone wants them back just move them out.
+
+1. **Bisector planes of point pairs** ([script](../../scripts/archive/ghost_plane_spike.py), [notebook](../../notebooks/archive/spike_ghost_planes.ipynb)). No floor or wall peak.
+2. **Floor ghost straight behind a real point** ([script](../../scripts/archive/floor_ghost_spike.py), [notebook](../../notebooks/archive/spike_floor_ghost.ipynb)). The floor estimate is at a different distance in each recording. The one weak excess is most likely the person's own body.
 
 ## Decision
 

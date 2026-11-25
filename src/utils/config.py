@@ -10,7 +10,7 @@ from omegaconf import MISSING, OmegaConf
 class DataConfig:
     # relative paths are resolved against the repo root
     root: str = MISSING  # raw dataset bundle (MANIFEST.csv, data/, ...)
-    baked: str = "data/processed/floor_posture"  # baked HF dataset (gitignored)
+    baked: str = "data/baked/floor_posture"  # baked HF dataset (gitignored)
     # extra preprocessors run in order on the loaded frames, see data/preprocess.py (unknown persons are always dropped first)
     preprocess: list[str] = field(default_factory=lambda: ["config_4"])
     # recordings left out of training and testing: the camera in these does not look top down

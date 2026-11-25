@@ -2,7 +2,9 @@
 
 ## Baking
 
-`src/data/extract.py` reads every recording once through `vt_radar` and writes a single Hugging Face dataset (one row per frame) to `data/processed/floor_posture` (gitignored):
+The inputs are raw recordings in `data/raw/` (Git LFS) and source CSVs in `data/annotations/` (normal Git text). Every bake automatically reads both and joins the annotations into the generated dataset. `data/baked/` is entirely gitignored and can be deleted and rebuilt without losing annotation work.
+
+`src/data/extract.py` reads every recording once through `vt_radar` and writes a single Hugging Face dataset (one row per frame) to `data/baked/floor_posture` (gitignored):
 
 ```
 python -m data.extract [data.root=...] [data.baked=...] [num_proc=4] [overwrite=true] ['recordings=["a","b"]']
@@ -22,7 +24,7 @@ To use the processed dataset:
 ```python
 from datasets import load_from_disk
 
-ds = load_from_disk("data/processed/floor_posture")
+ds = load_from_disk("data/baked/floor_posture")
 ds = ds.select_columns(["recording", "heatmap", "label_pose"])   # or ds.remove_columns([...])
 ```
 
@@ -36,13 +38,13 @@ Keep in mind that the baked data contains identifiable feeds.
 
 ## Manual annotations
 
-Three columns of the baked dataset are not in the raw data: they were annotated by hand and are joined in by `src/data/extract.py`. The source CSVs are small and tracked in git (see `.gitignore`), so rebuild the dataset (`overwrite=true`) after changing them.
+Three columns of the baked dataset are not in the raw data: they were annotated by hand and are joined in by `src/data/extract.py`. The source CSVs live in `data/annotations/` and are tracked as normal Git text. Rebuild the dataset (`python -m data.extract overwrite=true`) after changing them; the current command does not automatically refresh existing baked labels.
 
 | Column | Source file | Made with | Meaning |
 | ------ | ----------- | --------- | ------- |
-| `person` | `data/processed/person_map.csv` (`recording, person`) | `notebooks/label_persons.ipynb` | Pseudonym of the participant in the recording (for example `Bob`), so evaluation can be split by person. Recordings that are not labelled get `"NA"`. |
-| `person_present` | `data/processed/presence_events.csv` (`recording, frame_idx, event`) | `notebooks/label_presence.ipynb` | `True` while someone is in view of the camera, `False` for an empty scene. |
-| `lying_annotation` | `data/processed/lying_intervals.csv` (`recording, first_capture_idx, last_capture_idx, reviewed`) | `python -m annotation_tool` | `lying` or `not_lying` per frame, made from the camera video. `None` for recordings that are not reviewed yet. Training uses it as the target by default. |
+| `person` | `data/annotations/person_map.csv` (`recording, person`) | `notebooks/label_persons.ipynb` | Pseudonym of the participant in the recording (for example `Bob`), so evaluation can be split by person. Recordings that are not labelled get `"NA"`. |
+| `person_present` | `data/annotations/presence_events.csv` (`recording, frame_idx, event`) | `notebooks/label_presence.ipynb` | `True` while someone is in view of the camera, `False` for an empty scene. |
+| `lying_annotation` | `data/annotations/lying_intervals.csv` (`recording, first_capture_idx, last_capture_idx, reviewed`) | `python -m annotation_tool` | `lying` or `not_lying` per frame, made from the camera video. `None` for recordings that are not reviewed yet. Training uses it as the target by default. |
 
 - **`person`** is one value per recording. The notebook shows the best face crops of each recording and you pick a name from a fixed list of pseudonyms. Unlabelled recordings are dropped by the `known_person` preprocessor.
 - **`person_present`** is stored as `enter` and `leave` events on frame indices. A person is present from each `enter` until the next `leave` (or the end of the recording), so a recording that starts with someone already in view needs an `enter` on frame 0. Recordings without any events get `None`, not `False`, so filter on `person_present.notna()` before training on it. This is separate from the raw `label_presence` track, which is not reliable (it is `False` wherever it exists).

@@ -12,6 +12,6 @@ pc_rsync -az --itemize-changes "$@" \
   --exclude='/.git' --exclude='.venv' --exclude='__pycache__' --exclude='*.egg-info' \
   --exclude='/results' --exclude='/notebooks' --exclude='/logs' --exclude='/docs' \
   --exclude='/data/raw/floor_posture_dataset/*' \
-  --exclude='/data/processed/floor_posture*' \
+  --exclude='/data/baked/' \
   "$REPO/" "$PC_HOST:$PC_DIR/"
 case " $* " in *" -n "*|*--dry-run*) echo "dry run: nothing was copied";; *) echo "code synced to $PC_HOST:$PC_DIR";; esac

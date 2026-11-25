@@ -1,14 +1,14 @@
 """Bake the raw floor-posture recordings into one Hugging Face dataset.
 
-Besides the raw labels, hand annotations are joined in: `person` (data/processed/person_map.csv)
-and `person_present` (data/processed/presence_events.csv, from notebooks/label_presence.ipynb).
+Besides the raw labels, hand annotations are joined in: `person` (data/annotations/person_map.csv)
+and `person_present` (data/annotations/presence_events.csv, from notebooks/label_presence.ipynb).
 
 Run it:
 
     python -m data.extract [data.root=...] [num_proc=4] [overwrite=true] ['recordings=["a","b"]']
 
 Usage:
-    ds = load_from_disk("data/processed/floor_posture")
+    ds = load_from_disk("data/baked/floor_posture")
     ds = ds.select_columns(["recording", "heatmap", "label_pose"])
 """
 
@@ -37,9 +37,9 @@ logger = logging.getLogger(__name__)
 
 REPO = Path(__file__).resolve().parents[2]
 ALIGN_TOLERANCE = pd.Timedelta("2us")  # CSV rounding
-PERSON_MAP = REPO / "data" / "processed" / "person_map.csv"  # recording -> pseudonym, hand-labelled
+PERSON_MAP = REPO / "data" / "annotations" / "person_map.csv"  # recording -> pseudonym, hand-labelled
 NO_PERSON = "NA"
-PRESENCE_EVENTS = REPO / "data" / "processed" / "presence_events.csv"  # recording, frame_idx, event; hand-labelled
+PRESENCE_EVENTS = REPO / "data" / "annotations" / "presence_events.csv"  # recording, frame_idx, event; hand-labelled
 
 
 @dataclass

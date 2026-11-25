@@ -51,7 +51,7 @@ def main() -> None:
     args = parser.parse_args()
 
     out = REPO / args.out
-    ds = cast(Dataset, load_from_disk(str(REPO / "data/processed/floor_posture")))
+    ds = cast(Dataset, load_from_disk(str(REPO / "data/baked/floor_posture")))
     meta = cast(pd.DataFrame, ds.select_columns(["recording", "person", "cfg_file", "frame_idx", "label_pose"]).to_pandas())
     meta = meta[meta.cfg_file == CONFIG_4].sort_values(["recording", "frame_idx"])
     images: Any = ds.select_columns(["image"]).cast_column("image", HFImage(decode=False))  # raw JPEG bytes

@@ -17,7 +17,11 @@ Type check: `uv run mypy main.py --ignore-missing-imports` (the flag is needed b
 
 ## Data
 
-`python -m data.extract` reads every recording once and writes one Hugging Face dataset (one row per frame) to `data/processed/floor_posture` (gitignored, about 4.4 GB, about 20 s with `num_proc=6`). Run it before anything else. Columns, the hand-made `person` and `person_present` labels and the pitfalls (centring the heatmap, empty heatmaps) are in [docs/data_notes/baked-dataset.md](docs/data_notes/baked-dataset.md). The baked data contains identifiable camera feeds.
+The repository uses 2 initial stages for raw data and annotations, then a final baked dataset for use in modeling tasks. `data/raw/` holds the raw recordings in Git LFS which were received from Valtes. `data/annotations/` holds the source annotation CSVs as normal Git text files. `data/baked/` holds generated datasets, gitignored to be created on individual machines. 
+
+When running the bake, it automatically joins `person_map.csv`, `presence_events.csv`, and `lying_intervals.csv` from `data/annotations/`. Any annotation tools or labelling notebooks save their source CSVs there. After any editions or changes to annotations, rebuilding with `python -m data.extract overwrite=true` uses the newest source annotations unchanged, deleting stale `data/baked/`.
+
+`python -m data.extract` reads every recording once and writes one Hugging Face dataset (one row per frame) to `data/baked/floor_posture` (gitignored, about 4.4 GB, about 20 s with `num_proc=6`). Run it before anything else. Columns, the hand-made `person` and `person_present` labels and the pitfalls (centring the heatmap, empty heatmaps) are in [docs/data_notes/baked-dataset.md](docs/data_notes/baked-dataset.md). The baked data contains identifiable camera feeds.
 
 ## Running
 
@@ -30,7 +34,7 @@ Defaults are in `config/config.yaml`. Command-line `key=value` pairs override th
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `model.name` | `rnn` | `rnn` (CNN + GRU on heatmaps), `pointnet` (on radar points) or `baseline` (most common label). Hyperparameters are under `model.<name>.*`. |
-| `data.baked` | `data/processed/floor_posture` | Baked dataset folder. |
+| `data.baked` | `data/baked/floor_posture` | Baked dataset folder. |
 | `data.preprocess` | `[config_4]` | Extra frame filters. Recordings without a known person are always dropped. |
 | `data.exclude` | two recordings | Recordings left out of training and testing. The default drops `2311__20231124_152926` and `2311__20231124_153817`, where the camera does not look top down. |
 | `eval.folds` | `null` | `null`: one fold per person. An integer `k`: stratified k-fold over people. |
@@ -93,7 +97,7 @@ WSL stops every process about 15 seconds after the last SSH session closes. So `
 
 ```
 config/config.yaml        default settings
-data/                     raw dataset (git-lfs), baked dataset, person labels
+data/                     raw recordings (git-lfs), source annotations, generated baked datasets
 docs/                     notes (modeling.md, data_notes/), report, slides
 notebooks/                exploration and annotation notebooks
 scripts/pc/               helpers for running on the PC

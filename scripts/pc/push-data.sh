@@ -5,9 +5,9 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 name="${1:-floor_posture}"
-[ -d "$REPO/data/processed/$name" ] || die "no folder data/processed/$name here"
+[ -d "$REPO/data/baked/$name" ] || die "no folder data/baked/$name here"
 require_pc
-pc_bash <<< "mkdir -p '$PC_DIR/data/processed/$name'"
+pc_bash <<< "mkdir -p '$PC_DIR/data/baked/$name'"
 pc_rsync -a --partial --info=progress2 \
-  "$REPO/data/processed/$name/" "$PC_HOST:$PC_DIR/data/processed/$name/"
-echo "data/processed/$name synced"
+  "$REPO/data/baked/$name/" "$PC_HOST:$PC_DIR/data/baked/$name/"
+echo "data/baked/$name synced"
