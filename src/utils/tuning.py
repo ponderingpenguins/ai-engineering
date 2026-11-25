@@ -18,39 +18,43 @@ from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 from omegaconf import OmegaConf
 
 from data.resample import RandomOversampler
 from models.model import BaseModel, History
-from utils.config import ModelConfig
+from config import RunConfig, check_run_config
 from utils.fitting import fit_fold
 from utils.results import BestSetting, Candidate, InnerFold, Setting, Tuning
-from utils.task import Task
 from utils.metrics import macro_f1
 from utils.splitter import inner_splits
 
 logger = logging.getLogger(__name__)
 
 
-def hyperparameter_names(model_cfg: ModelConfig) -> list[str]:
-    """The names of the chosen model's plain hyperparameters, which a tuning setting may override.
+def hyperparameter_names(cfg: RunConfig) -> list[str]:
+    """Config paths that can vary between candidate models without changing splits."""
+    if cfg.model.name == "baseline":
+        raise ValueError("tuning is only defined for trainable models, not baseline")
+    names = [f"model.{section}.{f.name}" for section in ("arch", "augment")
+             for f in fields(getattr(cfg.model, section))]
+    names += [f"training.{f.name}" for f in fields(cfg.training)
+              if f.name not in ("validation", "oversample_ratio")]
+    return names
 
-    Raises:
-        ValueError: If the model has no tunable hyperparameters (the baseline).
-    """
-    params = getattr(model_cfg, model_cfg.name, None)  # a model has hyperparameters if ModelConfig has a field for it
-    if not is_dataclass(params):
-        raise ValueError(f"tuning is only defined for models that have hyperparameters, not {model_cfg.name!r}")
-    return [f.name for f in fields(params) if not is_dataclass(getattr(params, f.name))]  # no nested sub-configs
 
-
-def with_setting(model_cfg: ModelConfig, setting: Setting) -> ModelConfig:
-    """The model config with `setting` applied on top of the chosen model's hyperparameters."""
-    hyperparameter_names(model_cfg)  # raises for models that cannot be tuned
-    return replace(model_cfg, **{model_cfg.name: replace(getattr(model_cfg, model_cfg.name), **setting)})
+def with_setting(cfg: RunConfig, setting: Setting) -> RunConfig:
+    """Apply typed dotted overrides to one candidate; the original config is untouched."""
+    validate_grid([setting], hyperparameter_names(cfg))
+    override = OmegaConf.create({})
+    for key, value in setting.items():
+        OmegaConf.update(override, key, value)
+    merged = OmegaConf.merge(OmegaConf.structured(cfg), override)
+    candidate = cast(RunConfig, OmegaConf.to_object(merged))
+    check_run_config(candidate)
+    return candidate
 
 
 def validate_grid(grid: Sequence[Setting], allowed: Sequence[str]) -> None:
@@ -147,7 +151,7 @@ class Tuner:
 
     def build(self, tuning: Tuning) -> BaseModel:
         """A fresh model with the winning setting, set to train for the chosen number of epochs."""
-        return self.make_model({**tuning.setting, "epochs": tuning.epochs})
+        return self.make_model({**tuning.setting, "training.epochs": tuning.epochs})
 
 
 def best_overall(tunings: Sequence[Tuning]) -> BestSetting:
@@ -165,28 +169,24 @@ def best_overall(tunings: Sequence[Tuning]) -> BestSetting:
                        float(np.mean([t.score for t in won])))
 
 
-def save_tuned(path: Path, best: BestSetting, model: str, task: Task) -> None:
-    """Writes the chosen setting to a YAML file, with the model and task it was tuned for."""
+def save_tuned(path: Path, best: BestSetting, model: str, windowing: dict[str, Any]) -> None:
+    """Writes the chosen setting with its model and window specification."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    OmegaConf.save(OmegaConf.create({"model": model, "task": task.to_dict(), **asdict(best)}), path)
+    OmegaConf.save(OmegaConf.create({"model": model, "windowing": dict(windowing), **asdict(best)}), path)
 
 
-def apply_tuned(model_cfg: ModelConfig, tuned: dict[str, Any], task: Task) -> ModelConfig:
+def apply_tuned(cfg: RunConfig, tuned: dict[str, Any]) -> RunConfig:
     """The model config with a tuned setting and epoch count applied, for the full run.
 
     Raises:
-        ValueError: If the setting was tuned for a different model or task than the current run, or names
+        ValueError: If the setting was tuned for a different model or window specification than the current run, or names
             a hyperparameter the model does not have.
     """
-    try:
-        tuned_task = Task.from_dict(tuned.get("task"))
-    except ValueError:
-        tuned_task = None
-    if tuned.get("model") != model_cfg.name or tuned_task != task:
-        raise ValueError(f"the tuned config is for model {tuned.get('model')!r} and task {tuned.get('task')}, "
-                         f"but this run is {model_cfg.name!r} with {task.to_dict()}; tune again")
-    validate_grid([tuned["setting"]], hyperparameter_names(model_cfg))
-    return with_setting(model_cfg, {**tuned["setting"], "epochs": tuned["epochs"]})
+    saved = tuned.get("windowing", tuned.get("window_spec"))
+    if tuned.get("model") != cfg.model.name or saved != cfg.windowing.signature():
+        raise ValueError("the tuned model or windowing settings differ from this run; tune again")
+    return with_setting(cfg, {**tuned["setting"], "training.epochs": tuned["epochs"]})
+
 
 
 def load_tuned(path: Path) -> dict[str, Any]:
@@ -196,5 +196,5 @@ def load_tuned(path: Path) -> dict[str, Any]:
         FileNotFoundError: If the file does not exist, with a hint to run the tuning first.
     """
     if not path.is_file():
-        raise FileNotFoundError(f"no tuned config at {path}; run the tuning first (set tune.grid)")
+        raise FileNotFoundError(f"no tuned config at {path}; run tuning first (python main.py tune 'tune.grid=[...]')")
     return OmegaConf.to_container(OmegaConf.load(path), resolve=True)  # type: ignore[return-value]

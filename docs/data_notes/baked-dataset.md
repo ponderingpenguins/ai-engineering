@@ -7,7 +7,7 @@ The inputs are raw recordings in `data/raw/` (Git LFS) and source CSVs in `data/
 `src/data/extract.py` reads every recording once through `vt_radar` and writes a single Hugging Face dataset (one row per frame) to `data/baked/floor_posture` (gitignored):
 
 ```
-python -m data.extract [data.root=...] [data.baked=...] [num_proc=4] [overwrite=true] ['recordings=["a","b"]']
+python main.py bake [paths.raw_root=...] [paths.baked_dir=...] [--num-proc 4] [--overwrite] [--recording a --recording b]
 ```
 
 After extracting the data, synchronize the environment before opening the notebooks:
@@ -17,7 +17,7 @@ uv sync
 source .venv/bin/activate
 ```
 
-Quote recording names: YAML reads an unquoted `2311__20231120_144541` as a number. It takes about 20 s with `num_proc=6`, and the result is about 4.4 GB.
+Recording names passed through `--recording` are literal strings; repeat the flag to select several. It takes about 20 s with `--num-proc 6`, and the result is about 4.4 GB.
 
 To use the processed dataset:
 
@@ -38,7 +38,7 @@ Keep in mind that the baked data contains identifiable feeds.
 
 ## Manual annotations
 
-Three columns of the baked dataset are not in the raw data: they were annotated by hand and are joined in by `src/data/extract.py`. The source CSVs live in `data/annotations/` and are tracked as normal Git text. Rebuild the dataset (`python -m data.extract overwrite=true`) after changing them; the current command does not automatically refresh existing baked labels.
+Three columns of the baked dataset are not in the raw data: they were annotated by hand and are joined in by `src/data/extract.py`. The source CSVs live in `data/annotations/` and are tracked as normal Git text. Rebuild the dataset (`python main.py bake --overwrite`) after changing them; the current command does not automatically refresh existing baked labels.
 
 | Column | Source file | Made with | Meaning |
 | ------ | ----------- | --------- | ------- |
@@ -48,4 +48,4 @@ Three columns of the baked dataset are not in the raw data: they were annotated 
 
 - **`person`** is one value per recording. The notebook shows the best face crops of each recording and you pick a name from a fixed list of pseudonyms. Unlabelled recordings are dropped by the `known_person` preprocessor.
 - **`person_present`** is stored as `enter` and `leave` events on frame indices. A person is present from each `enter` until the next `leave` (or the end of the recording), so a recording that starts with someone already in view needs an `enter` on frame 0. Recordings without any events get `None`, not `False`, so filter on `person_present.notna()` before training on it. This is separate from the raw `label_presence` track, which is not reliable (it is `False` wherever it exists).
-- **`lying_annotation`** is stored as lying intervals on capture positions (the time order of a recording, not always `frame_idx`). In a reviewed recording every frame outside the intervals is `not_lying`. Recordings that are not reviewed get `None`, which is not the same as `not_lying`. Add the column to an existing dataset without a full rebuild by running `_add_lying_annotation` from `data/extract.py` on it, or rebuild with `overwrite=true`.
+- **`lying_annotation`** is stored as lying intervals on capture positions (the time order of a recording, not always `frame_idx`). In a reviewed recording every frame outside the intervals is `not_lying`. Recordings that are not reviewed get `None`, which is not the same as `not_lying`. Add the column to an existing dataset without a full rebuild by running `_add_lying_annotation` from `data/extract.py` on it, or rebuild with `--overwrite`.

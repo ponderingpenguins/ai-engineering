@@ -7,7 +7,7 @@ from models.model import History
 from utils.splitter import GroupKFoldSplitter
 from utils.trainer import Trainer
 from utils.results import BestSetting, Tuning
-from utils.task import Task
+from config import WindowConfig
 from utils.tuning import (Tuner, apply_tuned, best_epoch, best_overall, kept_val_loss, load_tuned, median_epoch, save_tuned,
                           validate_grid)
 
@@ -80,7 +80,7 @@ def test_epochs_are_the_median_best_epoch_and_build_uses_them():
     tuner = Tuner(Fake, [{"best_step": 25}])  # step 25 at 10 steps per epoch is epoch 3
     tuning = tuner.tune(x, y, groups, np.flatnonzero(groups != "Ian"), CLASSES)
     assert tuning.epochs == 3
-    assert tuner.build(tuning).setting == {"best_step": 25, "epochs": 3}
+    assert tuner.build(tuning).setting == {"best_step": 25, "training.epochs": 3}
 
 
 def test_kept_val_loss_is_the_loss_at_the_best_step():
@@ -141,14 +141,14 @@ def test_best_overall_breaks_a_tie_by_the_lower_mean_loss():
 
 def test_tuned_setting_round_trips_through_the_yaml_file(tmp_path):
     best = BestSetting({"hidden": 64, "lr": 0.0003}, 7, 3, 4, 0.5)
-    task = Task(target="label_pose", collapse_lying=True, window_len=16, label_rule="any_lying", max_points=128)
+    windowing = WindowConfig(target="label_pose", collapse_lying=True, window_len=16, label_rule="any_lying", max_points=128).signature()
     path = tmp_path / "sub" / "tuned.yaml"
-    save_tuned(path, best, "rnn", task)
-    assert load_tuned(path) == {"model": "rnn", "task": task.to_dict(), **asdict(best)}
+    save_tuned(path, best, "rnn", windowing)
+    assert load_tuned(path) == {"model": "rnn", "windowing": windowing, **asdict(best)}
 
 
 def test_loading_a_missing_tuned_file_says_to_tune_first(tmp_path):
-    with pytest.raises(FileNotFoundError, match="run the tuning first"):
+    with pytest.raises(FileNotFoundError, match="run tuning first"):
         load_tuned(tmp_path / "none.yaml")
 
 
@@ -169,8 +169,8 @@ def test_trainer_tunes_each_outer_fold_on_its_training_people_only():
 
 def test_train_final_fits_on_all_windows_and_saves_a_checkpoint(tmp_path):
     x, y, groups = make_data()
-    task = Task(target="label_pose", collapse_lying=True, window_len=16, label_rule="any_lying", max_points=128)
-    info = Trainer(MajorityClass, out_dir=tmp_path, task=task).train_final(x, y)
+    windowing = WindowConfig(target="label_pose", collapse_lying=True, window_len=16, label_rule="any_lying", max_points=128).signature()
+    info = Trainer(MajorityClass, out_dir=tmp_path, windowing=windowing).train_final(x, y)
     assert info.n_windows == len(y) and info.checkpoint == "final.pt"
     assert (tmp_path / "final.pt").is_file() and (tmp_path / "final.json").is_file()
     assert info.train_classes == {"lying": 8, "not_lying": 40}
@@ -186,55 +186,71 @@ def test_report_has_a_tuning_section_with_every_setting(tmp_path):
     assert "{'loss': 0.8}" in report and "**{'loss': 0.3, 'good': True}**" in report  # the winner is bold
 
 
-TASK = Task(target="label_pose", collapse_lying=True, window_len=16, label_rule="any_lying", max_points=128)
-TUNED = {"model": "rnn", "task": TASK.to_dict(), "setting": {"hidden": 64, "epochs": 99}, "epochs": 7}
+def run_cfg(**kwargs):
+    from config import RunConfig
+    return RunConfig(windowing=WindowConfig(target="label_pose"), **kwargs)
+
+
+WINDOWING = WindowConfig(target="label_pose", collapse_lying=True, window_len=16, label_rule="any_lying", max_points=128).signature()
+TUNED = {"model": "rnn", "windowing": WINDOWING, "setting": {"model.arch.hidden": 64, "training.epochs": 99}, "epochs": 7}
+
+
+@pytest.mark.parametrize("key", ["window_spec", "windowing"])
+def test_tuned_settings_accept_legacy_and_current_window_spec_keys(key):
+    from config import ModelConfig, RunConfig
+
+    tuned = {k: v for k, v in TUNED.items() if k != "windowing"}
+    tuned[key] = WINDOWING
+    assert apply_tuned(run_cfg(), tuned).model.arch.hidden == 64
+    with pytest.raises(ValueError, match="tune again"):
+        apply_tuned(replace(run_cfg(), windowing=WindowConfig(target="label_pose", window_len=8)), tuned)
 
 
 def test_apply_tuned_sets_the_setting_and_the_tuned_epochs():
-    from utils.config import ModelConfig
-    cfg = apply_tuned(ModelConfig(), TUNED, TASK)
-    assert cfg.rnn.hidden == 64 and cfg.rnn.epochs == 7  # the tuned epoch count beats a grid "epochs"
-    assert cfg.rnn.lr == ModelConfig().rnn.lr  # everything else stays at its default
+    from config import ModelConfig, RunConfig
+    cfg = apply_tuned(run_cfg(), TUNED)
+    assert cfg.model.arch.hidden == 64 and cfg.training.epochs == 7  # the tuned epoch count beats a grid "epochs"
+    assert cfg.training.lr == run_cfg().training.lr  # everything else stays at its default
 
 
-def test_apply_tuned_refuses_a_different_task_or_model():
-    from utils.config import ModelConfig
+def test_apply_tuned_refuses_different_windowing_or_model():
+    from config import ModelConfig, RunConfig
     with pytest.raises(ValueError, match="tune again"):
-        apply_tuned(ModelConfig(), TUNED, replace(TASK, window_len=8))
+        apply_tuned(replace(run_cfg(), windowing=WindowConfig(target="label_pose", window_len=8)), TUNED)
     with pytest.raises(ValueError, match="tune again"):
-        apply_tuned(ModelConfig(name="baseline"), TUNED, TASK)
+        apply_tuned(run_cfg(model=ModelConfig(name="baseline")), TUNED)
     with pytest.raises(ValueError, match="unknown hyperparameter"):
-        apply_tuned(ModelConfig(), {**TUNED, "setting": {"hiden": 1}}, TASK)
+        apply_tuned(run_cfg(), {**TUNED, "setting": {"model.arch.hiden": 1}})
 
 
 def test_a_pointnet_setting_is_applied_to_the_pointnet_config():
-    from utils.config import ModelConfig
+    from config import ModelConfig, RunConfig
     from utils.tuning import hyperparameter_names, with_setting
 
-    cfg = with_setting(ModelConfig(name="pointnet"), {"width": 64, "point_drop": 0.1})
-    assert cfg.pointnet.width == 64 and cfg.pointnet.point_drop == 0.1
-    assert cfg.rnn == ModelConfig().rnn  # the other model's settings are untouched
-    assert "width" in hyperparameter_names(cfg) and "hidden" not in hyperparameter_names(cfg)
+    cfg = with_setting(run_cfg(model=ModelConfig(name="pointnet")), {"model.arch.width": 64, "training.lr": 0.01})
+    assert cfg.model.arch.width == 64 and cfg.training.lr == 0.01
+    assert cfg.model.name == "pointnet"
+    assert "model.arch.width" in hyperparameter_names(cfg) and "model.arch.hidden" not in hyperparameter_names(cfg)
 
-    tuned = {"model": "pointnet", "task": TASK.to_dict(), "setting": {"width": 64}, "epochs": 5}
-    applied = apply_tuned(ModelConfig(name="pointnet"), tuned, TASK)
-    assert applied.pointnet.width == 64 and applied.pointnet.epochs == 5
+    tuned = {"model": "pointnet", "windowing": WINDOWING, "setting": {"model.arch.width": 64}, "epochs": 5}
+    applied = apply_tuned(run_cfg(model=ModelConfig(name="pointnet")), tuned)
+    assert applied.model.arch.width == 64 and applied.training.epochs == 5
     with pytest.raises(ValueError, match="unknown hyperparameter"):  # an RNN setting does not fit PointNet
-        apply_tuned(ModelConfig(name="pointnet"), {**tuned, "setting": {"hidden": 8}}, TASK)
+        apply_tuned(run_cfg(model=ModelConfig(name="pointnet")), {**tuned, "setting": {"model.arch.hidden": 8}})
 
 
 def test_the_baseline_cannot_be_tuned():
-    from utils.config import ModelConfig
+    from config import ModelConfig, RunConfig
     from utils.tuning import hyperparameter_names
 
     with pytest.raises(ValueError, match="only defined for"):
-        hyperparameter_names(ModelConfig(name="baseline"))
+        hyperparameter_names(run_cfg(model=ModelConfig(name="baseline")))
 
 
 def test_nested_sub_configs_are_not_tunable():
-    from utils.config import ModelConfig
+    from config import ModelConfig, RunConfig
     from utils.tuning import hyperparameter_names
 
     for name in ("rnn", "pointnet"):
-        names = hyperparameter_names(ModelConfig(name=name))
-        assert "augment" not in names and "lr" in names
+        names = hyperparameter_names(run_cfg(model=ModelConfig(name=name)))
+        assert "model.augment" not in names and "training.lr" in names

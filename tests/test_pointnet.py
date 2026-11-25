@@ -9,9 +9,8 @@ from data.windows import HEATMAP_SHAPE, _window_points, make_windows
 from models.factory import MODEL_CLASSES, build_model
 from models.model import BaseModel
 from models.pointnet import MiniPointNet, PointNet
-from utils.config import ModelConfig
+from config import ModelConfig, RunConfig, WindowConfig
 from utils.splitter import GroupKFoldSplitter
-from utils.task import Task
 from utils.trainer import Trainer
 
 PERIOD = 0.2
@@ -155,10 +154,10 @@ def test_checkpoint_round_trip_gives_the_same_predictions(tmp_path):
     x, y = separable_data()
     model = PointNet(epochs=3, batch_size=16, width=16)
     model.fit(x, y)
-    task = Task(target="label_pose", collapse_lying=True, window_len=16, label_rule="any_lying", max_points=12)
-    model.save(tmp_path / "pn.pt", task)
-    loaded, loaded_task = BaseModel.load(tmp_path / "pn.pt")
-    assert isinstance(loaded, PointNet) and loaded_task == task
+    windowing = WindowConfig(target="label_pose", collapse_lying=True, window_len=16, label_rule="any_lying", max_points=12).signature()
+    model.save(tmp_path / "pn.pt", windowing)
+    loaded, loaded_windowing = BaseModel.load(tmp_path / "pn.pt")
+    assert isinstance(loaded, PointNet) and loaded_windowing == windowing
     assert (loaded.predict(x) == model.predict(x)).all()
     assert torch.allclose(loaded.net.feat_mean.cpu(), model.net.feat_mean.cpu())  # the standardisation travels with the weights
 
@@ -175,8 +174,8 @@ def test_trainer_runs_cross_validation_with_the_pointnet(tmp_path):
     x, y = separable_data(48)
     groups = np.array(["Bob", "Dave", "Frank", "Ian"] * 12)
     results = Trainer(lambda: PointNet(epochs=2, batch_size=16, width=16), splitter=GroupKFoldSplitter(),
-                      out_dir=tmp_path, task=Task(target="label_pose", collapse_lying=True, window_len=16,
-                                                label_rule="any_lying", max_points=12),
+                      out_dir=tmp_path, windowing=WindowConfig(target="label_pose", collapse_lying=True, window_len=16,
+                                                label_rule="any_lying", max_points=12).signature(),
                       config={"model": {"name": "pointnet", "pointnet": {"epochs": 2, "batch_size": 16, "lr": 0.001,
                                                                           "patience": 5, "evals_per_epoch": 1}},
                               "eval": {"folds": None, "seed": 0, "max_points": 12}, "input_type": "pointcloud"}).cross_validate(x, y, groups)

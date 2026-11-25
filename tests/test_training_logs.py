@@ -11,10 +11,10 @@ from utils.curves import mean_curves, plot_fold_curves, plot_mean_curves
 from utils.results import FoldResult, Pooled, RunResults
 from utils.run_report import write_report
 from utils.splitter import GroupKFoldSplitter, validation_split
-from utils.task import Task
+from config import WindowConfig
 from utils.trainer import Trainer
 
-TASK = Task(target="label_pose", collapse_lying=True, window_len=16, label_rule="any_lying", max_points=128)
+WINDOWING = WindowConfig(target="label_pose", collapse_lying=True, window_len=16, label_rule="any_lying", max_points=128).signature()
 
 
 # ---- validation split -------------------------------------------------------------------------
@@ -101,7 +101,7 @@ def make_cv_data():
 def test_trainer_writes_checkpoints_results_and_report(tmp_path):
     x, y, groups = make_cv_data()
     out = tmp_path / "run"
-    trainer = Trainer(MajorityClass, splitter=GroupKFoldSplitter(), out_dir=out, task=TASK,
+    trainer = Trainer(MajorityClass, splitter=GroupKFoldSplitter(), out_dir=out, windowing=WINDOWING,
                       config={"model": {"name": "baseline"}, "eval": {"folds": None, "seed": 0}})
     results = trainer.cross_validate(x, y, groups)
 
@@ -109,8 +109,8 @@ def test_trainer_writes_checkpoints_results_and_report(tmp_path):
     for fold in results.folds:
         assert fold.val_groups and not set(fold.val_groups) & set(fold.test_groups)
         assert (out / fold.checkpoint).exists()
-        model, task = BaseModel.load(out / fold.checkpoint)
-        assert task == TASK
+        model, windowing = BaseModel.load(out / fold.checkpoint)
+        assert windowing == WINDOWING
     stored = json.loads((out / "results.json").read_text())
     assert stored["pooled"]["n"] == len(y)
     assert RunResults.from_dict(stored).to_dict() == stored  # the file round-trips through the records

@@ -13,7 +13,7 @@ from data.preprocess import (
     TemporalBackground,
     build_pipeline,
 )
-from utils.config import DataConfig
+from config import DataConfig, PreprocessConfig
 
 
 @pytest.fixture
@@ -64,7 +64,7 @@ def test_excluding_a_recording_that_does_not_exist_warns(ds, caplog):
 
 
 def test_the_default_config_excludes_the_two_non_top_down_recordings():
-    assert DataConfig().exclude == ["2311__20231124_152926", "2311__20231124_153817"]
+    assert DataConfig().selection.exclude_recordings == ["2311__20231124_152926", "2311__20231124_153817"]
 
 
 def test_unknown_persons_are_dropped_even_if_not_requested(ds):
@@ -151,7 +151,8 @@ def test_heatmap_transforms_follow_capture_order_not_row_order():
 
 def test_new_steps_are_registered_and_off_by_default():
     assert isinstance(build_pipeline(["range_normalise", "temporal_background"]).steps[1], RangeNormalise)  # steps[0] is known_person
-    assert DataConfig.__dataclass_fields__["preprocess"].default_factory() == ["config_4"]
+    assert DataConfig().selection.sensor_config == CONFIG_4
+    assert not PreprocessConfig().range_normalise.enabled and not PreprocessConfig().temporal_background.enabled
 
 
 def test_range_normalise_default_window_ignores_a_person_as_wide_as_a_lying_one():

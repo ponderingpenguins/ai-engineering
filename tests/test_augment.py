@@ -4,7 +4,7 @@ import torch
 
 from data.augment import HeatmapAugment, _pick_one_per_group
 from models.factory import build_model
-from utils.config import ModelConfig
+from config import ModelConfig, TrainingConfig
 
 B, T, R, D = 4, 8, 64, 4
 
@@ -76,10 +76,11 @@ def test_time_reverse_flips_some_windows_and_leaves_the_rest():
 
 def test_rnn_trains_with_augmentation_and_only_on_training_batches():
     cfg = ModelConfig(name="rnn")
-    cfg.rnn.epochs = 1
-    cfg.rnn.augment.range_shift_bins = 4
-    cfg.rnn.augment.time_reverse = True
-    model = build_model(cfg)
+    training = TrainingConfig(epochs=1)
+    aug = cfg.augment
+    aug.range_shift_bins = 4
+    aug.time_reverse = True
+    model = build_model(cfg, training)
     assert model.augment is not None
     x = np.random.default_rng(0).normal(7.4, 0.01, (12, 6, 1, 256, 16)).astype(np.float32)
     y = np.array(["a", "b"] * 6)
@@ -197,10 +198,11 @@ def test_snr_jitter_is_one_offset_per_window():
 
 def test_pointnet_trains_with_augmentation_and_prediction_ignores_it():
     cfg = ModelConfig(name="pointnet")
-    cfg.pointnet.epochs = 1
-    cfg.pointnet.augment.shift_m = 0.3
-    cfg.pointnet.augment.ghost_points = 3
-    model = build_model(cfg)
+    training = TrainingConfig(epochs=1)
+    aug = cfg.augment
+    aug.shift_m = 0.3
+    aug.ghost_points = 3
+    model = build_model(cfg, training)
     assert isinstance(model, PointNet) and model.augment is not None
     x = points(batch=12).numpy()
     y = np.array(["a", "b"] * 6)

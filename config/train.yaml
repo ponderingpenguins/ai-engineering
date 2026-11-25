@@ -1,0 +1,20 @@
+# Run settings shared by cv, tune and train-final. Model selects one models/<name>.yaml.
+model: rnn
+seed: 0  # model fitting, fold assignment, validation people and resampling
+out_dir: results
+training:
+  lr: 0.001
+  weight_decay: 0.01
+  epochs: 30  # maximum with early stopping; exact count without validation
+  batch_size: 32
+  patience: 5  # validation evaluations without improvement
+  evals_per_epoch: 1
+  validation: true  # hold out one training person for early stopping
+  class_weights: true  # inverse-frequency training loss; validation remains balanced
+  oversample_ratio: null  # null: off; (0, 1]: rare-class share of majority training windows
+cv:
+  folds: null  # null: leave one person out; integer: grouped k-fold
+  max_windows_per_person: null  # quick checks only; null keeps all windows
+tune:
+  grid: []  # dotted keys, e.g. [{model.arch.hidden: 64, training.lr: 0.0003}]
+  best_path: results/tuned.yaml  # tune writes this; train-final reads it

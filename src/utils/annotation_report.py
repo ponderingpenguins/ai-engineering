@@ -7,7 +7,7 @@ Only reviewed recordings that also have pose labels are compared. The comparison
 - intervals (the headline): a run of lying frames counts as *found* if the other track has a lying run that
   overlaps it by at least one frame. Lying is labelled as short runs, so this is how a person compares them.
 - frames: how many frames are lying in both tracks, only in one, or in neither.
-- windows: both tracks go through the `any_lying` window rule (`eval.window_len`, `eval.stride`), the units
+- windows: both tracks go through the `any_lying` window rule (`windowing.window_len`, `windowing.stride`), the units
   a classifier predicts.
 
 Every disagreement is listed with a link into the annotation tool, so it can be looked at.
@@ -25,8 +25,8 @@ from datasets import Dataset, load_from_disk
 from omegaconf.errors import OmegaConfBaseException
 
 from data.annotation import LYING_INTERVALS, REPO, Annotations, Interval, capture_positions, read_annotations
-from data.preprocess import PREPROCESSORS, RowFilter, build_pipeline
-from utils.config import load_config
+from data.preprocess import configured_pipeline
+from config import load_data_config
 
 logger = logging.getLogger(__name__)
 
@@ -168,18 +168,18 @@ def report(meta: pd.DataFrame, annotations: Annotations, window_len: int, stride
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--csv", default=str(LYING_INTERVALS))
+    parser.add_argument("--csv", default=None)
     parser.add_argument("--out", default="results/annotation_agreement.md")
     parser.add_argument("--port", type=int, default=8765, help="port of the annotation tool, for the links")
     args, overrides = parser.parse_known_args()
     try:
-        cfg = load_config(REPO, overrides)
-    except OmegaConfBaseException as error:
+        cfg = load_data_config(REPO, overrides)
+    except (ValueError, TypeError, OmegaConfBaseException) as error:
         sys.exit(f"Error: {error}")
-    steps = [name for name in cfg.data.preprocess if issubclass(PREPROCESSORS[name], RowFilter)]
-    ds = build_pipeline(steps, cfg.data.exclude)(cast(Dataset, load_from_disk(str(REPO / cfg.data.baked))))
+    ds = configured_pipeline(cfg.selection)(cast(Dataset, load_from_disk(str(REPO / cfg.paths.baked_dir))))
+    csv_path = REPO / args.csv if args.csv is not None else REPO / cfg.paths.annotations_dir / LYING_INTERVALS.name
     meta = cast(pd.DataFrame, ds.select_columns(["recording", "timestamp", "frame_idx", "label_pose"]).to_pandas())
-    text = report(meta, read_annotations(REPO / args.csv), cfg.eval.window_len, cfg.eval.stride,
+    text = report(meta, read_annotations(csv_path), cfg.windowing.window_len, cfg.windowing.stride,
                   f"http://127.0.0.1:{args.port}/")
     out = REPO / args.out
     out.parent.mkdir(parents=True, exist_ok=True)

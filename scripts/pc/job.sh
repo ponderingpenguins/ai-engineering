@@ -10,7 +10,7 @@
 # A permanent fix would be on the PC (Windows side), e.g. an `instanceIdleTimeout` in .wslconfig.
 #
 # The command text is saved as logs/<name>_<timestamp>.sh on the PC. Quote the whole command as one argument.
-#   scripts/pc/job.sh 'for s in 0 1 2; do uv run python main.py model.rnn.seed=$s; done'
+#   scripts/pc/job.sh 'for s in 0 1 2; do uv run python main.py cv seed=$s; done'
 #   JOB_NAME=sweep scripts/pc/job.sh '...'      (letters, digits and dashes only)
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"

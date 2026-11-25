@@ -5,28 +5,27 @@ and `person_present` (data/annotations/presence_events.csv, from notebooks/label
 
 Run it:
 
-    python -m data.extract [data.root=...] [num_proc=4] [overwrite=true] ['recordings=["a","b"]']
+    python -m data.extract [paths.raw_root=...] [--num-proc 4] [--overwrite] [--recording a --recording b]
 
 Usage:
     ds = load_from_disk("data/baked/floor_posture")
     ds = ds.select_columns(["recording", "heatmap", "label_pose"])
 """
 
+import argparse
 import logging
 import shutil
 import sys
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator, cast
 
 import numpy as np
 import pandas as pd
 from datasets import Dataset, Features, Image, Sequence, Value
-from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
 
 from data.annotation import LYING_INTERVALS, lying_labels, read_annotations
-from utils.config import DataConfig
+from config import DataConfig, load_data_config
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,19 +39,6 @@ ALIGN_TOLERANCE = pd.Timedelta("2us")  # CSV rounding
 PERSON_MAP = REPO / "data" / "annotations" / "person_map.csv"  # recording -> pseudonym, hand-labelled
 NO_PERSON = "NA"
 PRESENCE_EVENTS = REPO / "data" / "annotations" / "presence_events.csv"  # recording, frame_idx, event; hand-labelled
-
-
-@dataclass
-class ExtractConfig:
-    data: DataConfig = field(default_factory=DataConfig)
-    num_proc: int = 4
-    overwrite: bool = False
-    recordings: list[str] = field(default_factory=list)  # empty = every recording present
-
-    def __post_init__(self) -> None:
-        """Turns a plain dict `data` (as loaded from YAML) into a DataConfig."""
-        if isinstance(self.data, dict):
-            self.data = DataConfig(**self.data)
 
 
 # --- labels ---------------------------------------------------------------
@@ -265,9 +251,9 @@ def _rows(recordings: list[dict[str, Any]], kinds: dict[str, str]) -> Iterator[d
             yield row
 
 
-def _add_person(ds: Dataset) -> Dataset:
+def _add_person(ds: Dataset, annotations_dir: Path | None = None) -> Dataset:
     """Add a `person` column from person_map.csv; unlabelled recordings get "NA"."""
-    df = pd.read_csv(PERSON_MAP, keep_default_na=False)  # keep_default_na: don't turn a name into NaN
+    df = pd.read_csv(PERSON_MAP if annotations_dir is None else annotations_dir / "person_map.csv", keep_default_na=False)  # keep_default_na: don't turn a name into NaN
     mapping = {r: p.strip() or NO_PERSON for r, p in zip(df.recording, df.person)}
     recs = ds.select_columns(["recording"]).to_pandas().recording
     unlisted = sorted(set(recs) - set(mapping))
@@ -276,14 +262,15 @@ def _add_person(ds: Dataset) -> Dataset:
     return ds.add_column("person", recs.map(lambda r: mapping.get(r, NO_PERSON)).tolist())
 
 
-def _add_presence(ds: Dataset) -> Dataset:
+def _add_presence(ds: Dataset, annotations_dir: Path | None = None) -> Dataset:
     """Add a `person_present` column from presence_events.csv.
 
     A person is present from each "enter" event until the next "leave" event (or the end of
     the recording). Recordings without any events are unannotated and get None, so they are
     not mistaken for empty rooms.
     """
-    events = pd.read_csv(PRESENCE_EVENTS) if PRESENCE_EVENTS.exists() else pd.DataFrame(columns=["recording", "frame_idx", "event"])
+    path = PRESENCE_EVENTS if annotations_dir is None else annotations_dir / "presence_events.csv"
+    events = pd.read_csv(path) if path.exists() else pd.DataFrame(columns=["recording", "frame_idx", "event"])
     if events.empty:
         logger.warning("no events in %s, person_present is None everywhere", PRESENCE_EVENTS.name)
     meta = ds.select_columns(["recording", "frame_idx"]).to_pandas()
@@ -306,13 +293,13 @@ def _add_presence(ds: Dataset) -> Dataset:
     return ds.add_column("person_present", present.tolist()).cast_column("person_present", Value("bool"))
 
 
-def _add_lying_annotation(ds: Dataset) -> Dataset:
+def _add_lying_annotation(ds: Dataset, annotations_dir: Path | None = None) -> Dataset:
     """Add a `lying_annotation` column from lying_intervals.csv: "lying", "not_lying", or None if not reviewed.
 
     See `data.annotation`. Recordings that are not reviewed get None, so they are not mistaken for
     recordings without lying.
     """
-    annotations = read_annotations(LYING_INTERVALS)
+    annotations = read_annotations(LYING_INTERVALS if annotations_dir is None else annotations_dir / "lying_intervals.csv")
     meta = ds.select_columns(["recording", "frame_idx", "timestamp"]).to_pandas()
     labels = lying_labels(meta, annotations)
     reviewed = {rec for rec, marks in annotations.items() if marks.reviewed} & set(meta.recording)
@@ -353,25 +340,27 @@ def _recordings(root: Path, only: list[str]) -> list[dict[str, Any]]:
     return recs
 
 
-def extract(cfg: ExtractConfig) -> None:
+def extract(cfg: DataConfig, *, num_proc: int = 4, overwrite: bool = False, recordings: list[str] | None = None) -> None:
     """Bakes the raw recordings into a Hugging Face dataset and saves it to disk.
 
     Args:
         cfg: The extraction configuration.
 
     Raises:
-        SystemExit: If the output exists and `cfg.overwrite` is False, or no
+        SystemExit: If the output exists and `overwrite` is False, or no
             recordings are found.
     """
-    root = REPO / cfg.data.root
-    out = REPO / cfg.data.baked
+    if num_proc < 1:
+        raise ValueError("--num-proc must be positive")
+    root = REPO / cfg.paths.raw_root
+    out = REPO / cfg.paths.baked_dir
     if out.exists():
-        if not cfg.overwrite:
-            logger.error("%s already exists. Pass overwrite=true to rebuild it.", out)
+        if not overwrite:
+            logger.error("%s already exists. Pass --overwrite to rebuild it.", out)
             sys.exit(1)
         shutil.rmtree(out)
 
-    recs = _recordings(root, cfg.recordings)
+    recs = _recordings(root, recordings or [])
     if not recs:
         logger.error("no recordings found under %s", root)
         sys.exit(1)
@@ -383,12 +372,12 @@ def extract(cfg: ExtractConfig) -> None:
         _rows,
         features=_features(kinds),
         gen_kwargs={"recordings": recs, "kinds": kinds},
-        num_proc=min(cfg.num_proc, len(recs)) if cfg.num_proc > 1 else None,
+        num_proc=min(num_proc, len(recs)) if num_proc > 1 else None,
         cache_dir=str(cache),
     )
-    ds = _add_person(ds)
-    ds = _add_presence(ds)
-    ds = _add_lying_annotation(ds)
+    ds = _add_person(ds, REPO / cfg.paths.annotations_dir)
+    ds = _add_presence(ds, REPO / cfg.paths.annotations_dir)
+    ds = _add_lying_annotation(ds, REPO / cfg.paths.annotations_dir)
     ds.save_to_disk(str(out))
     shutil.rmtree(cache, ignore_errors=True)
     logger.info("saved %d rows to %s", len(ds), out)
@@ -396,18 +385,17 @@ def extract(cfg: ExtractConfig) -> None:
 
 def main() -> None:
     """main function"""
-    schema = OmegaConf.structured(ExtractConfig)
-    file_cfg = OmegaConf.load(REPO / "config" / "config.yaml")
-    cli_cfg = OmegaConf.from_cli()
+    parser = argparse.ArgumentParser(description="Bake raw recordings and join source annotations.")
+    parser.add_argument("--num-proc", type=int, default=4, help="parallel workers (default: 4)")
+    parser.add_argument("--overwrite", action="store_true", help="replace an existing baked dataset")
+    parser.add_argument("--recording", action="append", default=[], help="recording to bake; repeat to select several")
+    args, overrides = parser.parse_known_args()
     try:
-        merged = OmegaConf.merge(schema, file_cfg, cli_cfg)
-        raw = cast(dict[str, Any], OmegaConf.to_container(merged, resolve=True))
-        cfg = ExtractConfig(**raw)
-    except (TypeError, OmegaConfBaseException) as e:  # pylint: disable=broad-exception-raised
-        logger.error("Error: %s\n\nUsage: python -m data.extract data.root=<path> num_proc=4", e)
-        sys.exit(1)
+        cfg = load_data_config(REPO, overrides)
+        extract(cfg, num_proc=args.num_proc, overwrite=args.overwrite, recordings=args.recording)
+    except (TypeError, ValueError, OmegaConfBaseException) as e:
+        parser.error(str(e))
 
-    extract(cfg)
 
 
 if __name__ == "__main__":

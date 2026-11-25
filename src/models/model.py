@@ -1,12 +1,12 @@
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Self, cast
 
 import numpy as np
 import torch
 
-from utils.task import Task
+from config import WindowConfig
 
 
 @dataclass
@@ -36,48 +36,51 @@ class BaseModel(ABC):
     input_type: str = "heatmap"
     model_name: str  # Key used to register this model in models.factory.MODEL_CLASSES.
 
-    def save(self, path: str | Path, task: Task) -> None:
-        """Save model state with the task settings used during training.
+    def save(self, path: str | Path, windowing: dict[str, Any]) -> None:
+        """Save model state with its input and label specification.
 
         Subclasses supply tensors and plain values through _checkpoint_state.
         Whole Python model objects are not pickled into the checkpoint.
         """
         checkpoint = {
             **self._checkpoint_state(),
-            "format_version": 1,
+            "format_version": 3,
             "model": self.model_name,
-            "evaluation": task.to_dict(),
+            "windowing": dict(windowing),
         }
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(checkpoint, path)
 
     @classmethod
-    def load(cls, path: str | Path) -> tuple[Self, Task]:
-        """Restore a checkpoint and its task settings without training.
+    def load(cls, path: str | Path) -> tuple[Self, dict[str, Any]]:
+        """Restore a model and its window specification without training.
 
         BaseModel.load selects the registered subclass automatically. Calling
         a subclass directly, such as RNN.load, checks that the type matches.
         """
         checkpoint = torch.load(path, map_location="cpu", weights_only=True)
-        if not isinstance(checkpoint, dict) or checkpoint.get("format_version") != 1:
+        if not isinstance(checkpoint, dict) or checkpoint.get("format_version") not in (1, 2, 3):
             raise ValueError("Unsupported model checkpoint format.")
-        try:
-            task = Task.from_dict(checkpoint.get("evaluation"))
-        except ValueError as e:
-            raise ValueError("Checkpoint is missing evaluation settings.") from e
+        version = checkpoint["format_version"]
+        values = checkpoint.get({1: "evaluation", 2: "window_spec", 3: "windowing"}[version])
+        if not isinstance(values, dict) or values.keys() != WindowConfig().signature().keys():
+            raise ValueError("Checkpoint is missing valid windowing settings.")
+        windowing = dict(values)
 
-        model_class = cls
+        model_class: type[BaseModel] = cls
         if cls is BaseModel:
             # Import here to avoid a cycle while model subclasses are imported.
             from .factory import MODEL_CLASSES
 
-            model_class = MODEL_CLASSES.get(checkpoint.get("model"))
-            if model_class is None:
+            model_name = checkpoint.get("model")
+            registered = MODEL_CLASSES.get(model_name) if isinstance(model_name, str) else None
+            if registered is None:
                 raise ValueError(f"Unknown checkpoint model: {checkpoint.get('model')!r}")
+            model_class = registered
         elif checkpoint.get("model") != cls.model_name:
             raise ValueError(f"Expected a {cls.model_name!r} checkpoint.")
-        return model_class._from_checkpoint(checkpoint), task
+        return cast(Self, model_class._from_checkpoint(checkpoint)), windowing
 
     @abstractmethod
     def _checkpoint_state(self) -> dict[str, Any]:

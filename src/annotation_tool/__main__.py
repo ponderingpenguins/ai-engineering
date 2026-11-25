@@ -2,8 +2,7 @@
 
     python -m annotation_tool [--port 8765] [--csv data/annotations/lying_intervals.csv] [--no-browser] [--lan] [key=value ...]
 
-The recordings offered are the ones the pipeline keeps for the config (`data.preprocess`, `data.exclude`, known
-person). `key=value` pairs override the config like in `main.py`. The marks are saved in the CSV file at once.
+The recordings offered are the ones the pipeline keeps for the config (`selection`). `key=value` pairs override the config like in `main.py`. The marks are saved in the CSV file at once.
 Stop the tool with Ctrl+C.
 """
 
@@ -19,8 +18,8 @@ from omegaconf.errors import OmegaConfBaseException
 
 from annotation_tool.server import Annotator, Catalogue, make_server
 from data.annotation import LYING_INTERVALS, REPO
-from data.preprocess import PREPROCESSORS, RowFilter, build_pipeline
-from utils.config import load_config
+from data.preprocess import configured_pipeline
+from config import load_data_config
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger("annotation_tool")
@@ -39,30 +38,29 @@ def lan_address() -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--csv", default=str(LYING_INTERVALS), help="where the marks are saved")
+    parser.add_argument("--csv", default=None, help="where the marks are saved")
     parser.add_argument("--lan", action="store_true",
                         help="also serve on the local network (for a phone). The frames show people and anyone on the "
                              "network can open the page, so use a network you trust")
     parser.add_argument("--no-browser", action="store_true", help="do not open the page")
     args, overrides = parser.parse_known_args()
     try:
-        cfg = load_config(REPO, overrides)
-    except OmegaConfBaseException as error:
+        cfg = load_data_config(REPO, overrides)
+    except (ValueError, TypeError, OmegaConfBaseException) as error:
         sys.exit(f"Error: {error}")
-    path = REPO / cfg.data.baked
+    path = REPO / cfg.paths.baked_dir
     if not path.is_dir():
-        sys.exit(f"No baked dataset at {path}.\nBuild it with: python -m data.extract")
+        sys.exit(f"No baked dataset at {path}.\nBuild it with: python main.py bake")
 
-    # only the filters that choose recordings: the heatmap steps would be slow and the tool does not show heatmaps
-    steps = [name for name in cfg.data.preprocess if issubclass(PREPROCESSORS[name], RowFilter)]
-    ds = build_pipeline(steps, cfg.data.exclude)(cast(Dataset, load_from_disk(str(path))))
+    ds = configured_pipeline(cfg.selection)(cast(Dataset, load_from_disk(str(REPO / cfg.paths.baked_dir))))
+    csv_path = REPO / args.csv if args.csv is not None else REPO / cfg.paths.annotations_dir / LYING_INTERVALS.name
     catalogue = Catalogue(ds)
-    server = make_server(Annotator(catalogue, REPO / args.csv), args.port,  # an absolute path stays as it is
+    server = make_server(Annotator(catalogue, csv_path), args.port,  # an absolute path stays as it is
                          "0.0.0.0" if args.lan else "127.0.0.1")
     address = f"http://127.0.0.1:{server.server_port}/"
     if args.lan:
         logger.info("on the network: http://%s:%d/", lan_address(), server.server_port)
-    logger.info("%d recordings, marks saved in %s", len(catalogue.names), args.csv)
+    logger.info("%d recordings, marks saved in %s", len(catalogue.names), csv_path)
     logger.info("open %s (Ctrl+C stops the tool)", address)
     if not args.no_browser:
         webbrowser.open(address)

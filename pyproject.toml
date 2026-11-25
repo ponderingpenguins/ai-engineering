@@ -32,6 +32,9 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
 [tool.uv.sources]
 vt-radar-recorder = { path = "data/raw/floor_posture_dataset/recorder", editable = true }
 

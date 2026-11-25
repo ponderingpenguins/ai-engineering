@@ -22,24 +22,26 @@ def _table(header: list[str], rows: list[list[str]]) -> list[str]:
 def _settings(results: RunResults) -> list[str]:
     config = results.config or {}
     model, evaluation = config.get("model", {}), config.get("eval", {})
+    windowing = config.get("windowing", evaluation)
+    evaluation = config.get("cv", evaluation)
     timing = config.get("window_timing")
-    validation = (config.get("train") or {}).get("validation", True)
+    validation = (config.get("training", config.get("train")) or {}).get("validation", True)
     tuned = results.tuned is not None
     lines = [f"- Model: `{model.get('name', 'unknown')}`."]
     used = config.get("recordings_used")
     if used is not None:
         short = lambda names: ", ".join(name.split("__")[-1] for name in names) or "none"  # noqa: E731
-        lines.append(f"- Target: `{evaluation.get('target')}`. {len(used)} recordings used: {short(used)}.")
+        lines.append(f"- Target: `{windowing.get('target')}`. {len(used)} recordings used: {short(used)}.")
         if config.get("recordings_unlabelled"):
             lines.append(f"- Not used, because they have no labels for this target: {short(config['recordings_unlabelled'])}.")
-    rnn = model.get(model.get("name"))  # the chosen model's own hyperparameters; the baseline has none
+    rnn = config.get("training") if "arch" in model and model.get("name") != "baseline" else model.get(model.get("name"))  # the chosen model's own hyperparameters; the baseline has none
     if isinstance(rnn, dict):
         if config.get("input_type") == "pointcloud":
-            lines.append(f"- Input: the radar point cloud of each window, up to {(config.get('eval') or {}).get('max_points')} "
+            lines.append(f"- Input: the radar point cloud of each window, up to {windowing.get('max_points')} "
                          "points (x, y, z, doppler, snr, time in window), not the heatmaps.")
         if tuned:
             lines.append(f"- Training: each fold is refit on all its training people for the epoch count chosen by tuning "
-                         f"(see Tuning), batch {rnn.get('batch_size')}, seed {rnn.get('seed')}; no validation data and no early "
+                         f"(see Tuning), batch {rnn.get('batch_size')}, seed {config.get('seed', rnn.get('seed'))}; no validation data and no early "
                          "stopping in the refit. The other settings are the tuned setting on top of the defaults below.")
         elif validation:
             lines.append(f"- Training: up to {rnn.get('epochs')} epochs, batch {rnn.get('batch_size')}, lr {rnn.get('lr')}; "
@@ -47,20 +49,20 @@ def _settings(results: RunResults) -> list[str]:
                          f"(validation loss evaluated {rnn.get('evals_per_epoch')}x per epoch).")
         else:
             lines.append(f"- Training: exactly {rnn.get('epochs')} epochs, batch {rnn.get('batch_size')}, lr {rnn.get('lr')}, "
-                         "seed " + str(rnn.get('seed')) + ". No validation data and no early stopping: the epoch count was fixed "
+                         "seed " + str(config.get('seed', rnn.get('seed'))) + ". No validation data and no early stopping: the epoch count was fixed "
                          "beforehand, and the weights after the last epoch are kept.")
     folds = evaluation.get("folds")
     lines.append(f"- Cross-validation: {len(results.folds)} folds, "
-                 f"{'one fold per person' if folds is None else 'stratified, people kept together'}; seed {evaluation.get('seed')}. "
+                 f"{'one fold per person' if folds is None else 'stratified, people kept together'}; seed {config.get('seed', evaluation.get('seed'))}. "
                  + ("Each fold tunes on its training people with an inner leave-one-person-out loop, then refits on all of them."
                     if tuned else "Each fold also holds out one training person for validation." if validation
                     else "Every fold trains on all its training people."))
-    if evaluation:
-        window = f"{evaluation.get('window_len')} frames"
+    if windowing:
+        window = f"{windowing.get('window_len')} frames"
         if timing:
-            window += (f" = {timing['window_s']:.1f} s (stride {evaluation.get('stride')} frames = "
+            window += (f" = {timing['window_s']:.1f} s (stride {windowing.get('stride')} frames = "
                        f"{timing['stride_s']:.1f} s)")
-        lines.append(f"- Windows: {window}; label rule `{evaluation.get('label_rule')}`. "
+        lines.append(f"- Windows: {window}; label rule `{windowing.get('label_rule')}`. "
                      "With `any_lying` a positive window means lying occurred somewhere within it.")
     return lines
 
@@ -75,7 +77,7 @@ def _tuning(results: RunResults) -> list[str]:
              "The test person of the outer fold is never used.", "",
              f"**Chosen for the final model:** `{best.setting}` for {best.epochs} epochs. It won {best.wins} of "
              f"{best.of_folds} outer folds with mean validation loss {fmt(best.mean_val_loss)}. "
-             "Saved to `tuned.yaml`; a full run (`train.full_run=true`) reads it.", ""]
+             "Saved to `tuned.yaml`; a full run (`python main.py train-final`) reads it.", ""]
     for fold in results.folds:
         tuning = fold.tuning
         if not tuning:

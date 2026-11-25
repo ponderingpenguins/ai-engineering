@@ -18,7 +18,6 @@ from utils.metrics import accuracy, fmt, macro_f1, per_class, scores
 from utils.results import FinalResult, FoldResult, Pooled, RunResults
 from utils.run_report import write_report
 from utils.splitter import GroupKFoldSplitter, validation_split
-from utils.task import Task
 from utils.tuning import Tuner, best_overall
 
 logger = logging.getLogger(__name__)
@@ -33,7 +32,7 @@ class Trainer:
     metrics: dict[str, Metric] = field(default_factory=lambda: {"accuracy": accuracy, "macro_f1": macro_f1})
     out_dir: Path | None = None  # results, checkpoints, loss curves and the report are saved here when set
     config: dict[str, Any] | None = None  # saved together with the results
-    task: Task | None = None  # stored in each checkpoint
+    windowing: dict[str, Any] | None = None  # stored in each checkpoint
     seed: int = 0  # picks the validation person of each fold
     resampler: RandomOversampler | None = None  # applied to each fold's training windows only
     validate: bool = True  # False: no validation person, the model trains on all training people for its epochs
@@ -67,7 +66,11 @@ class Trainer:
             elif val_idx is not None:
                 logger.info("fold %d/%d: validate on %s", i, k, ", ".join(val_people))
 
-            model = self.make_model() if tuning is None else self.tuner.build(tuning)
+            if tuning is None:
+                model = self.make_model()
+            else:
+                assert self.tuner is not None
+                model = self.tuner.build(tuning)
             fit = fit_fold(model, x, y, fit_idx, val_idx, resampler=self.resampler, log_as=f"fold {i}/{k}")
             train_idx = fit.train_idx
             checkpoint = self._save_checkpoint(model, i, held_out)
@@ -131,7 +134,7 @@ class Trainer:
         """Trains one model on all windows, with no validation and no held-out score.
 
         The model comes from `make_model`, which should already carry the tuned setting and epoch count.
-        The result is saved as `final.pt` and `final.json` in `out_dir`, when it and `task` are set.
+        The result is saved as `final.pt` and `final.json` in `out_dir`, when it and `windowing` are set.
         """
         model = self.make_model()
         fit = fit_fold(model, x, y, np.arange(len(y)), resampler=self.resampler)
@@ -140,8 +143,8 @@ class Trainer:
                             history=fit.history, checkpoint=None)
         if self.out_dir is not None:
             self.out_dir.mkdir(parents=True, exist_ok=True)
-            if self.task is not None:
-                model.save(self.out_dir / "final.pt", self.task)
+            if self.windowing is not None:
+                model.save(self.out_dir / "final.pt", self.windowing)
                 final.checkpoint = "final.pt"
             (self.out_dir / "final.json").write_text(json.dumps(final.to_dict(), indent=2))
         logger.info("final model trained on %d windows in %.1f s; checkpoint %s", len(fit.train_idx), fit.seconds,
@@ -154,10 +157,10 @@ class Trainer:
         Returns the path relative to `out_dir`, or None if nothing is saved. Load it with
         `BaseModel.load`.
         """
-        if self.out_dir is None or self.task is None:
+        if self.out_dir is None or self.windowing is None:
             return None
         relative = Path("checkpoints") / f"fold{fold}_{'+'.join(sorted(held_out))}.pt"
-        model.save(self.out_dir / relative, self.task)
+        model.save(self.out_dir / relative, self.windowing)
         return str(relative)
 
     def _save(self, results: RunResults) -> None:

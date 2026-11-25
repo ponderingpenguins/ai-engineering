@@ -41,6 +41,7 @@ class TorchClassifier(BaseModel):
     classes_: np.ndarray
     # applied to each training batch (never to validation or test data); a subclass may set it
     augment: Callable[[torch.Tensor], torch.Tensor] | None = None
+    class_weights: bool = True  # configurable training loss; validation remains class-balanced
     # names the checkpoint must hold so that the model can be rebuilt: the `__init__` arguments of the subclass,
     # with `augment` kept as its settings dict (`augment_settings`)
     parameter_names: tuple[str, ...] = ()
@@ -91,6 +92,7 @@ class TorchClassifier(BaseModel):
             "classes": self.classes_.tolist(),
             "state_dict": self.net.state_dict(),
             "preprocessing": self.preprocessing,
+            "class_weights": self.class_weights,
         }
 
     @classmethod
@@ -99,6 +101,7 @@ class TorchClassifier(BaseModel):
         if checkpoint.get("preprocessing") != cls.preprocessing:
             raise ValueError("Checkpoint preprocessing does not match the current pipeline.")
         model = cls(**checkpoint["parameters"])
+        model.class_weights = checkpoint.get("class_weights", True)
         model.classes_ = np.asarray(checkpoint["classes"], dtype=str)
         if len(model.classes_) == 0:
             raise ValueError("Checkpoint has no class labels.")
@@ -144,7 +147,7 @@ class TorchClassifier(BaseModel):
         # rare classes get a bigger weight, otherwise "always predict the common class" wins
         counts = np.bincount(y_int, minlength=n_classes)
         weights = torch.as_tensor(len(y_int) / (n_classes * counts), dtype=torch.float32).to(self.device)
-        loss_fn = nn.CrossEntropyLoss(weight=weights)
+        loss_fn = nn.CrossEntropyLoss(weight=weights if self.class_weights else None)
         optimizer = torch.optim.Adam(self.net.parameters(), lr=self.lr, weight_decay=self.weight_decay)
 
         train_data = TensorDataset(torch.as_tensor(x, dtype=torch.float32), torch.as_tensor(y_int, dtype=torch.long))

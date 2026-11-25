@@ -16,6 +16,7 @@ from datasets import Dataset, Features, Value, concatenate_datasets
 from datasets import Sequence as ListOf
 from scipy.signal import lfilter
 
+from config import PreprocessConfig, SelectionConfig
 from data.extract import NO_PERSON
 
 logger = logging.getLogger(__name__)
@@ -54,8 +55,11 @@ class KeepConfig4(RowFilter):
     name = "config_4"
     columns = ("cfg_file",)
 
+    def __init__(self, sensor_config: str = CONFIG_4) -> None:
+        self.sensor_config = sensor_config
+
     def keep(self, meta):
-        return meta.cfg_file == CONFIG_4
+        return meta.cfg_file == self.sensor_config
 
 
 class DropUnknownPerson(RowFilter):
@@ -80,7 +84,7 @@ class DropRecordings(RowFilter):
     def keep(self, meta):
         missing = self.recordings - set(meta.recording)
         if missing:
-            logger.warning("data.exclude names recordings that are not in the dataset: %s", sorted(missing))
+            logger.warning("selection.exclude_recordings names recordings that are not in the dataset: %s", sorted(missing))
         return ~meta.recording.isin(self.recordings)
 
 
@@ -206,6 +210,24 @@ class Pipeline:
             ds = step(ds)
             logger.info("preprocess %s: %d -> %d frames", step.name, before, len(ds))
         return ds
+
+
+def configured_pipeline(selection: SelectionConfig, denoise: PreprocessConfig | None = None) -> Pipeline:
+    """Wire the central config to existing steps; None omits signal transforms for annotation tools."""
+    steps: list[Preprocessor] = []
+    if selection.require_known_person:
+        steps.append(DropUnknownPerson())
+    if selection.exclude_recordings:
+        steps.append(DropRecordings(selection.exclude_recordings))
+    if selection.sensor_config is not None:
+        steps.append(KeepConfig4(selection.sensor_config))
+    if denoise is not None:
+        rn, tb = denoise.range_normalise, denoise.temporal_background
+        if rn.enabled:
+            steps.append(RangeNormalise(rn.percentile, rn.smooth_bins))
+        if tb.enabled:
+            steps.append(TemporalBackground(tb.tau_frames))
+    return Pipeline(steps)
 
 
 def build_pipeline(names: Sequence[str], exclude: Sequence[str] = ()) -> Pipeline:

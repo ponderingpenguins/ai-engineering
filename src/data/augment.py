@@ -219,7 +219,7 @@ class PointAugment:
             height_m: The same along y, the boresight.
             yaw_deg: Each window is rotated about the boresight by a uniform random angle in [-n, n] degrees.
                 180 gives every direction. Changes which way a person lies, so it is only valid for labels that
-                do not depend on that (`eval.collapse_lying=true`).
+                do not depend on that (`windowing.collapse_lying=true`).
             tilt_deg: Each window is tilted about x and about z by a uniform random angle in [-n, n] degrees.
             mirror: Mirror half of the windows. Swaps left and right, so the same label restriction as `yaw_deg`.
             ghost_points: Mean number of false-alarm points added per window (Poisson), into empty slots only.
