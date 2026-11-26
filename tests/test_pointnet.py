@@ -184,21 +184,26 @@ def test_trainer_runs_cross_validation_with_the_pointnet(tmp_path):
     assert "point cloud" in (tmp_path / "report.md").read_text()
 
 
-def test_regularisation_only_acts_in_training_and_checkpoint_keeps_it():
-    net = MiniPointNet(2, width=16, dropout=0.5, point_dropout=0.5, point_drop=0.5, jitter=0.5)
+def test_regularisation_only_acts_in_training_and_checkpoint_keeps_it(tmp_path):
+    net = MiniPointNet(2, width=16, dropout=0.5, point_dropout=0.5)
     x = torch.randn(4, 10, 7)
     x[..., 6] = 1.0
     net.eval()
     assert torch.equal(net(x), net(x))  # deterministic in eval mode
     net.train()
-    assert not torch.equal(net(x), net(x))  # dropout, point dropping and jitter are random in training
-    model = PointNet(point_dropout=0.1, point_drop=0.2, jitter=0.03)
-    assert model._build_net(2).point_drop == 0.2
+    assert not torch.equal(net(x), net(x))  # only dropout remains inside the architecture
+    model = PointNet(width=16, epochs=1, point_dropout=0.1, augment={"point_drop": 0.2, "jitter": 0.03})
+    train_x, train_y = separable_data(12)
+    model.fit(train_x, train_y)
+    model.save(tmp_path / "augment.pt", WindowConfig().signature())
+    restored, _ = BaseModel.load(tmp_path / "augment.pt")
+    assert restored.augment.point_drop == 0.2 and restored.augment.jitter == 0.03
+    np.testing.assert_array_equal(restored.predict(train_x), model.predict(train_x))
 
 
 def test_rnn_regularisation_only_acts_in_training():
     from models.rnn import HeatmapGRU
-    net = HeatmapGRU(2, feat_dim=8, hidden=8, dropout=0.5, feature_dropout=0.5, noise=0.5)
+    net = HeatmapGRU(2, feat_dim=8, hidden=8, dropout=0.5, feature_dropout=0.5)
     x = torch.randn(2, 3, 1, 256, 16)
     net.eval()
     assert torch.equal(net(x), net(x))
@@ -207,15 +212,38 @@ def test_rnn_regularisation_only_acts_in_training():
 
 
 def test_point_count_feature_ignores_augmentation_dropping():
-    from models.pointnet import MiniPointNet
-
     torch.manual_seed(0)
     x = torch.rand(8, 40, 7)
     x[..., 6] = 1.0
-    net = MiniPointNet(2, point_drop=0.9)
-    net.train()
+    model = PointNet(width=16, dropout=0, augment={"point_drop": 1.0})
+    model.net = model._build_net(2).to(model.device)
+    model.net.train()
     seen = []
-    net.head.register_forward_hook(lambda module, inputs, out: seen.append(inputs[0][:, -1]))
-    net(x)
+    model.net.head.register_forward_hook(lambda module, inputs, out: seen.append(inputs[0][:, -1]))
+    model._forward_train(x.to(model.device))
     expected = torch.log1p(torch.tensor(40.0)) / 5.0  # all 40 points are real, however many were dropped
-    assert torch.allclose(seen[0], expected.expand(8))
+    assert torch.allclose(seen[0].cpu(), expected.expand(8))
+
+
+@pytest.mark.parametrize("name,version", [("rnn", 1), ("pointnet", 2)])
+def test_older_checkpoints_with_network_augmentation_parameters_still_load(name, version, tmp_path):
+    model = build_model(ModelConfig(name=name))
+    model.classes_ = np.array(["a", "b"])
+    model.net = model._build_net(2).to(model.device)
+    path = tmp_path / "legacy.pt"
+    model.save(path, WindowConfig().signature())
+    checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+    parameters = checkpoint["parameters"]
+    names = ("noise",) if name == "rnn" else ("point_drop", "jitter")
+    for setting in names:
+        parameters[setting] = parameters["augment"].pop(setting)
+    checkpoint["format_version"] = version
+    checkpoint[{1: "evaluation", 2: "window_spec"}[version]] = checkpoint.pop("windowing")
+    torch.save(checkpoint, path)
+
+    restored, _ = BaseModel.load(path)
+    for setting in names:
+        assert getattr(restored.augment, setting) == parameters[setting]
+    x = (np.zeros((2, 2, 1, 256, 16), dtype=np.float32) if name == "rnn"
+         else separable_data(4)[0])
+    np.testing.assert_array_equal(restored.predict(x), model.predict(x))

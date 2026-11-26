@@ -25,12 +25,7 @@ def build_model(cfg: ModelConfig, training: TrainingConfig | None = None, *, see
     loop = asdict(training)
     for name in ("validation", "oversample_ratio", "class_weights"):
         loop.pop(name)
-    transforms = asdict(cfg.augment)
-    network_augment = ("noise",) if cfg.name == "rnn" else ("point_drop", "jitter")
-    settings = {**asdict(cfg.arch), **loop, "seed": seed}
-    for name in network_augment:
-        settings[name] = transforms.pop(name)
-    settings["augment"] = transforms
+    settings = {**asdict(cfg.arch), **loop, "seed": seed, "augment": asdict(cfg.augment)}
     model = model_class(**settings)
     if isinstance(model, TorchClassifier):
         model.class_weights = training.class_weights

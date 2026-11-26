@@ -100,7 +100,12 @@ class TorchClassifier(BaseModel):
         """Rebuilds the model from a checkpoint made by `_checkpoint_state`."""
         if checkpoint.get("preprocessing") != cls.preprocessing:
             raise ValueError("Checkpoint preprocessing does not match the current pipeline.")
-        model = cls(**checkpoint["parameters"])
+        parameters = dict(checkpoint["parameters"])
+        # Older checkpoints stored these augmentation settings as constructor arguments.
+        legacy_augment = {name: parameters.pop(name) for name in ("noise", "point_drop", "jitter") if name in parameters}
+        if legacy_augment:
+            parameters["augment"] = {**(parameters.get("augment") or {}), **legacy_augment}
+        model = cls(**parameters)
         model.class_weights = checkpoint.get("class_weights", True)
         model.classes_ = np.asarray(checkpoint["classes"], dtype=str)
         if len(model.classes_) == 0:
@@ -112,6 +117,12 @@ class TorchClassifier(BaseModel):
 
     def _set_input_stats(self, x: np.ndarray) -> None:
         """Hook: set the network's input standardisation from the training windows. Does nothing by default."""
+
+    def _forward_train(self, xb: torch.Tensor) -> torch.Tensor:
+        """Apply training augmentation, then run the network."""
+        if self.augment is not None:
+            xb = self.augment(xb)
+        return self.net(xb)
 
     def fit(self, x: np.ndarray, y: np.ndarray, val: tuple[np.ndarray, np.ndarray] | None = None,
             val_weight_labels: np.ndarray | None = None) -> History:
@@ -166,10 +177,8 @@ class TorchClassifier(BaseModel):
             self.net.train()
             for xb, yb in loader:
                 xb, yb = xb.to(self.device), yb.to(self.device)
-                if self.augment is not None:
-                    xb = self.augment(xb)
                 optimizer.zero_grad()
-                loss = loss_fn(self.net(xb), yb)
+                loss = loss_fn(self._forward_train(xb), yb)
                 loss.backward()
                 optimizer.step()
                 step += 1

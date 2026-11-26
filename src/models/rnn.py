@@ -36,16 +36,14 @@ class HeatmapEncoder(nn.Module):
     input_mean: torch.Tensor
     input_std: torch.Tensor
 
-    def __init__(self, feat_dim: int = 64, dropout: float = 0.0, noise: float = 0.0) -> None:
+    def __init__(self, feat_dim: int = 64, dropout: float = 0.0) -> None:
         """Initializes the encoder.
 
         Args:
             feat_dim: Size of the feature vector per frame.
             dropout: Dropout on the per-frame feature vector.
-            noise: Std of Gaussian noise added to the standardised heatmap while training (augmentation).
         """
         super().__init__()
-        self.noise = noise
         self.feature_dropout = nn.Dropout(dropout)
         self.conv = nn.Sequential(
             *_conv_block(1, 16, (2, 1)),  # (16, 128, 16)
@@ -70,15 +68,13 @@ class HeatmapEncoder(nn.Module):
         """
         B, T = x.shape[:2]
         x = (x - self.input_mean) / self.input_std
-        if self.training and self.noise > 0:
-            x = x + self.noise * torch.randn_like(x)
         z = self.conv(x.flatten(0, 1))  # all B*T frames go through the same CNN
         return self.feature_dropout(self.fc(z)).view(B, T, -1)
 
 
 class HeatmapGRU(nn.Module):
     def __init__(self, n_classes: int, feat_dim: int = 64, hidden: int = 128, dropout: float = 0.0,
-                 feature_dropout: float = 0.0, noise: float = 0.0, *args: Any, **kwargs: Any) -> None:
+                 feature_dropout: float = 0.0, *args: Any, **kwargs: Any) -> None:
         """Initializes the encoder, the GRU and the classification head.
 
         Args:
@@ -87,13 +83,12 @@ class HeatmapGRU(nn.Module):
             hidden: Size of the GRU hidden state.
             dropout: Dropout on the GRU output before the classification layer.
             feature_dropout: Dropout on the per-frame CNN features.
-            noise: Training-time input noise, see `HeatmapEncoder`.
             *args: Unused.
             **kwargs: Unused.
         """
         super().__init__()
         # encoder
-        self.encoder = HeatmapEncoder(feat_dim, feature_dropout, noise)
+        self.encoder = HeatmapEncoder(feat_dim, feature_dropout)
         # backbone
         self.gru = nn.GRU(feat_dim, hidden_size=hidden, batch_first=True)
         # classification head
@@ -117,10 +112,13 @@ class HeatmapGRU(nn.Module):
 class RNN(TorchClassifier):
     """CNN + GRU classifier on windows of heatmaps. x: (N, T, 1, R, D), y: (N,) string labels."""
 
+    net: HeatmapGRU
+    augment: HeatmapAugment | None
+
     model_name = "rnn"
     input_type = "heatmap"
     preprocessing = "log1p_raw_heatmap_v1"
-    parameter_names = ("hidden", "feat_dim", "dropout", "feature_dropout", "noise", "lr", "weight_decay", "epochs",
+    parameter_names = ("hidden", "feat_dim", "dropout", "feature_dropout", "lr", "weight_decay", "epochs",
                        "batch_size", "seed", "patience", "evals_per_epoch", "augment")
 
     def __init__(
@@ -129,7 +127,6 @@ class RNN(TorchClassifier):
         feat_dim: int = 64,
         dropout: float = 0.5,
         feature_dropout: float = 0.3,
-        noise: float = 0.05,
         lr: float = 1e-3,
         weight_decay: float = 1e-2,
         epochs: int = 30,
@@ -149,13 +146,14 @@ class RNN(TorchClassifier):
         self.feat_dim = feat_dim
         self.dropout = dropout
         self.feature_dropout = feature_dropout
-        self.noise = noise
 
-    def _build_net(self, n_classes: int) -> nn.Module:
-        return HeatmapGRU(n_classes, self.feat_dim, self.hidden, self.dropout, self.feature_dropout, self.noise)
+    def _build_net(self, n_classes: int) -> HeatmapGRU:
+        return HeatmapGRU(n_classes, self.feat_dim, self.hidden, self.dropout, self.feature_dropout)
 
     def _set_input_stats(self, x: np.ndarray) -> None:
         """Standardise the heatmaps with the mean and std of the training windows."""
-        encoder = self.net.encoder  # type: ignore[attr-defined]
+        encoder = self.net.encoder
         encoder.input_mean.fill_(float(x.mean()))
         encoder.input_std.fill_(max(float(x.std()), 1e-6))
+        if self.augment is not None:
+            self.augment.set_input_std(encoder.input_std)

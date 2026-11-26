@@ -74,7 +74,7 @@ def test_time_reverse_flips_some_windows_and_leaves_the_rest():
     assert torch.equal(out[flipped], x[flipped].flip(1))
 
 
-def test_rnn_trains_with_augmentation_and_only_on_training_batches():
+def test_rnn_trains_with_augmentation_and_only_on_training_batches(monkeypatch):
     cfg = ModelConfig(name="rnn")
     training = TrainingConfig(epochs=1)
     aug = cfg.augment
@@ -82,11 +82,25 @@ def test_rnn_trains_with_augmentation_and_only_on_training_batches():
     aug.time_reverse = True
     model = build_model(cfg, training)
     assert model.augment is not None
+    calls = []
+    reverse = model.augment._reverse
+
+    def count_reverse(xb):
+        calls.append(1)
+        return reverse(xb)
+
+    monkeypatch.setattr(model.augment, "_reverse", count_reverse)
     x = np.random.default_rng(0).normal(7.4, 0.01, (12, 6, 1, 256, 16)).astype(np.float32)
     y = np.array(["a", "b"] * 6)
-    model.fit(x, y)
+    model.fit(x, y, val=(x, y))
+    assert len(calls) == 1
+    torch.testing.assert_close(model.augment._input_std, model.net.encoder.input_std)
     assert model.predict(x).shape == (12,)  # prediction never calls the augmentation
-    assert build_model(ModelConfig(name="rnn")).augment is None
+    assert len(calls) == 1
+    default = ModelConfig(name="rnn")
+    assert build_model(default).augment.noise == 0.05
+    default.augment.noise = 0
+    assert build_model(default).augment is None
 
 
 # ---- point clouds ------------------------------------------------------------------------------
@@ -196,7 +210,7 @@ def test_snr_jitter_is_one_offset_per_window():
     assert (out[..., 4] - x[..., 4])[v].std() > 0.5
 
 
-def test_pointnet_trains_with_augmentation_and_prediction_ignores_it():
+def test_pointnet_trains_with_augmentation_and_prediction_ignores_it(monkeypatch):
     cfg = ModelConfig(name="pointnet")
     training = TrainingConfig(epochs=1)
     aug = cfg.augment
@@ -204,11 +218,95 @@ def test_pointnet_trains_with_augmentation_and_prediction_ignores_it():
     aug.ghost_points = 3
     model = build_model(cfg, training)
     assert isinstance(model, PointNet) and model.augment is not None
+    calls = []
+    apply = model.augment.apply_with_count
+
+    def count_apply(xb):
+        calls.append(1)
+        return apply(xb)
+
+    monkeypatch.setattr(model.augment, "apply_with_count", count_apply)
     x = points(batch=12).numpy()
     y = np.array(["a", "b"] * 6)
-    model.fit(x, y)
+    model.fit(x, y, val=(x, y))
+    assert len(calls) == 1
+    torch.testing.assert_close(model.augment._input_std, model.net.feat_std)
     assert torch.equal(torch.as_tensor(model.predict(x) == model.predict(x)).all(), torch.tensor(True))
-    assert build_model(ModelConfig(name="pointnet")).augment is None
+    assert len(calls) == 1
+    default = ModelConfig(name="pointnet")
+    assert build_model(default).augment.point_drop == 0.3
+    assert build_model(default).augment.jitter == 0.05
+    default.augment.point_drop = default.augment.jitter = 0
+    assert build_model(default).augment is None
+
+
+@pytest.mark.parametrize("scale", [1.0, 3.5])
+def test_heatmap_noise_preserves_its_standardised_magnitude(scale):
+    x = windows()
+    before = x.clone()
+    aug = HeatmapAugment(noise=0.05)
+    if scale != 1:
+        aug.set_input_std(torch.tensor(scale))
+    assert aug.active
+    torch.manual_seed(12)
+    expected = (x - 7.0) / scale + 0.05 * torch.randn_like(x)
+    torch.manual_seed(12)
+    actual = (aug(x) - 7.0) / scale
+    torch.testing.assert_close(actual, expected)
+    assert torch.equal(x, before)
+
+
+@pytest.mark.parametrize("settings", [{"noise": -0.1}, {"point_drop": -0.1}, {"point_drop": 1.1}, {"jitter": -0.1}])
+def test_invalid_noise_drop_and_jitter_are_rejected(settings):
+    with pytest.raises(ValueError):
+        (HeatmapAugment if "noise" in settings else PointAugment)(**settings)
+
+
+@pytest.mark.parametrize("scaled", [False, True])
+def test_point_jitter_preserves_standardised_magnitude_and_padding(scaled):
+    x = points()
+    before = x.clone()
+    scale = torch.tensor([0.2, 2.0, 3.0, 4.0, 5.0]) if scaled else torch.ones(5)
+    aug = PointAugment(jitter=0.05)
+    if scaled:
+        aug.set_input_std(scale)
+    assert aug.active
+    torch.manual_seed(12)
+    expected = x[..., :5] / scale + 0.05 * torch.randn_like(x[..., :5])
+    torch.manual_seed(12)
+    out = aug(x)
+    valid = x[..., 6] > 0.5
+    torch.testing.assert_close((out[..., :5] / scale)[valid], expected[valid])
+    assert not out[~valid].any()
+    assert torch.equal(out[..., 5:], x[..., 5:]) and torch.equal(x, before)
+
+
+def test_point_drop_zeroes_removed_points_and_preserves_the_real_count():
+    x = points(n_valid=40, slots=50, batch=32)
+    before = x.clone()
+    aug = PointAugment(point_drop=0.5)
+    assert aug.active
+    torch.manual_seed(1)
+    out, n_points = aug.apply_with_count(x)
+    assert n_points.tolist() == [[40]] * 32
+    assert 0.4 < out[..., 6].sum().item() / n_points.sum().item() < 0.6
+    valid = out[..., 6] > 0.5
+    assert not out[~valid].any() and torch.equal(out[valid], x[valid])
+    assert torch.equal(x, before)
+
+
+def test_reported_count_includes_ghosts_and_range_cutoff_but_ignores_random_drops():
+    x = points(n_valid=4, slots=16, batch=16)
+    x[:, 3, 1] = 8.0  # outside the sensor range, so geometry must remove it
+    geometric = PointAugment(height_m=0.2, ghost_points=3)
+    torch.manual_seed(3)
+    expected = geometric(x)
+    expected_count = (expected[..., 6] > 0.5).sum(dim=1, keepdim=True)
+    torch.manual_seed(3)
+    out, n_points = PointAugment(height_m=0.2, ghost_points=3, point_drop=1, jitter=0.5).apply_with_count(x)
+    assert (expected_count > 3).any()  # some ghost points were added after the cutoff
+    assert (expected[:, 3, 1] < 8).all()
+    assert torch.equal(n_points, expected_count) and not out.any()
 
 
 def test_conflict_group_gives_each_window_exactly_one_enabled_member():

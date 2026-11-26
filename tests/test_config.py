@@ -118,9 +118,9 @@ def test_shared_training_options_and_selected_augmentations_reach_model(name):
     model = build_model(cfg.model, cfg.training, seed=cfg.seed)
     assert model.epochs == 2 and model.seed == 5 and not model.class_weights
     if name == "rnn":
-        assert model.noise == 0.05 and model.augment is None
+        assert model.augment.noise == 0.05
     else:
-        assert model.point_drop == 0.3 and model.jitter == 0.05 and model.augment is None
+        assert model.augment.point_drop == 0.3 and model.augment.jitter == 0.05
 
 
 def test_dotted_tuning_settings_are_typed_and_do_not_mutate_the_original():
