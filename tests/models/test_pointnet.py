@@ -9,7 +9,9 @@ from data.windowing import HEATMAP_SHAPE, _window_points, make_windows
 from models.factory import MODEL_CLASSES, build_model
 from models.model import BaseModel
 from models.pointnet import MiniPointNet, PointNet
-from config import ModelConfig, RunConfig, TrainingConfig, WindowConfig
+from config.models import ModelConfig
+from config.training import RunConfig, TrainingConfig
+from config.data import WindowConfig
 from data.augment import PointAugment
 from training.fitting import _forward_train, fit_torch
 from training.splitting import GroupKFoldSplitter

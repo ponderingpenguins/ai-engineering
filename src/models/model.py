@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from config import WindowConfig
+from config.data import WindowConfig
 
 
 class BaseModel(ABC):

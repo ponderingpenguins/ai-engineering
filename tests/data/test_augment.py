@@ -5,7 +5,8 @@ import torch
 from data.augment import HeatmapAugment, _pick_one_per_group
 from models.factory import build_model
 from training.fitting import build_augment, fit_torch
-from config import ModelConfig, TrainingConfig
+from config.models import ModelConfig
+from config.training import TrainingConfig
 
 B, T, R, D = 4, 8, 64, 4
 

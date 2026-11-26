@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 from datasets import Dataset
 
-from config import WindowConfig
+from config.data import WindowConfig
 from data.annotations import NO_PERSON, capture_positions
 
 logger = logging.getLogger(__name__)

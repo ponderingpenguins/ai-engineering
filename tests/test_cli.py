@@ -1,4 +1,5 @@
 import json
+import subprocess
 import sys
 from importlib import import_module
 
@@ -7,13 +8,14 @@ import pytest
 import main as cli
 from data import bake
 from evaluation.records import FoldResult, Pooled, RunResults
+from training import pipelines
 
 
 @pytest.mark.parametrize("mode", ["cv", "tune", "train-final"])
 def test_explicit_modes_dispatch_independently_of_grid_contents(mode, monkeypatch):
     seen = []
     function = {"cv": "run_cv", "tune": "run_tune", "train-final": "run_train_final"}[mode]
-    monkeypatch.setattr(cli, function, lambda cfg, root: seen.append((cfg, mode)))
+    monkeypatch.setattr(pipelines, function, lambda cfg, root: seen.append((cfg, mode)))
     monkeypatch.setattr(sys, "argv", ["main.py", mode, "model=rnn",
                                      'tune.grid=[{"model.arch.hidden":16}]'])
     cli.main()
@@ -23,7 +25,7 @@ def test_explicit_modes_dispatch_independently_of_grid_contents(mode, monkeypatc
 
 
 def test_tune_without_candidates_fails_before_running(monkeypatch):
-    monkeypatch.setattr(cli, "run_tune", lambda *args: pytest.fail("must not start an empty tuning run"))
+    monkeypatch.setattr(pipelines, "run_tune", lambda *args: pytest.fail("must not start an empty tuning run"))
     monkeypatch.setattr(sys, "argv", ["main.py", "tune"])
     with pytest.raises(SystemExit) as error:
         cli.main()
@@ -114,6 +116,25 @@ def test_top_level_help_lists_every_command(monkeypatch, capsys):
     assert error.value.code == 0
     help_text = capsys.readouterr().out
     assert all(command in help_text for command in ("cv", "tune", "train-final", *cli.TOOL_COMMANDS))
+
+
+@pytest.mark.parametrize("arguments", [["--help"], ["report", "--help"]])
+def test_help_does_not_import_the_training_pipeline(arguments):
+    script = """
+import runpy
+import sys
+sys.argv = ["main.py", *sys.argv[1:]]
+try:
+    runpy.run_path("main.py", run_name="__main__")
+except SystemExit as error:
+    assert error.code == 0, error.code
+assert "training.pipelines" not in sys.modules
+if sys.argv == ["main.py", "--help"]:
+    assert "torch" not in sys.modules and "datasets" not in sys.modules
+"""
+    result = subprocess.run([sys.executable, "-c", script, *arguments], cwd=cli.REPO,
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("command,arguments", [

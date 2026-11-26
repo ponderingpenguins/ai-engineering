@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from datasets import Dataset, concatenate_datasets
 
-from config import WindowConfig
+from config.data import WindowConfig
 from data.windowing import (
     HEATMAP_SHAPE, build_window_inputs, build_windows, collapse_lying, filter_valid_frames,
     make_windows, slice_window_indices, window_timing,

@@ -2,7 +2,7 @@
 
 from dataclasses import asdict
 
-from config import ModelConfig
+from config.models import ModelConfig
 
 from .baseline import MajorityClass
 from .model import BaseModel

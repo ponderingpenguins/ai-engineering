@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import torch
 
-from config import TrainingConfig
+from config.training import TrainingConfig
 from data.resample import RandomOversampler
 from models.baseline import MajorityClass
 from training.fitting import History

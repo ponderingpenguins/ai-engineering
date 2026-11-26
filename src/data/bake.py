@@ -29,7 +29,8 @@ from datasets import Dataset, Features, Image, Sequence, Value, load_from_disk
 from omegaconf.errors import OmegaConfBaseException
 
 from data.annotations import attach_annotations
-from config import DataConfig, load_data_config
+from config.data import DataConfig
+from config.loader import load_data_config
 
 logging.basicConfig(
     level=logging.INFO,

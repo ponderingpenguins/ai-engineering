@@ -28,7 +28,7 @@ from omegaconf.errors import OmegaConfBaseException
 
 from data.annotations import LYING_INTERVALS, REPO, Annotations, Interval, capture_positions, read_annotations
 from data.preprocess import select_recordings
-from config import load_data_config
+from config.loader import load_data_config
 
 logger = logging.getLogger(__name__)
 

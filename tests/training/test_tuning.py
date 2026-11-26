@@ -7,7 +7,7 @@ from training.fitting import History
 from training.splitting import GroupKFoldSplitter
 from training.cross_validation import CrossValidator
 from evaluation.records import BestSetting, Tuning
-from config import WindowConfig
+from config.data import WindowConfig
 from training.tuning import (Tuner, apply_tuned, best_epoch, best_overall, kept_val_loss, load_tuned, median_epoch, save_tuned,
                           validate_grid)
 
@@ -178,7 +178,7 @@ def test_report_has_a_tuning_section_with_every_setting(tmp_path):
 
 
 def run_cfg(**kwargs):
-    from config import RunConfig
+    from config.training import RunConfig
     return RunConfig(windowing=WindowConfig(target="label_pose"), **kwargs)
 
 
@@ -188,7 +188,8 @@ TUNED = {"model": "rnn", "windowing": WINDOWING, "setting": {"model.arch.hidden"
 
 @pytest.mark.parametrize("key", ["window_spec", "windowing"])
 def test_tuned_settings_accept_legacy_and_current_window_spec_keys(key):
-    from config import ModelConfig, RunConfig
+    from config.models import ModelConfig
+    from config.training import RunConfig
 
     tuned = {k: v for k, v in TUNED.items() if k != "windowing"}
     tuned[key] = WINDOWING
@@ -198,14 +199,16 @@ def test_tuned_settings_accept_legacy_and_current_window_spec_keys(key):
 
 
 def test_apply_tuned_sets_the_setting_and_the_tuned_epochs():
-    from config import ModelConfig, RunConfig
+    from config.models import ModelConfig
+    from config.training import RunConfig
     cfg = apply_tuned(run_cfg(), TUNED)
     assert cfg.model.arch.hidden == 64 and cfg.training.epochs == 7  # the tuned epoch count beats a grid "epochs"
     assert cfg.training.lr == run_cfg().training.lr  # everything else stays at its default
 
 
 def test_apply_tuned_refuses_different_windowing_or_model():
-    from config import ModelConfig, RunConfig
+    from config.models import ModelConfig
+    from config.training import RunConfig
     with pytest.raises(ValueError, match="tune again"):
         apply_tuned(replace(run_cfg(), windowing=WindowConfig(target="label_pose", window_len=8)), TUNED)
     with pytest.raises(ValueError, match="tune again"):
@@ -215,7 +218,8 @@ def test_apply_tuned_refuses_different_windowing_or_model():
 
 
 def test_a_pointnet_setting_is_applied_to_the_pointnet_config():
-    from config import ModelConfig, RunConfig
+    from config.models import ModelConfig
+    from config.training import RunConfig
     from training.tuning import hyperparameter_names, with_setting
 
     cfg = with_setting(run_cfg(model=ModelConfig(name="pointnet")), {"model.arch.width": 64, "training.lr": 0.01})
@@ -231,7 +235,8 @@ def test_a_pointnet_setting_is_applied_to_the_pointnet_config():
 
 
 def test_the_baseline_cannot_be_tuned():
-    from config import ModelConfig, RunConfig
+    from config.models import ModelConfig
+    from config.training import RunConfig
     from training.tuning import hyperparameter_names
 
     with pytest.raises(ValueError, match="only defined for"):
@@ -239,7 +244,8 @@ def test_the_baseline_cannot_be_tuned():
 
 
 def test_nested_sub_configs_are_not_tunable():
-    from config import ModelConfig, RunConfig
+    from config.models import ModelConfig
+    from config.training import RunConfig
     from training.tuning import hyperparameter_names
 
     for name in ("rnn", "pointnet"):

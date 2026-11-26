@@ -9,7 +9,10 @@ from datasets import Dataset
 from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
 
-from config import DataConfig, ModelConfig, RunConfig, WindowConfig, load_data_config, load_run_config
+from config.data import DataConfig, WindowConfig
+from config.models import ModelConfig
+from config.training import RunConfig
+from config.loader import load_data_config, load_run_config
 from data import bake
 from data.annotations import Marks, attach_person, attach_presence, attach_lying_annotation, write_annotations
 from data.preprocess import RangeNormalise, TemporalBackground, preprocess_dataset, select_recordings

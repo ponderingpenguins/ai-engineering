@@ -13,7 +13,7 @@ import numpy as np
 
 from data.resample import RandomOversampler
 from models.model import BaseModel
-from config import TrainingConfig
+from config.training import TrainingConfig
 from training.fitting import BatchAugment, FitConfig, fit_fold
 from evaluation.metrics import accuracy, fmt, macro_f1, per_class, scores
 from evaluation.records import FoldResult, Pooled, RunResults

@@ -15,7 +15,8 @@ from torch import nn
 from torch.utils.data import DataLoader, TensorDataset
 from tqdm import tqdm
 
-from config import ModelConfig, TrainingConfig
+from config.models import ModelConfig
+from config.training import TrainingConfig
 from data.augment import HeatmapAugment, PointAugment
 from data.resample import RandomOversampler
 from models.model import BaseModel, TorchModel

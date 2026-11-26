@@ -16,7 +16,7 @@ from datasets import Dataset, Features, Value, concatenate_datasets
 from datasets import Sequence as ListOf
 from scipy.signal import lfilter
 
-from config import PreprocessConfig, SelectionConfig
+from config.data import PreprocessConfig, SelectionConfig
 from data.annotations import NO_PERSON
 
 logger = logging.getLogger(__name__)

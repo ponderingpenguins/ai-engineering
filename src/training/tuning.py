@@ -25,7 +25,8 @@ from omegaconf import OmegaConf
 
 from data.resample import RandomOversampler
 from models.model import BaseModel
-from config import RunConfig, check_run_config
+from config.training import RunConfig
+from config.loader import check_run_config
 from training.fitting import FitConfig, History, fit_fold
 from evaluation.records import BestSetting, Candidate, InnerFold, Setting, Tuning
 from evaluation.metrics import macro_f1

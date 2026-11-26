@@ -5,7 +5,7 @@ import torch
 from data.resample import RandomOversampler
 from models.baseline import MajorityClass
 from models.rnn import RNN
-from config import TrainingConfig
+from config.training import TrainingConfig
 from training.fitting import _balanced_weights, _to_int, fit_torch
 from training.splitting import GroupKFoldSplitter
 from training.cross_validation import CrossValidator

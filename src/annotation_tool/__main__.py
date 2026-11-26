@@ -21,7 +21,7 @@ from omegaconf.errors import OmegaConfBaseException
 from annotation_tool.server import Annotator, Catalogue, make_server
 from data.annotations import LYING_INTERVALS, REPO
 from data.preprocess import select_recordings
-from config import load_data_config
+from config.loader import load_data_config
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger("annotation_tool")

@@ -6,7 +6,10 @@ import pytest
 from datasets import Dataset
 
 from data.preprocess import CONFIG_4
-from config import ModelConfig, RunConfig, WindowConfig, check_run_config
+from config.models import ModelConfig
+from config.training import RunConfig
+from config.data import WindowConfig
+from config.loader import check_run_config
 from training.pipelines import run_cv, run_train_final, run_tune, tuned_model_config
 from evaluation.records import BestSetting
 from training.tuning import save_tuned

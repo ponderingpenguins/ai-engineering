@@ -13,7 +13,8 @@ from evaluation.plots import mean_curves, plot_fold_curves, plot_mean_curves
 from evaluation.records import FoldResult, Pooled, RunResults
 from evaluation.report import write_report
 from training.splitting import GroupKFoldSplitter, validation_split
-from config import TrainingConfig, WindowConfig
+from config.training import TrainingConfig
+from config.data import WindowConfig
 from training.cross_validation import CrossValidator
 
 WINDOWING = WindowConfig(target="label_pose", collapse_lying=True, window_len=16, label_rule="any_lying", max_points=128).signature()

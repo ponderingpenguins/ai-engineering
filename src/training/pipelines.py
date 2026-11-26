@@ -19,7 +19,7 @@ from data.preprocess import preprocess_dataset
 from data.resample import RandomOversampler
 from data.windowing import build_windows, window_timing
 from models.factory import MODEL_CLASSES, build_model
-from config import RunConfig
+from config.training import RunConfig
 from evaluation.records import FinalResult, RunResults
 from training.splitting import GroupKFoldSplitter
 from training.cross_validation import CrossValidator
