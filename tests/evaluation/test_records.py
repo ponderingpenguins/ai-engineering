@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from models.model import History
+from training.fitting import History
 from evaluation.records import BestSetting, Candidate, FoldResult, InnerFold, Pooled, RunResults, Tuning
 from evaluation.report import write_report
 

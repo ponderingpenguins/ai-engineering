@@ -13,12 +13,13 @@ import numpy as np
 
 from data.resample import RandomOversampler
 from models.model import BaseModel
-from training.fit import fit_fold
+from config import TrainingConfig
+from training.fitting import BatchAugment, FitConfig, fit_fold
 from evaluation.metrics import accuracy, fmt, macro_f1, per_class, scores
-from evaluation.records import FinalResult, FoldResult, Pooled, RunResults
+from evaluation.records import FoldResult, Pooled, RunResults
 from evaluation.report import write_report
-from training.splits import GroupKFoldSplitter, validation_split
-from training.tuner import Tuner, best_overall
+from training.splitting import GroupKFoldSplitter, validation_split
+from training.tuning import Tuner, best_overall
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,7 @@ Metric = Callable[[np.ndarray, np.ndarray, np.ndarray], float | None]  # (y_true
 
 
 @dataclass
-class Trainer:
+class CrossValidator:
     make_model: Callable[[], BaseModel]  # called once per fold, so every fold starts from scratch
     splitter: GroupKFoldSplitter = field(default_factory=GroupKFoldSplitter)
     metrics: dict[str, Metric] = field(default_factory=lambda: {"accuracy": accuracy, "macro_f1": macro_f1})
@@ -37,6 +38,9 @@ class Trainer:
     resampler: RandomOversampler | None = None  # applied to each fold's training windows only
     validate: bool = True  # False: no validation person, the model trains on all training people for its epochs
     tuner: Tuner | None = None  # set: each fold tunes on its training people, then refits on all of them
+
+    training: TrainingConfig | None = None
+    augment: BatchAugment | None = None
 
     def cross_validate(self, x: np.ndarray, y: np.ndarray, groups: np.ndarray) -> RunResults:
         """Each fold is held out once as test data. Returns per-fold, pooled and per-person results.
@@ -67,11 +71,13 @@ class Trainer:
                 logger.info("fold %d/%d: validate on %s", i, k, ", ".join(val_people))
 
             if tuning is None:
-                model = self.make_model()
+                candidate = FitConfig(self.make_model(), self.training, self.augment, self.seed)
             else:
                 assert self.tuner is not None
-                model = self.tuner.build(tuning)
-            fit = fit_fold(model, x, y, fit_idx, val_idx, resampler=self.resampler, log_as=f"fold {i}/{k}")
+                candidate = self.tuner.build(tuning)
+            model = candidate.model
+            fit = fit_fold(model, x, y, fit_idx, val_idx, training=candidate.training, augment=candidate.augment,
+                           seed=candidate.seed, resampler=self.resampler, log_as=f"fold {i}/{k}")
             train_idx = fit.train_idx
             checkpoint = self._save_checkpoint(model, i, held_out)
             started = perf_counter()
@@ -124,32 +130,11 @@ class Trainer:
             logger.info("  person %-10s n=%d %s", person, row["n"], {key: value for key, value in row.items() if key.endswith(("_recall", "_support"))})
 
         results = RunResults(self.config, fold_results, pooled, per_person)
-        if self.tuner is not None:  # the setting to use for the final model, see training.tuner.best_overall
+        if self.tuner is not None:  # the setting to use for the final model, see training.tuning.best_overall
             results.tuned = best_overall([fold.tuning for fold in fold_results if fold.tuning])
             logger.info("tuned: %s", results.tuned)
         self._save(results)
         return results
-
-    def train_final(self, x: np.ndarray, y: np.ndarray) -> FinalResult:
-        """Trains one model on all windows, with no validation and no held-out score.
-
-        The model comes from `make_model`, which should already carry the tuned setting and epoch count.
-        The result is saved as `final.pt` and `final.json` in `out_dir`, when it and `windowing` are set.
-        """
-        model = self.make_model()
-        fit = fit_fold(model, x, y, np.arange(len(y)), resampler=self.resampler)
-        final = FinalResult(config=self.config, n_windows=len(y), n_train_after_resampling=len(fit.train_idx),
-                            train_classes=dict(Counter(y[fit.train_idx].tolist())), train_seconds=fit.seconds,
-                            history=fit.history, checkpoint=None)
-        if self.out_dir is not None:
-            self.out_dir.mkdir(parents=True, exist_ok=True)
-            if self.windowing is not None:
-                model.save(self.out_dir / "final.pt", self.windowing)
-                final.checkpoint = "final.pt"
-            (self.out_dir / "final.json").write_text(json.dumps(final.to_dict(), indent=2))
-        logger.info("final model trained on %d windows in %.1f s; checkpoint %s", len(fit.train_idx), fit.seconds,
-                    final.checkpoint)
-        return final
 
     def _save_checkpoint(self, model: BaseModel, fold: int, held_out: np.ndarray) -> str | None:
         """Saves the fold's trained model (its best weights) under `out_dir/checkpoints`.

@@ -9,9 +9,11 @@ from data.windowing import HEATMAP_SHAPE, _window_points, make_windows
 from models.factory import MODEL_CLASSES, build_model
 from models.model import BaseModel
 from models.pointnet import MiniPointNet, PointNet
-from config import ModelConfig, RunConfig, WindowConfig
-from training.splits import GroupKFoldSplitter
-from training.cv import Trainer
+from config import ModelConfig, RunConfig, TrainingConfig, WindowConfig
+from data.augment import PointAugment
+from training.fitting import _forward_train, fit_torch
+from training.splitting import GroupKFoldSplitter
+from training.cross_validation import CrossValidator
 
 PERIOD = 0.2
 
@@ -138,8 +140,9 @@ def separable_data(n=60, seed=0):
 def test_it_learns_a_separable_toy_problem_and_records_a_history():
     x, y = separable_data()
     xv, yv = separable_data(30, seed=1)
-    model = PointNet(epochs=30, batch_size=16, width=32, lr=1e-2, patience=10)
-    history = model.fit(x, y, val=(xv, yv))
+    model = PointNet(width=32)
+    history = fit_torch(model, x, y, training=TrainingConfig(epochs=30, batch_size=16, lr=1e-2, patience=10),
+                        val=(xv, yv))
     assert (model.predict(xv) == yv).mean() > 0.9
     assert history.train_steps and history.val_loss and history.best_step in history.val_steps
 
@@ -152,8 +155,8 @@ def test_it_is_registered_and_built_from_the_config():
 
 def test_checkpoint_round_trip_gives_the_same_predictions(tmp_path):
     x, y = separable_data()
-    model = PointNet(epochs=3, batch_size=16, width=16)
-    model.fit(x, y)
+    model = PointNet(width=16)
+    fit_torch(model, x, y, training=TrainingConfig(epochs=3, batch_size=16))
     windowing = WindowConfig(target="label_pose", collapse_lying=True, window_len=16, label_rule="any_lying", max_points=12).signature()
     model.save(tmp_path / "pn.pt", windowing)
     loaded, loaded_windowing = BaseModel.load(tmp_path / "pn.pt")
@@ -164,8 +167,8 @@ def test_checkpoint_round_trip_gives_the_same_predictions(tmp_path):
 
 def test_input_standardisation_ignores_padding():
     x, y = separable_data(20)
-    model = PointNet(epochs=1, batch_size=16, width=16)
-    model.fit(x, y)
+    model = PointNet(width=16)
+    fit_torch(model, x, y, training=TrainingConfig(epochs=1, batch_size=16))
     real = x[x[..., 6] > 0.5][:, :5]
     assert model.net.feat_mean.cpu().numpy() == pytest.approx(real.mean(axis=0), abs=1e-4)
 
@@ -173,7 +176,7 @@ def test_input_standardisation_ignores_padding():
 def test_trainer_runs_cross_validation_with_the_pointnet(tmp_path):
     x, y = separable_data(48)
     groups = np.array(["Bob", "Dave", "Frank", "Ian"] * 12)
-    results = Trainer(lambda: PointNet(epochs=2, batch_size=16, width=16), splitter=GroupKFoldSplitter(),
+    results = CrossValidator(lambda: PointNet(width=16), training=TrainingConfig(epochs=2, batch_size=16), splitter=GroupKFoldSplitter(),
                       out_dir=tmp_path, windowing=WindowConfig(target="label_pose", collapse_lying=True, window_len=16,
                                                 label_rule="any_lying", max_points=12).signature(),
                       config={"model": {"name": "pointnet", "pointnet": {"epochs": 2, "batch_size": 16, "lr": 0.001,
@@ -192,12 +195,16 @@ def test_regularisation_only_acts_in_training_and_checkpoint_keeps_it(tmp_path):
     assert torch.equal(net(x), net(x))  # deterministic in eval mode
     net.train()
     assert not torch.equal(net(x), net(x))  # only dropout remains inside the architecture
-    model = PointNet(width=16, epochs=1, point_dropout=0.1, augment={"point_drop": 0.2, "jitter": 0.03})
+    model = PointNet(width=16, point_dropout=0.1)
     train_x, train_y = separable_data(12)
-    model.fit(train_x, train_y)
+    fit_torch(model, train_x, train_y, training=TrainingConfig(epochs=1),
+              augment=PointAugment(point_drop=0.2, jitter=0.03))
     model.save(tmp_path / "augment.pt", WindowConfig().signature())
     restored, _ = BaseModel.load(tmp_path / "augment.pt")
-    assert restored.augment.point_drop == 0.2 and restored.augment.jitter == 0.03
+    assert restored.point_dropout == 0.1
+    checkpoint = torch.load(tmp_path / "augment.pt", map_location="cpu", weights_only=True)
+    assert set(checkpoint["parameters"]) == set(PointNet.parameter_names)
+    assert not hasattr(restored, "augment")
     np.testing.assert_array_equal(restored.predict(train_x), model.predict(train_x))
 
 
@@ -215,17 +222,18 @@ def test_point_count_feature_ignores_augmentation_dropping():
     torch.manual_seed(0)
     x = torch.rand(8, 40, 7)
     x[..., 6] = 1.0
-    model = PointNet(width=16, dropout=0, augment={"point_drop": 1.0})
+    model = PointNet(width=16, dropout=0)
     model.net = model._build_net(2).to(model.device)
     model.net.train()
     seen = []
     model.net.head.register_forward_hook(lambda module, inputs, out: seen.append(inputs[0][:, -1]))
-    model._forward_train(x.to(model.device))
+    _forward_train(model, x.to(model.device), PointAugment(point_drop=1.0))
     expected = torch.log1p(torch.tensor(40.0)) / 5.0  # all 40 points are real, however many were dropped
     assert torch.allclose(seen[0].cpu(), expected.expand(8))
 
 
-@pytest.mark.parametrize("name,version", [("rnn", 1), ("pointnet", 2)])
+@pytest.mark.parametrize("name", ["rnn", "pointnet"])
+@pytest.mark.parametrize("version", [1, 2, 3])
 def test_older_checkpoints_with_network_augmentation_parameters_still_load(name, version, tmp_path):
     model = build_model(ModelConfig(name=name))
     model.classes_ = np.array(["a", "b"])
@@ -234,16 +242,32 @@ def test_older_checkpoints_with_network_augmentation_parameters_still_load(name,
     model.save(path, WindowConfig().signature())
     checkpoint = torch.load(path, map_location="cpu", weights_only=True)
     parameters = checkpoint["parameters"]
-    names = ("noise",) if name == "rnn" else ("point_drop", "jitter")
-    for setting in names:
-        parameters[setting] = parameters["augment"].pop(setting)
+    parameters.update(lr=0.003, weight_decay=0.001, epochs=4, batch_size=2, seed=9,
+                      patience=3, evals_per_epoch=2, augment={"noise": 0.1},
+                      noise=0.2, point_drop=0.3, jitter=0.05)
+    checkpoint["class_weights"] = False
     checkpoint["format_version"] = version
-    checkpoint[{1: "evaluation", 2: "window_spec"}[version]] = checkpoint.pop("windowing")
+    if version < 3:
+        checkpoint[{1: "evaluation", 2: "window_spec"}[version]] = checkpoint.pop("windowing")
     torch.save(checkpoint, path)
 
     restored, _ = BaseModel.load(path)
-    for setting in names:
-        assert getattr(restored.augment, setting) == parameters[setting]
+    assert not hasattr(restored, "augment") and not hasattr(restored, "epochs")
     x = (np.zeros((2, 2, 1, 256, 16), dtype=np.float32) if name == "rnn"
          else separable_data(4)[0])
     np.testing.assert_array_equal(restored.predict(x), model.predict(x))
+
+
+@pytest.mark.parametrize("name", ["rnn", "pointnet"])
+@pytest.mark.parametrize("invalid", ["preprocessing", "classes"])
+def test_neural_checkpoints_reject_incompatible_preprocessing_or_empty_classes(name, invalid, tmp_path):
+    model = build_model(ModelConfig(name=name))
+    model.classes_ = np.array(["a", "b"])
+    model.net = model._build_net(2).to(model.device)
+    path = tmp_path / "invalid.pt"
+    model.save(path, WindowConfig().signature())
+    checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+    checkpoint[invalid] = "unknown_preprocessing" if invalid == "preprocessing" else []
+    torch.save(checkpoint, path)
+    with pytest.raises(ValueError, match="preprocessing" if invalid == "preprocessing" else "class labels"):
+        BaseModel.load(path)

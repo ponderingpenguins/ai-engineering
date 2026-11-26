@@ -1,6 +1,6 @@
 """The results of a run, as records.
 
-`Trainer` builds them, the report and the loss curves read them, and `results.json` stores them. Only the
+`CrossValidator` builds them, the report and the loss curves read them, and `results.json` stores them. Only the
 conversion to and from plain values (`to_dict`, `from_dict`) knows about the stored file, so a key is spelled
 in one place.
 """
@@ -8,7 +8,7 @@ in one place.
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from models.model import History
+from training.fitting import History
 
 Setting = dict[str, Any]  # one hyperparameter setting of the tuning grid
 

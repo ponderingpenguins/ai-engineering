@@ -4,6 +4,7 @@ import torch
 
 from data.augment import HeatmapAugment, _pick_one_per_group
 from models.factory import build_model
+from training.fitting import build_augment, fit_torch
 from config import ModelConfig, TrainingConfig
 
 B, T, R, D = 4, 8, 64, 4
@@ -80,27 +81,28 @@ def test_rnn_trains_with_augmentation_and_only_on_training_batches(monkeypatch):
     aug = cfg.augment
     aug.range_shift_bins = 4
     aug.time_reverse = True
-    model = build_model(cfg, training)
-    assert model.augment is not None
+    model = build_model(cfg)
+    augment = build_augment(cfg)
+    assert augment is not None
     calls = []
-    reverse = model.augment._reverse
+    reverse = augment._reverse
 
     def count_reverse(xb):
         calls.append(1)
         return reverse(xb)
 
-    monkeypatch.setattr(model.augment, "_reverse", count_reverse)
+    monkeypatch.setattr(augment, "_reverse", count_reverse)
     x = np.random.default_rng(0).normal(7.4, 0.01, (12, 6, 1, 256, 16)).astype(np.float32)
     y = np.array(["a", "b"] * 6)
-    model.fit(x, y, val=(x, y))
+    fit_torch(model, x, y, training=training, augment=augment, val=(x, y))
     assert len(calls) == 1
-    torch.testing.assert_close(model.augment._input_std, model.net.encoder.input_std)
+    torch.testing.assert_close(augment._input_std, model.net.encoder.input_std)
     assert model.predict(x).shape == (12,)  # prediction never calls the augmentation
     assert len(calls) == 1
     default = ModelConfig(name="rnn")
-    assert build_model(default).augment.noise == 0.05
+    assert build_augment(default).noise == 0.05
     default.augment.noise = 0
-    assert build_model(default).augment is None
+    assert build_augment(default) is None
 
 
 # ---- point clouds ------------------------------------------------------------------------------
@@ -216,28 +218,29 @@ def test_pointnet_trains_with_augmentation_and_prediction_ignores_it(monkeypatch
     aug = cfg.augment
     aug.shift_m = 0.3
     aug.ghost_points = 3
-    model = build_model(cfg, training)
-    assert isinstance(model, PointNet) and model.augment is not None
+    model = build_model(cfg)
+    augment = build_augment(cfg)
+    assert isinstance(model, PointNet) and augment is not None
     calls = []
-    apply = model.augment.apply_with_count
+    apply = augment.apply_with_count
 
     def count_apply(xb):
         calls.append(1)
         return apply(xb)
 
-    monkeypatch.setattr(model.augment, "apply_with_count", count_apply)
+    monkeypatch.setattr(augment, "apply_with_count", count_apply)
     x = points(batch=12).numpy()
     y = np.array(["a", "b"] * 6)
-    model.fit(x, y, val=(x, y))
+    fit_torch(model, x, y, training=training, augment=augment, val=(x, y))
     assert len(calls) == 1
-    torch.testing.assert_close(model.augment._input_std, model.net.feat_std)
+    torch.testing.assert_close(augment._input_std, model.net.feat_std)
     assert torch.equal(torch.as_tensor(model.predict(x) == model.predict(x)).all(), torch.tensor(True))
     assert len(calls) == 1
     default = ModelConfig(name="pointnet")
-    assert build_model(default).augment.point_drop == 0.3
-    assert build_model(default).augment.jitter == 0.05
+    assert build_augment(default).point_drop == 0.3
+    assert build_augment(default).jitter == 0.05
     default.augment.point_drop = default.augment.jitter = 0
-    assert build_model(default).augment is None
+    assert build_augment(default) is None
 
 
 @pytest.mark.parametrize("scale", [1.0, 3.5])

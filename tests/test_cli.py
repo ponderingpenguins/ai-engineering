@@ -9,7 +9,8 @@ from data import bake
 @pytest.mark.parametrize("mode", ["cv", "tune", "train-final"])
 def test_explicit_modes_dispatch_independently_of_grid_contents(mode, monkeypatch):
     seen = []
-    monkeypatch.setattr(cli, "run", lambda cfg, root, command: seen.append((cfg, command)))
+    function = {"cv": "run_cv", "tune": "run_tune", "train-final": "run_train_final"}[mode]
+    monkeypatch.setattr(cli, function, lambda cfg, root: seen.append((cfg, mode)))
     monkeypatch.setattr(sys, "argv", ["main.py", mode, "model=rnn",
                                      'tune.grid=[{"model.arch.hidden":16}]'])
     cli.main()
@@ -19,7 +20,7 @@ def test_explicit_modes_dispatch_independently_of_grid_contents(mode, monkeypatc
 
 
 def test_tune_without_candidates_fails_before_running(monkeypatch):
-    monkeypatch.setattr(cli, "run", lambda *args: pytest.fail("must not start an empty tuning run"))
+    monkeypatch.setattr(cli, "run_tune", lambda *args: pytest.fail("must not start an empty tuning run"))
     monkeypatch.setattr(sys, "argv", ["main.py", "tune"])
     with pytest.raises(SystemExit) as error:
         cli.main()

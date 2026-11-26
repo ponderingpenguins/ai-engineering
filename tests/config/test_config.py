@@ -14,7 +14,7 @@ from data import bake
 from data.annotations import Marks, attach_person, attach_presence, attach_lying_annotation, write_annotations
 from data.preprocess import RangeNormalise, TemporalBackground, preprocess_dataset, select_recordings
 from models.factory import build_model
-from training.tuner import with_setting
+from training.tuning import with_setting
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -113,14 +113,19 @@ def test_preprocessing_uses_parameters_from_config_overrides():
 
 
 @pytest.mark.parametrize("name", ["rnn", "pointnet"])
-def test_shared_training_options_and_selected_augmentations_reach_model(name):
+def test_model_factory_keeps_training_and_augmentation_separate(name):
+    from dataclasses import asdict
+    from training.fitting import build_augment
+
     cfg = load_run_config(REPO, [f"model={name}", "training.epochs=2", "training.class_weights=false", "seed=5"])
-    model = build_model(cfg.model, cfg.training, seed=cfg.seed)
-    assert model.epochs == 2 and model.seed == 5 and not model.class_weights
+    model = build_model(cfg.model)
+    assert {key: getattr(model, key) for key in model.parameter_names} == asdict(cfg.model.arch)
+    assert all(not hasattr(model, key) for key in ("epochs", "seed", "class_weights", "augment"))
+    augment = build_augment(cfg.model)
     if name == "rnn":
-        assert model.augment.noise == 0.05
+        assert augment.noise == 0.05
     else:
-        assert model.augment.point_drop == 0.3 and model.augment.jitter == 0.05
+        assert augment.point_drop == 0.3 and augment.jitter == 0.05
 
 
 def test_dotted_tuning_settings_are_typed_and_do_not_mutate_the_original():

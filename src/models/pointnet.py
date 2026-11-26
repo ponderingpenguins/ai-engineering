@@ -1,14 +1,10 @@
 """A mini PointNet on the radar point cloud of a window, instead of on the range-Doppler heatmaps."""
 
-from typing import Any
-
 import numpy as np
 import torch
 from torch import nn
 
-from data.augment import PointAugment
-
-from .torch_classifier import TorchClassifier
+from .model import TorchModel
 
 N_STANDARDISED = 5  # x, y, z, doppler, snr are standardised; time and the validity flag are used as they are
 
@@ -57,38 +53,24 @@ class MiniPointNet(nn.Module):
         return self.head(torch.cat([pooled_max, pooled_mean, count], dim=-1))
 
 
-class PointNet(TorchClassifier):
+class PointNet(TorchModel):
     """Mini PointNet classifier on windows of radar points. x: (N, P, 7), y: (N,) string labels."""
 
     net: MiniPointNet
-    augment: PointAugment | None
 
     model_name = "pointnet"
     input_type = "pointcloud"
     preprocessing = "pointcloud_xyz_doppler_snr_time_v1"
-    parameter_names = ("width", "dropout", "point_dropout", "lr", "weight_decay", "epochs",
-                       "batch_size", "seed", "patience", "evals_per_epoch", "augment")
+    parameter_names = ("width", "dropout", "point_dropout")
 
     def __init__(
         self,
         width: int = 128,
         dropout: float = 0.2,
         point_dropout: float = 0.0,
-        lr: float = 1e-3,
-        weight_decay: float = 1e-4,
-        epochs: int = 30,
-        batch_size: int = 32,
-        seed: int = 0,
-        patience: int = 5,
-        evals_per_epoch: int = 1,
-        augment: dict[str, Any] | None = None,
     ) -> None:
-        """Stores the hyperparameters; `PointNetConfig` says what each one does. The network is built in `fit`.
-
-        `augment` holds the settings of `PointAugment`; None or all off means no augmentation.
-        """
-        super().__init__(lr, weight_decay, epochs, batch_size, seed, patience, evals_per_epoch)
-        self._set_augment(augment, PointAugment)
+        """Store architecture settings; the network is built when fitted or loaded."""
+        super().__init__()
         self.width = width
         self.dropout = dropout
         self.point_dropout = point_dropout
@@ -96,17 +78,10 @@ class PointNet(TorchClassifier):
     def _build_net(self, n_classes: int) -> MiniPointNet:
         return MiniPointNet(n_classes, self.width, self.dropout, self.point_dropout)
 
-    def _set_input_stats(self, x: np.ndarray) -> None:
+    def _set_input_stats(self, x: np.ndarray) -> torch.Tensor:
         """Standardise x, y, z, doppler and snr with the mean and std of the training points (padding excluded)."""
         points = x[x[..., 6] > 0.5][:, :N_STANDARDISED]
         if len(points):
             self.net.feat_mean.copy_(torch.as_tensor(points.mean(axis=0)))
             self.net.feat_std.copy_(torch.as_tensor(np.maximum(points.std(axis=0), 1e-6)))
-        if self.augment is not None:
-            self.augment.set_input_std(self.net.feat_std)
-
-    def _forward_train(self, xb: torch.Tensor) -> torch.Tensor:
-        if self.augment is None:
-            return self.net(xb)
-        xb, n_points = self.augment.apply_with_count(xb)
-        return self.net(xb, n_points=n_points)
+        return self.net.feat_std

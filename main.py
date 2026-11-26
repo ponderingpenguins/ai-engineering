@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 from omegaconf.errors import OmegaConfBaseException
 from config import load_run_config
-from training.pipelines import run
+from training.pipelines import run_cv, run_train_final, run_tune
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
@@ -43,7 +43,7 @@ def main() -> None:
     except (TypeError, ValueError, OmegaConfBaseException) as error:
         parser.error(str(error))
     try:
-        run(cfg, REPO, args.command)
+        {"cv": run_cv, "tune": run_tune, "train-final": run_train_final}[args.command](cfg, REPO)
     except ValueError as error:
         logger.error("%s", error)
         sys.exit(1)

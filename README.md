@@ -121,14 +121,14 @@ scripts/                  remote_pc/, viewer/, archive/
 results/                  one folder per run (gitignored)
 src/data/                 bake, annotations, preprocess, windowing, augment, resample
 src/config/               typed data/model/training settings, loaders and validation
-src/models/               RNN, PointNet, baseline, shared training loop, factory
-src/training/             fit, splits, tuner, cv, pipelines
+src/models/               RNN, PointNet, baseline, inference/checkpoints, factory
+src/training/             fitting, splitting, tuning, cross_validation, pipelines
 src/evaluation/           metrics, records, plots, report, annotation_audit
 tests/
 ```
 
-- `main.py` reads the command line and turns errors into exit codes. `src/config/` loads and validates the config, and `training/pipelines.py` runs one experiment.
+- `main.py` reads the command line and turns errors into exit codes. `src/config/` loads and validates the config. `training/pipelines.py` exposes `run_cv`, `run_tune` and `run_train_final`; final training fits all windows directly without cross-validation.
 - `src/config/data.py` defines `WindowConfig`. Its `signature()` returns the five prediction settings saved under `windowing` in checkpoints and tuned settings. Stride is omitted because it only changes sampling density.
-- `training/fit.py` fits one model on one fold, for both the outer and the tuning loop.
+- `training/fitting.py` owns the training loop, batch augmentation and training history. `fit_model(model, x, y, training=..., augment=..., seed=...)` fits a model; `fit_fold` also selects and optionally resamples training windows. `CrossValidator` in `training/cross_validation.py` coordinates held-out folds.
 - `evaluation/records.py` holds the result records. The report and the loss curves read them. `results.json` is only read and written there.
-- A model class declares its hyperparameter names (`parameter_names`) and its input type, and `models/factory.py` builds any model from the config.
+- A model class declares its architecture parameters (`parameter_names`) and input type. `models/factory.py` builds it with `build_model(cfg.model)`; training and augmentation settings stay separate. Checkpoints store architecture and learned state, including input statistics, and continue to load legacy formats 1, 2 and 3. Run metadata stores the training settings.

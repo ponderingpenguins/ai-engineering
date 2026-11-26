@@ -16,7 +16,7 @@ import logging
 import math
 from collections import Counter
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass, fields, is_dataclass, replace
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any, cast
 
@@ -24,12 +24,12 @@ import numpy as np
 from omegaconf import OmegaConf
 
 from data.resample import RandomOversampler
-from models.model import BaseModel, History
+from models.model import BaseModel
 from config import RunConfig, check_run_config
-from training.fit import fit_fold
+from training.fitting import FitConfig, History, fit_fold
 from evaluation.records import BestSetting, Candidate, InnerFold, Setting, Tuning
 from evaluation.metrics import macro_f1
-from training.splits import inner_splits
+from training.splitting import inner_splits
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +95,7 @@ def median_epoch(epochs: Sequence[int]) -> int:
 
 @dataclass
 class Tuner:
-    make_model: Callable[[Setting], BaseModel]  # a fresh, untrained model with the setting applied
+    make_candidate: Callable[[Setting], FitConfig | BaseModel]  # fresh model and fitting settings
     grid: list[Setting]
     resampler: RandomOversampler | None = None  # applied to the inner fit windows only, like in the trainer
 
@@ -124,8 +124,10 @@ class Tuner:
         for number, setting in enumerate(self.grid, start=1):
             true, pred, folds, epochs, losses = [], [], [], [], []
             for fit_idx, val_idx in inner:
-                model = self.make_model(setting)
-                history = fit_fold(model, x, y, fit_idx, val_idx, resampler=self.resampler,
+                candidate = self._candidate(setting)
+                model = candidate.model
+                history = fit_fold(model, x, y, fit_idx, val_idx, training=candidate.training,
+                                   augment=candidate.augment, seed=candidate.seed, resampler=self.resampler,
                                    val_weight_labels=y[train]).history  # the same weights for every person
                 predicted = model.predict(x[val_idx])
                 epoch, loss = best_epoch(history), kept_val_loss(history)
@@ -149,9 +151,13 @@ class Tuner:
         logger.info("tune: best setting %s, %d epochs", best.setting, best.epochs)
         return Tuning(best.setting, best.epochs, best.score, candidates)
 
-    def build(self, tuning: Tuning) -> BaseModel:
-        """A fresh model with the winning setting, set to train for the chosen number of epochs."""
-        return self.make_model({**tuning.setting, "training.epochs": tuning.epochs})
+    def _candidate(self, setting: Setting) -> FitConfig:
+        candidate = self.make_candidate(setting)
+        return candidate if isinstance(candidate, FitConfig) else FitConfig(candidate)
+
+    def build(self, tuning: Tuning) -> FitConfig:
+        """A fresh model and fitting settings, using the winning setting and chosen epoch count."""
+        return self._candidate({**tuning.setting, "training.epochs": tuning.epochs})
 
 
 def best_overall(tunings: Sequence[Tuning]) -> BestSetting:

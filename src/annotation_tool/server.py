@@ -136,6 +136,8 @@ def make_server(annotator: Annotator, port: int = 8765, host: str = "127.0.0.1")
     lan = host not in ("127.0.0.1", "localhost", "::1")
 
     class Handler(BaseHTTPRequestHandler):
+        server: ThreadingHTTPServer
+
         def log_message(self, *args: Any) -> None:  # the frames would flood the terminal
             pass
 

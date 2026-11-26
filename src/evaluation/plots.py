@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from models.model import History
+from training.fitting import History
 from evaluation.records import FoldResult
 
 GRID_PER_EPOCH = 10  # points per epoch on the common axis of the train curve in the mean figure

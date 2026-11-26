@@ -1,9 +1,13 @@
 import numpy as np
+import pytest
+import torch
 
+from config import TrainingConfig
 from data.resample import RandomOversampler
 from models.baseline import MajorityClass
-from models.model import History
-from training.fit import fit_fold
+from training.fitting import History
+from models.pointnet import PointNet
+from training.fitting import fit_fold, fit_torch
 
 
 class Recorder(MajorityClass):
@@ -53,3 +57,35 @@ def test_a_model_that_does_not_train_iteratively_returns_no_history():
     model = MajorityClass()
     fit = fit_fold(model, x, y, np.arange(12), np.arange(12, 18))
     assert fit.history is None and model.label_ == "not_lying"
+
+
+@pytest.mark.parametrize("class_weights", [False, True])
+def test_training_config_controls_loss_weights_without_changing_validation_weights(monkeypatch, class_weights):
+    import training.fitting as fitting
+
+    x = np.zeros((6, 2, 7), dtype=np.float32)
+    x[..., 6] = 1
+    y = np.array(["a"] * 5 + ["b"])
+    seen = []
+    cross_entropy = torch.nn.CrossEntropyLoss
+
+    def loss(**kwargs):
+        weight = kwargs["weight"]
+        seen.append(None if weight is None else weight.cpu().numpy())
+        return cross_entropy(**kwargs)
+
+    monkeypatch.setattr(fitting.nn, "CrossEntropyLoss", loss)
+    model = PointNet(width=8)
+    history = fit_torch(model, x, y, training=TrainingConfig(epochs=1, batch_size=6, class_weights=class_weights),
+                        val=(x, y))
+    assert len(seen) == 1
+    if class_weights:
+        np.testing.assert_allclose(seen[0], [0.6, 3.0])
+    else:
+        assert seen[0] is None
+    with torch.no_grad():
+        per_window = torch.nn.functional.cross_entropy(
+            model.net(torch.as_tensor(x).to(model.device)),
+            torch.as_tensor(np.searchsorted(model.classes_, y)).to(model.device), reduction="none",
+        ).cpu().numpy()
+    assert history.val_loss == pytest.approx([np.mean([per_window[y == c].mean() for c in model.classes_])])

@@ -3,12 +3,12 @@ import numpy as np
 import pytest
 
 from models.baseline import MajorityClass
-from models.model import History
-from training.splits import GroupKFoldSplitter
-from training.cv import Trainer
+from training.fitting import History
+from training.splitting import GroupKFoldSplitter
+from training.cross_validation import CrossValidator
 from evaluation.records import BestSetting, Tuning
 from config import WindowConfig
-from training.tuner import (Tuner, apply_tuned, best_epoch, best_overall, kept_val_loss, load_tuned, median_epoch, save_tuned,
+from training.tuning import (Tuner, apply_tuned, best_epoch, best_overall, kept_val_loss, load_tuned, median_epoch, save_tuned,
                           validate_grid)
 
 CLASSES = np.array(["lying", "not_lying"])
@@ -80,7 +80,7 @@ def test_epochs_are_the_median_best_epoch_and_build_uses_them():
     tuner = Tuner(Fake, [{"best_step": 25}])  # step 25 at 10 steps per epoch is epoch 3
     tuning = tuner.tune(x, y, groups, np.flatnonzero(groups != "Ian"), CLASSES)
     assert tuning.epochs == 3
-    assert tuner.build(tuning).setting == {"best_step": 25, "training.epochs": 3}
+    assert tuner.build(tuning).model.setting == {"best_step": 25, "training.epochs": 3}
 
 
 def test_kept_val_loss_is_the_loss_at_the_best_step():
@@ -156,7 +156,7 @@ def test_trainer_tunes_each_outer_fold_on_its_training_people_only():
     x, y, groups = make_data()
     Fake.seen = []
     tuner = Tuner(Fake, [{"loss": 0.8, "good": False}, {"loss": 0.3, "good": True}])
-    results = Trainer(lambda: Fake({}), splitter=GroupKFoldSplitter(), tuner=tuner).cross_validate(x, y, groups)
+    results = CrossValidator(lambda: Fake({}), splitter=GroupKFoldSplitter(), tuner=tuner).cross_validate(x, y, groups)
     assert len(results.folds) == 4
     for fold in results.folds:
         assert fold.tuning.setting == {"loss": 0.3, "good": True}
@@ -167,19 +167,10 @@ def test_trainer_tunes_each_outer_fold_on_its_training_people_only():
     assert (results.tuned.wins, results.tuned.of_folds) == (4, 4)
 
 
-def test_train_final_fits_on_all_windows_and_saves_a_checkpoint(tmp_path):
-    x, y, groups = make_data()
-    windowing = WindowConfig(target="label_pose", collapse_lying=True, window_len=16, label_rule="any_lying", max_points=128).signature()
-    info = Trainer(MajorityClass, out_dir=tmp_path, windowing=windowing).train_final(x, y)
-    assert info.n_windows == len(y) and info.checkpoint == "final.pt"
-    assert (tmp_path / "final.pt").is_file() and (tmp_path / "final.json").is_file()
-    assert info.train_classes == {"lying": 8, "not_lying": 40}
-
-
 def test_report_has_a_tuning_section_with_every_setting(tmp_path):
     x, y, groups = make_data()
     tuner = Tuner(Fake, [{"loss": 0.8}, {"loss": 0.3, "good": True}])
-    Trainer(lambda: Fake({}), splitter=GroupKFoldSplitter(), tuner=tuner, out_dir=tmp_path).cross_validate(x, y, groups)
+    CrossValidator(lambda: Fake({}), splitter=GroupKFoldSplitter(), tuner=tuner, out_dir=tmp_path).cross_validate(x, y, groups)
     report = (tmp_path / "report.md").read_text()
     assert "## Tuning" in report and "**Chosen for the final model:**" in report
     assert report.count("### Fold") == 4
@@ -225,7 +216,7 @@ def test_apply_tuned_refuses_different_windowing_or_model():
 
 def test_a_pointnet_setting_is_applied_to_the_pointnet_config():
     from config import ModelConfig, RunConfig
-    from training.tuner import hyperparameter_names, with_setting
+    from training.tuning import hyperparameter_names, with_setting
 
     cfg = with_setting(run_cfg(model=ModelConfig(name="pointnet")), {"model.arch.width": 64, "training.lr": 0.01})
     assert cfg.model.arch.width == 64 and cfg.training.lr == 0.01
@@ -241,7 +232,7 @@ def test_a_pointnet_setting_is_applied_to_the_pointnet_config():
 
 def test_the_baseline_cannot_be_tuned():
     from config import ModelConfig, RunConfig
-    from training.tuner import hyperparameter_names
+    from training.tuning import hyperparameter_names
 
     with pytest.raises(ValueError, match="only defined for"):
         hyperparameter_names(run_cfg(model=ModelConfig(name="baseline")))
@@ -249,7 +240,7 @@ def test_the_baseline_cannot_be_tuned():
 
 def test_nested_sub_configs_are_not_tunable():
     from config import ModelConfig, RunConfig
-    from training.tuner import hyperparameter_names
+    from training.tuning import hyperparameter_names
 
     for name in ("rnn", "pointnet"):
         names = hyperparameter_names(run_cfg(model=ModelConfig(name=name)))
