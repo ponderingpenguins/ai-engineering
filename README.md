@@ -44,6 +44,9 @@ python main.py tune 'tune.grid=[{model.arch.hidden: 64}, {model.arch.hidden: 128
 python main.py train-final
 python main.py bake --num-proc 4 --overwrite
 python main.py bake --refresh-annotations
+python main.py report results/<run>
+python main.py annotate --port 8765 --no-browser
+python main.py audit --out results/annotation_agreement.md
 ```
 
 | Key | Default | Meaning |
@@ -66,9 +69,9 @@ python main.py bake --refresh-annotations
 
 The YAML files show every active default and disabled option.
 
-Bake execution flags (`--num-proc`, `--overwrite`, repeated `--recording`) are not saved in YAML. Annotation tools keep their existing commands: `python -m annotation_tool` and `python -m evaluation.annotation_audit`; their data overrides use the same keys in `config/data.yaml`.
+Bake execution flags (`--num-proc`, `--overwrite`, repeated `--recording`) are not saved in YAML. `annotate` opens the annotation tool; `audit` compares reviewed annotations with the original pose labels. Their data overrides use the same keys in `config/data.yaml`. Each command has its own help: `python main.py <command> --help`. The module commands `python -m annotation_tool`, `python -m evaluation.annotation_audit` and `python -m evaluation.report` also remain available.
 
-Each run writes `results/<timestamp>_<model>/` with `report.md` (settings, pooled, per-fold and per-person tables), the loss figures, `results.json` and `checkpoints/`. Rebuild a report with `python -m evaluation.report results/<run>`.
+Each run writes `results/<timestamp>_<model>/` with `report.md` (settings, frame/window coverage, pooled, per-fold and per-person tables), the loss figures, `results.json` and `checkpoints/`. Rebuild a report with `python main.py report results/<run>`. Reports accept older config layouts within the current result-record format; the coverage section appears when those counts were recorded. The earliest October results use a different record schema and need conversion before they can be rebuilt.
 
 ## Evaluation workflow
 
@@ -121,7 +124,7 @@ scripts/                  remote_pc/, viewer/, archive/
 results/                  one folder per run (gitignored)
 src/data/                 bake, annotations, preprocess, windowing, augment, resample
 src/config/               typed data/model/training settings, loaders and validation
-src/models/               RNN, PointNet, baseline, inference/checkpoints, factory
+src/models/               RNN, PointNet, baseline, prediction and save/load methods, factory
 src/training/             fitting, splitting, tuning, cross_validation, pipelines
 src/evaluation/           metrics, records, plots, report, annotation_audit
 tests/
