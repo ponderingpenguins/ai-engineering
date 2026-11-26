@@ -15,7 +15,7 @@ from datasets import Dataset, load_from_disk
 
 from data.preprocess import preprocess_dataset
 from data.resample import RandomOversampler
-from data.windows import collapse_lying, make_windows, window_timing
+from data.windowing import build_windows, window_timing
 from models.factory import MODEL_CLASSES, MODELS, build_model
 from models.model import BaseModel
 from config import RunConfig
@@ -42,17 +42,6 @@ def tuned_model_config(cfg: RunConfig, root: Path) -> tuple[RunConfig, dict[str,
     return apply_tuned(cfg, tuned), tuned
 
 
-def recordings_by_label(ds: Dataset, target: str) -> tuple[list[str], list[str]]:
-    """The recordings that have at least one label in the `target` column, and the ones that have none.
-
-    The second list is the recordings a run on this target cannot use: for `lying_annotation` these are the
-    recordings that are not reviewed yet.
-    """
-    meta = ds.select_columns(["recording", target]).to_pandas()
-    has_labels = meta.groupby("recording")[target].apply(lambda labels: bool(labels.notna().any()))
-    return sorted(has_labels[has_labels].index), sorted(has_labels[~has_labels].index)
-
-
 def run(cfg: RunConfig, root: Path, mode: str = "cv") -> RunResults | FinalResult:
     """Cross-validates the configured model on the baked dataset, or trains the final model.
 
@@ -74,11 +63,6 @@ def run(cfg: RunConfig, root: Path, mode: str = "cv") -> RunResults | FinalResul
         raise ValueError(f"No baked dataset at {path}.\nBuild it with: python main.py bake")
     ds = preprocess_dataset(cast(Dataset, load_from_disk(str(path))), cfg.selection, cfg.denoising)
 
-    used, unlabelled = recordings_by_label(ds, cfg.windowing.target)
-    logger.info("target %s: %d recordings used", cfg.windowing.target, len(used))
-    if unlabelled:
-        logger.warning("no labels in %s for %d recordings, they are not used: %s", cfg.windowing.target, len(unlabelled),
-                       unlabelled)
     windowing = cfg.windowing.signature()
     resampler = None if cfg.training.oversample_ratio is None else RandomOversampler(cfg.training.oversample_ratio, cfg.seed)
     model_cfg, tuned = cfg, None
@@ -95,17 +79,8 @@ def run(cfg: RunConfig, root: Path, mode: str = "cv") -> RunResults | FinalResul
         return build_model(model_cfg.model, model_cfg.training, seed=model_cfg.seed)
 
     input_type = MODEL_CLASSES[cfg.model.name].input_type
-    x, y, groups = make_windows(
-        ds,
-        cfg.windowing.target,
-        window_len=cfg.windowing.window_len,
-        stride=cfg.windowing.stride,
-        inputs=input_type,
-        max_points=cfg.windowing.max_points,
-        relabel=collapse_lying if cfg.windowing.collapse_lying else None,
-        label_rule=cfg.windowing.label_rule,
-        max_per_person=cfg.cv.max_windows_per_person,
-        seed=cfg.seed,
+    x, y, groups, coverage = build_windows(
+        ds, cfg.windowing, input_type, max_per_person=cfg.cv.max_windows_per_person, seed=cfg.seed,
     )
     timing = window_timing(ds, cfg.windowing.window_len, cfg.windowing.stride)
     logger.info(
@@ -115,7 +90,8 @@ def run(cfg: RunConfig, root: Path, mode: str = "cv") -> RunResults | FinalResul
     )
     logger.info("%d windows from %d groups, classes: %s", len(y), len(set(groups)), dict(Counter(y.tolist())))
     config = {**asdict(cfg), "window_timing": timing, "input_type": input_type,
-              "recordings_used": used, "recordings_unlabelled": unlabelled}
+              "recordings_used": coverage.recordings_used, "recordings_unlabelled": coverage.recordings_unlabelled,
+              "window_coverage": asdict(coverage)}
     stamp = f"{datetime.now():%Y%m%d-%H%M%S}_{cfg.model.name}"
     if mode == "train-final":
         out_dir = root / cfg.out_dir / f"{stamp}_final"

@@ -17,7 +17,7 @@ class MiniPointNet(nn.Module):
     """PointNet without the alignment networks: a shared MLP on every point, then a symmetric pooling.
 
     Input x has shape (B, P, 7): per point x, y, z, doppler, snr, time inside the window, and a validity
-    flag (1 for a real point, 0 for padding; see `data.windows._window_points`). The order of the points
+    flag (1 for a real point, 0 for padding; see `data.windowing._window_points`). The order of the points
     does not matter, and padding never reaches the pooled features. Pooling is max and mean over the valid
     points, plus the log of how many there are (lying windows tend to contain more points).
     """

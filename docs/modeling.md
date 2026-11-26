@@ -10,6 +10,8 @@ Details behind the commands in the README: how windows are labelled, what the mo
 
 Frames are cut into windows of `windowing.window_len` frames (about 0.2 s each, measured from the capture timestamps). Windows that span a gap of dropped frames are skipped.
 
+Each run logs coverage from selected frames to final windows and saves it under `config.window_coverage` in `results.json`. Frame drops are counted once, in order: missing target label, bad heatmap, then wrong sensor shape. The summary also counts windows skipped across filtered-frame gaps and windows kept after any per-person cap. Unlabelled recordings remain in the baked dataset; their names are listed so they can be annotated later.
+
 - **`any_lying` (default):** the classifier predicts whether lying **occurred** within the window's 3.2 s. A window is labelled lying if at least one of its frames is lying, and not lying if none is. If the window has several lying frames, the last one decides between `lying_left` and `lying_right` (when `windowing.collapse_lying=false`).
 - **`last`:** a window takes the label of its last frame.
 
@@ -32,7 +34,7 @@ Consequences to keep in mind when reading scores:
 | `pointnet` | the radar **point cloud** of the window | Mini PointNet, about 27k parameters. See below. |
 | `baseline` | none | Always predicts the most common training label. |
 
-All models use the same windows, folds, preprocessing, class weighting, validation loss and early stopping (`models/torch_classifier.py`), so their results are comparable. Each model declares what it reads with `input_type`, and `make_windows(inputs=...)` builds it.
+All models use the same windows, folds, preprocessing, class weighting, validation loss and early stopping (`models/torch_classifier.py`), so their results are comparable. Each model declares what it reads with `input_type`, and `build_windows(ds, cfg.windowing, input_type)` in `data.windowing` builds it.
 
 **The point-cloud input.** The radar reports 0 to 16 points per frame (median 2; 27% of labelled frames have none, and the radar's tracker never reports a track). For a window the points of all its frames are put into one set of at most `windowing.max_points` (default 128) points with the columns `x, y, z, doppler, snr, time` (time is 0 for the first frame of the window and 1 for the last) and a flag marking real points versus padding. A 16-frame window holds about 41 points (99th percentile 105), so 128 truncates 0.3% of windows; if there are more, the strongest by SNR are kept. The radar's noise value and its track id (always 255) are not used.
 

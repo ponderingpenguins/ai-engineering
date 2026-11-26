@@ -32,7 +32,7 @@ class History:
 
 class BaseModel(ABC):
     # What the windows must hold for this model: "heatmap" (N, T, 1, R, D), "pointcloud" (N, P, 7), or "none"
-    # for models that ignore x, so nothing needs to be loaded. See data.windows.INPUT_TYPES.
+    # for models that ignore x, so nothing needs to be loaded. See data.windowing.INPUT_TYPES.
     input_type: str = "heatmap"
     model_name: str  # Key used to register this model in models.factory.MODEL_CLASSES.
 

@@ -119,7 +119,7 @@ docs/                     notes (modeling.md, data_notes/), report, slides
 notebooks/                exploration and annotation notebooks
 scripts/pc/               helpers for running on the PC
 results/                  one folder per run (gitignored)
-src/data/                 bake, annotations, preprocess, windows, augment, resample
+src/data/                 bake, annotations, preprocess, windowing, augment, resample
 src/config/               typed data/model/training settings, loaders and validation
 src/models/               RNN, PointNet, baseline, shared training loop, factory
 src/utils/                experiment, trainer, tuning, fitting, results, report

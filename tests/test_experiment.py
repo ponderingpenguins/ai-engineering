@@ -122,7 +122,11 @@ def test_run_cross_validates_and_writes_the_results(tmp_path):
     results = run(make_cfg(tmp_path), tmp_path)
     assert len(results.folds) == 4 and results.pooled.n > 0
     out = next((tmp_path / "results").iterdir())
-    assert json.loads((out / "results.json").read_text())["config"]["input_type"] == "none"
+    config = json.loads((out / "results.json").read_text())["config"]
+    assert config["input_type"] == "none"
+    assert config["window_coverage"]["frames_total"] == config["window_coverage"]["frames_kept"] == 192
+    assert config["window_coverage"]["windows_kept"] == results.pooled.n
+    assert config["window_coverage"]["windows_gap_skipped"] == 0
     assert (out / "report.md").is_file()
 
 
@@ -141,6 +145,7 @@ def test_run_limits_the_windows_per_person(tmp_path):
     tiny_dataset(tmp_path / "baked")
     results = run(make_cfg(tmp_path, max_windows_per_person=2), tmp_path)
     assert results.pooled.n == 4 * 2
+    assert results.config["window_coverage"]["windows_kept"] == 4 * 2
 
 
 def test_run_leaves_out_the_excluded_recordings(tmp_path):
@@ -165,6 +170,11 @@ def test_the_report_names_the_target_and_the_recordings_it_used(tmp_path, caplog
         results = run(cfg, tmp_path)
     assert results.config["recordings_used"] == ["rec_Bob", "rec_Dave", "rec_Frank"]
     assert results.config["recordings_unlabelled"] == ["rec_Ian"]
+    coverage = results.config["window_coverage"]
+    assert coverage["recordings_used"] == results.config["recordings_used"]
+    assert coverage["recordings_unlabelled"] == ["rec_Ian"]
+    assert coverage["frames_total"] == 192 and coverage["frames_unlabelled"] == 48
+    assert coverage["frames_kept"] == 144
     assert "rec_Ian" in caplog.text and "not used" in caplog.text
     report = (next((tmp_path / "results").iterdir()) / "report.md").read_text()
     assert "Target: `lying_annotation`. 3 recordings used" in report

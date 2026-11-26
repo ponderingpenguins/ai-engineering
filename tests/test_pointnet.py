@@ -5,7 +5,7 @@ import pytest
 import torch
 from datasets import Dataset
 
-from data.windows import HEATMAP_SHAPE, _window_points, make_windows
+from data.windowing import HEATMAP_SHAPE, _window_points, make_windows
 from models.factory import MODEL_CLASSES, build_model
 from models.model import BaseModel
 from models.pointnet import MiniPointNet, PointNet

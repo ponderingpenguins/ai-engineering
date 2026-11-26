@@ -179,7 +179,7 @@ def _rotations(b: int, tilt: float | torch.Tensor, yaw: float | torch.Tensor, de
 class PointAugment:
     """Random augmentation of a batch of radar point clouds, applied in this order.
 
-    The points are in the sensor frame (see `data.windows._window_points`): x, y, z in metres, with y along the
+    The points are in the sensor frame (see `data.windowing._window_points`): x, y, z in metres, with y along the
     boresight. The sensor looks down at the floor, so y is the distance to the floor (median about 1.8 m in
     Config_4 recordings) and the floor plane is x-z. z is NOT height above the floor.
 
