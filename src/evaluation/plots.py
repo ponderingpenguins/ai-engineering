@@ -132,7 +132,8 @@ def plot_mean_curves(folds: list[FoldResult], path: Path) -> Path | None:
            title=f"Loss over {n_total} folds (mean, shaded band = ±1 std across folds)")
     ax.text(0.99, 0.97, "a point needs at least 2 folds still training", transform=ax.transAxes, ha="right", va="top",
             fontsize=7, color="gray")
-    ax.legend()
+    if ax.get_legend_handles_labels()[0]:
+        ax.legend()
     fig.tight_layout()
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)

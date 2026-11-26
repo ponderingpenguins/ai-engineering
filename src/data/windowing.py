@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 HEATMAP_SHAPE = (256, 16)  # (range_bins, doppler_bins)
 
 # How a window gets its label from the labels of its frames: "last" or "any_lying".
-# See "How windows are labelled" in the README and `_window_label`.
+# See "How windows are labelled" in docs/modeling.md and `_window_label`.
 LABEL_RULES = ("last", "any_lying")
 
 # What a window's input array holds:

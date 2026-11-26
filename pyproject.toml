@@ -1,7 +1,7 @@
 [project]
 name = "ai-engineering"
 version = "0.1.0"
-description = "Add your description here"
+description = "Radar-based floor posture recognition with person-wise model evaluation."
 readme = "README.md"
 authors = [
     { name = "eZbal", email = "efeozbal1@gmail.com" }
@@ -22,9 +22,6 @@ jupyter = [
     "ipykernel",
 ]
 
-[project.scripts]
-ai-engineering = "ai_engineering:main"
-
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
@@ -34,6 +31,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+testpaths = ["tests"]
 
 [tool.uv.sources]
 vt-radar-recorder = { path = "data/raw/floor_posture_dataset/recorder", editable = true }

@@ -1,6 +1,8 @@
 """Starts the annotation tool.
 
-    python -m annotation_tool [--port 8765] [--csv data/annotations/lying_intervals.csv] [--no-browser] [--lan] [key=value ...]
+    python main.py annotate [--port 8765] [--csv data/annotations/lying_intervals.csv] [--no-browser] [--lan] [key=value ...]
+
+The module command `python -m annotation_tool` also remains available.
 
 The recordings offered are the ones the pipeline keeps for the config (`selection`). `key=value` pairs override the config like in `main.py`. The marks are saved in the CSV file at once.
 Stop the tool with Ctrl+C.

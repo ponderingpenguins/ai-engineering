@@ -1,5 +1,6 @@
 from dataclasses import replace
 import json
+import warnings
 
 import numpy as np
 import pytest
@@ -168,6 +169,13 @@ def test_figures_are_written(tmp_path):
     assert plot_fold_curves(folds, tmp_path / "a.png").stat().st_size > 0
     assert plot_mean_curves(folds, tmp_path / "b.png").stat().st_size > 0
     assert plot_fold_curves([FoldResult(1, ["Bob"])], tmp_path / "c.png") is None
+
+
+def test_a_single_fold_mean_figure_does_not_warn_about_an_empty_legend(tmp_path):
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="No artists with labels found")
+        path = plot_mean_curves(fake_folds()[:1], tmp_path / "single.png")
+    assert path.stat().st_size > 0
 
 
 def test_report_embeds_both_figures_when_there_are_histories(tmp_path):

@@ -147,9 +147,9 @@ def test_run_reports_too_many_folds(tmp_path):
 
 def test_run_limits_the_windows_per_person(tmp_path):
     tiny_dataset(tmp_path / "baked")
-    results = run_cv(make_cfg(tmp_path, max_windows_per_person=2), tmp_path)
-    assert results.pooled.n == 4 * 2
-    assert results.config["window_coverage"]["windows_kept"] == 4 * 2
+    results = run_cv(make_cfg(tmp_path, max_windows_per_person=3), tmp_path)
+    assert results.pooled.n == 4 * 3
+    assert results.config["window_coverage"]["windows_kept"] == 4 * 3
 
 
 def test_run_leaves_out_the_excluded_recordings(tmp_path):

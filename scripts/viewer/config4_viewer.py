@@ -21,6 +21,8 @@ from datasets import Image as HFImage
 from datasets import load_from_disk
 from PIL import Image
 
+from data.annotations import capture_positions
+
 REPO = Path(__file__).resolve().parents[2]
 CONFIG_4 = "Config_4.cfg"
 PERIOD_S = 0.2  # seconds per frame
@@ -52,8 +54,10 @@ def main() -> None:
 
     out = REPO / args.out
     ds = cast(Dataset, load_from_disk(str(REPO / "data/baked/floor_posture")))
-    meta = cast(pd.DataFrame, ds.select_columns(["recording", "person", "cfg_file", "frame_idx", "label_pose"]).to_pandas())
-    meta = meta[meta.cfg_file == CONFIG_4].sort_values(["recording", "frame_idx"])
+    meta = cast(pd.DataFrame, ds.select_columns(["recording", "person", "cfg_file", "timestamp", "frame_idx", "label_pose"]).to_pandas())
+    meta = meta[meta.cfg_file == CONFIG_4].copy()
+    meta["position"] = capture_positions(meta)
+    meta = meta.sort_values(["recording", "position"])
     images: Any = ds.select_columns(["image"]).cast_column("image", HFImage(decode=False))  # raw JPEG bytes
     size = (args.width, args.width * 3 // 4)
 

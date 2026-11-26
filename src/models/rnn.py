@@ -1,14 +1,8 @@
-import logging
-from typing import Any
-
 import numpy as np
 import torch
 from torch import nn
 
 from .model import TorchModel
-
-logger = logging.getLogger(__name__)
-
 
 def _conv_block(c_in: int, c_out: int, pool: tuple[int, int]) -> list[nn.Module]:
     """Builds a conv, batch norm, ReLU, max pool block.
@@ -72,7 +66,7 @@ class HeatmapEncoder(nn.Module):
 
 class HeatmapGRU(nn.Module):
     def __init__(self, n_classes: int, feat_dim: int = 64, hidden: int = 128, dropout: float = 0.0,
-                 feature_dropout: float = 0.0, *args: Any, **kwargs: Any) -> None:
+                 feature_dropout: float = 0.0) -> None:
         """Initializes the encoder, the GRU and the classification head.
 
         Args:
@@ -81,8 +75,6 @@ class HeatmapGRU(nn.Module):
             hidden: Size of the GRU hidden state.
             dropout: Dropout on the GRU output before the classification layer.
             feature_dropout: Dropout on the per-frame CNN features.
-            *args: Unused.
-            **kwargs: Unused.
         """
         super().__init__()
         # encoder

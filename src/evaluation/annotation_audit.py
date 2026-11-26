@@ -1,6 +1,8 @@
 """Compares the hand-made lying annotation with the lying labels of `label_pose`.
 
-    python -m evaluation.annotation_audit [--csv PATH] [--out results/annotation_agreement.md] [--port 8765] [key=value ...]
+    python main.py audit [--csv PATH] [--out results/annotation_agreement.md] [--port 8765] [key=value ...]
+
+The module command `python -m evaluation.annotation_audit` also remains available.
 
 Only reviewed recordings that also have pose labels are compared. The comparison is at three levels:
 

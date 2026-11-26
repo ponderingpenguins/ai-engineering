@@ -5,8 +5,10 @@ and `lying_annotation`, from the CSVs in data/annotations/.
 
 Run it:
 
-    python -m data.bake [paths.raw_root=...] [--num-proc 4] [--overwrite] [--recording a --recording b]
-    python -m data.bake --refresh-annotations [paths.annotations_dir=...]
+    python main.py bake [paths.raw_root=...] [--num-proc 4] [--overwrite] [--recording a --recording b]
+    python main.py bake --refresh-annotations [paths.annotations_dir=...]
+
+The module command `python -m data.bake` also remains available.
 
 Usage:
     ds = load_from_disk("data/baked/floor_posture")
