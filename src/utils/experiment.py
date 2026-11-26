@@ -13,7 +13,7 @@ from typing import Any, cast
 
 from datasets import Dataset, load_from_disk
 
-from data.preprocess import configured_pipeline
+from data.preprocess import preprocess_dataset
 from data.resample import RandomOversampler
 from data.windows import collapse_lying, make_windows, window_timing
 from models.factory import MODEL_CLASSES, MODELS, build_model
@@ -72,7 +72,7 @@ def run(cfg: RunConfig, root: Path, mode: str = "cv") -> RunResults | FinalResul
     path = root / cfg.paths.baked_dir  # absolute paths pass through unchanged
     if not path.is_dir():
         raise ValueError(f"No baked dataset at {path}.\nBuild it with: python main.py bake")
-    ds = configured_pipeline(cfg.selection, cfg.denoising)(cast(Dataset, load_from_disk(str(path))))
+    ds = preprocess_dataset(cast(Dataset, load_from_disk(str(path))), cfg.selection, cfg.denoising)
 
     used, unlabelled = recordings_by_label(ds, cfg.windowing.target)
     logger.info("target %s: %d recordings used", cfg.windowing.target, len(used))

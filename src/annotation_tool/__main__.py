@@ -18,7 +18,7 @@ from omegaconf.errors import OmegaConfBaseException
 
 from annotation_tool.server import Annotator, Catalogue, make_server
 from data.annotations import LYING_INTERVALS, REPO
-from data.preprocess import configured_pipeline
+from data.preprocess import select_recordings
 from config import load_data_config
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s", datefmt="%H:%M:%S")
@@ -52,7 +52,7 @@ def main() -> None:
     if not path.is_dir():
         sys.exit(f"No baked dataset at {path}.\nBuild it with: python main.py bake")
 
-    ds = configured_pipeline(cfg.selection)(cast(Dataset, load_from_disk(str(REPO / cfg.paths.baked_dir))))
+    ds = select_recordings(cast(Dataset, load_from_disk(str(REPO / cfg.paths.baked_dir))), cfg.selection)
     csv_path = REPO / args.csv if args.csv is not None else REPO / cfg.paths.annotations_dir / LYING_INTERVALS.name
     catalogue = Catalogue(ds)
     server = make_server(Annotator(catalogue, csv_path), args.port,  # an absolute path stays as it is

@@ -25,7 +25,7 @@ from datasets import Dataset, load_from_disk
 from omegaconf.errors import OmegaConfBaseException
 
 from data.annotations import LYING_INTERVALS, REPO, Annotations, Interval, capture_positions, read_annotations
-from data.preprocess import configured_pipeline
+from data.preprocess import select_recordings
 from config import load_data_config
 
 logger = logging.getLogger(__name__)
@@ -176,7 +176,7 @@ def main() -> None:
         cfg = load_data_config(REPO, overrides)
     except (ValueError, TypeError, OmegaConfBaseException) as error:
         sys.exit(f"Error: {error}")
-    ds = configured_pipeline(cfg.selection)(cast(Dataset, load_from_disk(str(REPO / cfg.paths.baked_dir))))
+    ds = select_recordings(cast(Dataset, load_from_disk(str(REPO / cfg.paths.baked_dir))), cfg.selection)
     csv_path = REPO / args.csv if args.csv is not None else REPO / cfg.paths.annotations_dir / LYING_INTERVALS.name
     meta = cast(pd.DataFrame, ds.select_columns(["recording", "timestamp", "frame_idx", "label_pose"]).to_pandas())
     text = report(meta, read_annotations(csv_path), cfg.windowing.window_len, cfg.windowing.stride,

@@ -3,6 +3,7 @@ from datetime import datetime
 from pathlib import Path
 import shutil
 
+import numpy as np
 import pytest
 from datasets import Dataset
 from omegaconf import OmegaConf
@@ -11,7 +12,7 @@ from omegaconf.errors import OmegaConfBaseException
 from config import DataConfig, ModelConfig, RunConfig, WindowConfig, load_data_config, load_run_config
 from data import bake
 from data.annotations import Marks, attach_person, attach_presence, attach_lying_annotation, write_annotations
-from data.preprocess import DropUnknownPerson, RangeNormalise, TemporalBackground, configured_pipeline
+from data.preprocess import RangeNormalise, TemporalBackground, preprocess_dataset, select_recordings
 from models.factory import build_model
 from utils.tuning import with_setting
 
@@ -93,17 +94,22 @@ def test_range_normalisation_guard_does_not_block_pointnet():
     assert cfg.denoising.range_normalise.enabled
 
 
-def test_existing_preprocessing_keeps_its_steps_order_and_parameters():
+def test_preprocessing_uses_parameters_from_config_overrides():
     cfg = load_data_config(REPO, ["selection.sensor_config=null", "selection.exclude_recordings=[]",
         "denoising.range_normalise.enabled=true", "denoising.range_normalise.percentile=20",
         "denoising.range_normalise.smooth_bins=9", "denoising.temporal_background.enabled=true",
         "denoising.temporal_background.tau_frames=50"])
-    pipeline = configured_pipeline(cfg.selection, cfg.denoising)
-    assert len(pipeline.steps) == 3 and isinstance(pipeline.steps[0], DropUnknownPerson)
-    rn, tb = pipeline.steps[1:]
-    assert isinstance(rn, RangeNormalise) and (rn.percentile, rn.smooth_bins) == (20, 9)
-    assert isinstance(tb, TemporalBackground) and tb.tau_frames == 50
-    assert len(configured_pipeline(cfg.selection).steps) == 1
+    ds = Dataset.from_dict({
+        "recording": ["a"] * 6, "person": ["Bob"] * 5 + ["NA"],
+        "timestamp": list(range(6)), "heatmap_ok": [True] * 6,
+        "num_range_bins": [9] * 6, "num_doppler_bins": [2] * 6,
+        "heatmap": (100 + np.arange(6 * 9 * 2).reshape(6, 9, 2)).tolist(),
+    })
+    selected = select_recordings(ds, cfg.selection)
+    assert selected.to_dict() == ds.select(range(5)).to_dict()
+    expected = TemporalBackground(tau_frames=50)(RangeNormalise(percentile=20, smooth_bins=9)(selected))
+    out = preprocess_dataset(ds, cfg.selection, cfg.denoising)
+    np.testing.assert_allclose(out["heatmap"], expected["heatmap"], atol=1e-3)
 
 
 @pytest.mark.parametrize("name", ["rnn", "pointnet"])
@@ -168,7 +174,7 @@ def test_annotation_tool_uses_configured_annotations_directory(tmp_path, monkeyp
     server = SimpleNamespace(server_port=8765, serve_forever=stop, server_close=lambda: None)
     monkeypatch.setattr(tool, "load_data_config", lambda *args: cfg)
     monkeypatch.setattr(tool, "load_from_disk", lambda path: object())
-    monkeypatch.setattr(tool, "configured_pipeline", lambda selection: lambda ds: ds)
+    monkeypatch.setattr(tool, "select_recordings", lambda ds, selection: ds)
     monkeypatch.setattr(tool, "Catalogue", lambda ds: SimpleNamespace(names=["a"]))
     monkeypatch.setattr(tool, "Annotator", lambda catalogue, path: seen.append(path))
     monkeypatch.setattr(tool, "make_server", lambda *args: server)

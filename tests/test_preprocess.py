@@ -8,12 +8,14 @@ from data.preprocess import (
     CONFIG_4,
     DropRecordings,
     DropUnknownPerson,
-    KeepConfig4,
+    KeepSensorConfig,
     RangeNormalise,
     TemporalBackground,
-    build_pipeline,
+    denoise_heatmaps,
+    preprocess_dataset,
+    select_recordings,
 )
-from config import DataConfig, PreprocessConfig
+from config import DataConfig, PreprocessConfig, SelectionConfig
 
 
 @pytest.fixture
@@ -26,40 +28,51 @@ def ds():
     })
 
 
-def test_keep_config_4(ds):
-    assert KeepConfig4()(ds)["recording"] == ["r1", "r2", "r4"]
+def test_keep_sensor_config_defaults_to_config_4(ds):
+    assert KeepSensorConfig()(ds)["recording"] == ["r1", "r2", "r4"]
+    assert KeepSensorConfig("Config_3.cfg")(ds)["recording"] == ["r3"]
 
 
 def test_drop_unknown_person(ds):
     assert DropUnknownPerson()(ds)["recording"] == ["r1", "r3", "r4"]
 
 
-def test_pipeline_applies_steps_in_order_and_keeps_other_columns(ds):
-    out = build_pipeline(["config_4", "known_person"])(ds)
-    assert out["recording"] == ["r1", "r4"]
-    assert out.column_names == ds.column_names
+def test_selection_applies_gates_in_order_and_preserves_other_columns(ds, caplog):
+    selection = SelectionConfig(exclude_recordings=["r1"])
+    with caplog.at_level("INFO", logger="data.preprocess"):
+        out = select_recordings(ds, selection)
+    assert out.to_dict() == ds.select([3]).to_dict()
+    assert out.features == ds.features
+    assert caplog.messages == [
+        "preprocess known_person: 4 -> 3 frames",
+        "preprocess exclude_recordings: 3 -> 2 frames",
+        "preprocess sensor_config: 2 -> 1 frames",
+    ]
 
 
-def test_empty_pipeline_only_drops_unknown_persons(ds):
-    assert build_pipeline([])(ds)["recording"] == ["r1", "r3", "r4"]
+def test_disabling_optional_selection_gates_only_drops_unknown_persons(ds, caplog):
+    selection = SelectionConfig(sensor_config=None, exclude_recordings=[])
+    with caplog.at_level("INFO", logger="data.preprocess"):
+        out = select_recordings(ds, selection)
+    assert out["recording"] == ["r1", "r3", "r4"]
+    assert caplog.messages == ["preprocess known_person: 4 -> 3 frames"]
 
 
-def test_unknown_step_name_raises():
-    with pytest.raises(ValueError, match="unknown preprocessor"):
-        build_pipeline(["nope"])
+def test_selection_can_keep_a_different_sensor_config(ds):
+    selection = SelectionConfig(sensor_config="Config_3.cfg", exclude_recordings=[])
+    assert select_recordings(ds, selection)["recording"] == ["r3"]
 
 
-def test_named_recordings_are_dropped_from_the_pipeline(ds):
+def test_named_recordings_are_dropped(ds):
     assert DropRecordings(["r1", "r4"])(ds)["recording"] == ["r2", "r3"]
-    out = build_pipeline(["config_4"], exclude=["r1"])(ds)
+    out = select_recordings(ds, SelectionConfig(exclude_recordings=["r1"]))
     assert out["recording"] == ["r4"]  # r2 has no person, r3 is Config 3, r1 is excluded
-    assert build_pipeline([], exclude=[])(ds)["recording"] == ["r1", "r3", "r4"]  # nothing excluded by default
 
 
 def test_excluding_a_recording_that_does_not_exist_warns(ds, caplog):
     with caplog.at_level("WARNING"):
-        out = DropRecordings(["no_such_recording"])(ds)
-    assert out["recording"] == ds["recording"]
+        out = select_recordings(ds, SelectionConfig(sensor_config=None, exclude_recordings=["no_such_recording"]))
+    assert out["recording"] == ["r1", "r3", "r4"]
     assert "no_such_recording" in caplog.text
 
 
@@ -67,10 +80,14 @@ def test_the_default_config_excludes_the_two_non_top_down_recordings():
     assert DataConfig().selection.exclude_recordings == ["2311__20231124_152926", "2311__20231124_153817"]
 
 
-def test_unknown_persons_are_dropped_even_if_not_requested(ds):
-    out = build_pipeline(["config_4"])(ds)
-    assert "NA" not in out["person"]
-    assert "NA" not in build_pipeline([])(ds)["person"]
+def test_selection_can_drop_every_row_without_changing_the_schema(ds):
+    out = select_recordings(ds, SelectionConfig(exclude_recordings=["r1", "r3", "r4"]))
+    assert len(out) == 0 and out.features == ds.features
+
+
+def test_disabled_denoising_returns_the_original_dataset(ds):
+    # This dataset lacks transform metadata; disabled transforms must not read it.
+    assert denoise_heatmaps(ds, PreprocessConfig()) is ds
 
 
 R, D = 64, 4  # a small heatmap, enough to exercise the transforms
@@ -149,10 +166,60 @@ def test_heatmap_transforms_follow_capture_order_not_row_order():
     np.testing.assert_allclose(out, np.stack(TemporalBackground(tau_frames=20)(ds)["heatmap"]), atol=1e-3)
 
 
-def test_new_steps_are_registered_and_off_by_default():
-    assert isinstance(build_pipeline(["range_normalise", "temporal_background"]).steps[1], RangeNormalise)  # steps[0] is known_person
+def test_denoising_is_off_by_default():
     assert DataConfig().selection.sensor_config == CONFIG_4
     assert not PreprocessConfig().range_normalise.enabled and not PreprocessConfig().temporal_background.enabled
+
+
+@pytest.mark.parametrize("range_enabled,temporal_enabled", [(True, False), (False, True), (True, True)])
+def test_denoising_uses_enabled_transforms_in_order_with_configured_parameters(range_enabled, temporal_enabled, caplog):
+    frames = noisy(40, np.linspace(1500, 1800, R))
+    frames[20:, 30:36, :] += 100
+    ds = heatmap_ds({"r": frames})
+    config = PreprocessConfig()
+    config.range_normalise.enabled = range_enabled
+    config.range_normalise.percentile = 25
+    config.range_normalise.smooth_bins = 9
+    config.temporal_background.enabled = temporal_enabled
+    config.temporal_background.tau_frames = 7
+    expected, names = ds, []
+    if range_enabled:
+        expected = RangeNormalise(percentile=25, smooth_bins=9)(expected)
+        names.append("range_normalise")
+    if temporal_enabled:
+        expected = TemporalBackground(tau_frames=7)(expected)
+        names.append("temporal_background")
+
+    with caplog.at_level("INFO", logger="data.preprocess"):
+        out = denoise_heatmaps(ds, config)
+    np.testing.assert_allclose(out["heatmap"], expected["heatmap"], atol=1e-3)
+    metadata = [column for column in ds.column_names if column != "heatmap"]
+    assert out.select_columns(metadata).to_dict() == ds.select_columns(metadata).to_dict()
+    assert caplog.messages == [f"preprocess {name}: 40 -> 40 frames" for name in names]
+
+
+def test_preprocessing_selects_recordings_before_denoising(caplog):
+    frames = noisy(10, np.full(R, 1600.0))
+    ds = heatmap_ds({name: frames for name in ("kept", "unknown", "excluded", "other_config")})
+    ds = ds.add_column("person", ["Bob"] * 10 + [NO_PERSON] * 10 + ["Dave"] * 20)
+    ds = ds.add_column("cfg_file", [CONFIG_4] * 30 + ["Config_3.cfg"] * 10)
+    selection = SelectionConfig(exclude_recordings=["excluded"])
+    denoising = PreprocessConfig()
+    denoising.range_normalise.enabled = True
+    denoising.temporal_background.enabled = True
+
+    with caplog.at_level("INFO", logger="data.preprocess"):
+        out = preprocess_dataset(ds, selection, denoising)
+    assert out["recording"] == ["kept"] * 10
+    assert np.asarray(out["heatmap"]).shape == (10, R, D)
+    assert np.asarray(out["heatmap"]).mean() < 15
+    assert caplog.messages == [
+        "preprocess known_person: 40 -> 30 frames",
+        "preprocess exclude_recordings: 30 -> 20 frames",
+        "preprocess sensor_config: 20 -> 10 frames",
+        "preprocess range_normalise: 10 -> 10 frames",
+        "preprocess temporal_background: 10 -> 10 frames",
+    ]
 
 
 def test_range_normalise_default_window_ignores_a_person_as_wide_as_a_lying_one():
