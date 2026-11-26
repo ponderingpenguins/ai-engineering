@@ -66,9 +66,9 @@ python main.py bake --refresh-annotations
 
 The YAML files show every active default and disabled option.
 
-Bake execution flags (`--num-proc`, `--overwrite`, repeated `--recording`) are not saved in YAML. Annotation tools keep their existing commands: `python -m annotation_tool` and `python -m utils.annotation_report`; their data overrides use the same keys in `config/data.yaml`.
+Bake execution flags (`--num-proc`, `--overwrite`, repeated `--recording`) are not saved in YAML. Annotation tools keep their existing commands: `python -m annotation_tool` and `python -m evaluation.annotation_audit`; their data overrides use the same keys in `config/data.yaml`.
 
-Each run writes `results/<timestamp>_<model>/` with `report.md` (settings, pooled, per-fold and per-person tables), the loss figures, `results.json` and `checkpoints/`. Rebuild a report with `python -m utils.run_report results/<run>`.
+Each run writes `results/<timestamp>_<model>/` with `report.md` (settings, pooled, per-fold and per-person tables), the loss figures, `results.json` and `checkpoints/`. Rebuild a report with `python -m evaluation.report results/<run>`.
 
 ## Evaluation workflow
 
@@ -91,7 +91,7 @@ The test person never chooses a setting. Write a space after each colon in the g
 
 ## Running on the PC
 
-Training runs on `haukurs_pc` (Windows, RTX 3070, over Tailscale, inside WSL). The scripts in `scripts/pc/` wrap the SSH details. They need Tailscale on this machine and the PC switched on.
+Training runs on `haukurs_pc` (Windows, RTX 3070, over Tailscale, inside WSL). The scripts in `scripts/remote_pc/` wrap the SSH details. They need Tailscale on this machine and the PC switched on.
 
 | Script | What it does |
 | --- | --- |
@@ -116,18 +116,19 @@ WSL stops every process about 15 seconds after the last SSH session closes. So `
 config/                   data.yaml, train.yaml, models/<name>.yaml
 data/                     raw recordings (git-lfs), source annotations, generated baked datasets
 docs/                     notes (modeling.md, data_notes/), report, slides
-notebooks/                exploration and annotation notebooks
-scripts/pc/               helpers for running on the PC
+notebooks/                exploration/, labelling/, archive/
+scripts/                  remote_pc/, viewer/, archive/
 results/                  one folder per run (gitignored)
 src/data/                 bake, annotations, preprocess, windowing, augment, resample
 src/config/               typed data/model/training settings, loaders and validation
 src/models/               RNN, PointNet, baseline, shared training loop, factory
-src/utils/                experiment, trainer, tuning, fitting, results, report
+src/training/             fit, splits, tuner, cv, pipelines
+src/evaluation/           metrics, records, plots, report, annotation_audit
 tests/
 ```
 
-- `main.py` reads the command line and turns errors into exit codes. `src/config/` loads and validates the config, and `utils/experiment.py` runs one experiment.
+- `main.py` reads the command line and turns errors into exit codes. `src/config/` loads and validates the config, and `training/pipelines.py` runs one experiment.
 - `src/config/data.py` defines `WindowConfig`. Its `signature()` returns the five prediction settings saved under `windowing` in checkpoints and tuned settings. Stride is omitted because it only changes sampling density.
-- `utils/fitting.py` fits one model on one fold, for both the outer and the tuning loop.
-- `utils/results.py` holds the result records. The report and the loss curves read them. `results.json` is only read and written there.
+- `training/fit.py` fits one model on one fold, for both the outer and the tuning loop.
+- `evaluation/records.py` holds the result records. The report and the loss curves read them. `results.json` is only read and written there.
 - A model class declares its hyperparameter names (`parameter_names`) and its input type, and `models/factory.py` builds any model from the config.

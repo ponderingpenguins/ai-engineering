@@ -32,7 +32,7 @@ Columns: `recording`, `room`, `frame_idx`, `timestamp`, `radar_frame_num`, `imag
 
 Two things to know about `heatmap`. It is stored raw, with zero velocity at doppler bin 0, so apply `np.fft.fftshift(heatmap, axes=-1)` to centre it (see the notebook). And 8 frames across 7 recordings have an empty heatmap (`[]`, and `heatmap_ok` is `False`), so filter on `heatmap_ok` before stacking.
 
-`notebooks/explore_baked_dataset.ipynb` loads the dataset and plots a frame (camera, heatmap, point cloud), the heatmap over time with a label track, and label distributions.
+`notebooks/exploration/explore_baked_dataset.ipynb` loads the dataset and plots a frame (camera, heatmap, point cloud), the heatmap over time with a label track, and label distributions.
 
 Keep in mind that the baked data contains identifiable feeds.
 
@@ -49,8 +49,8 @@ Refresh requires an existing baked dataset and cannot be combined with `--record
 
 | Column | Source file | Made with | Meaning |
 | ------ | ----------- | --------- | ------- |
-| `person` | `data/annotations/person_map.csv` (`recording, person`) | `notebooks/label_persons.ipynb` | Pseudonym of the participant in the recording (for example `Bob`), so evaluation can be split by person. Recordings that are not labelled get `"NA"`. |
-| `person_present` | `data/annotations/presence_events.csv` (`recording, frame_idx, event`) | `notebooks/label_presence.ipynb` | `True` while someone is in view of the camera, `False` for an empty scene. |
+| `person` | `data/annotations/person_map.csv` (`recording, person`) | `notebooks/labelling/label_persons.ipynb` | Pseudonym of the participant in the recording (for example `Bob`), so evaluation can be split by person. Recordings that are not labelled get `"NA"`. |
+| `person_present` | `data/annotations/presence_events.csv` (`recording, frame_idx, event`) | `notebooks/labelling/label_presence.ipynb` | `True` while someone is in view of the camera, `False` for an empty scene. |
 | `lying_annotation` | `data/annotations/lying_intervals.csv` (`recording, first_capture_idx, last_capture_idx, reviewed`) | `python -m annotation_tool` | `lying` or `not_lying` per frame, made from the camera video. `None` for recordings that are not reviewed yet. Training uses it as the target by default. |
 
 - **`person`** is one value per recording. The notebook shows the best face crops of each recording and you pick a name from a fixed list of pseudonyms. Unlabelled recordings are dropped by the `known_person` preprocessor.

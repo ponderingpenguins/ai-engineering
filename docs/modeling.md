@@ -52,7 +52,7 @@ Every `python main.py` run writes a folder `results/<timestamp>_<model>/` contai
 | `results.json` | Everything above in machine-readable form, including the full per-step loss history of each fold. |
 | `checkpoints/fold<k>_<test person>.pt` | The best weights of each fold (the ones kept after early stopping). |
 
-Rebuild the report and figures of an old run with `python -m utils.run_report results/<run>`. The checkpoints load with `BaseModel.load`.
+Rebuild the report and figures of an old run with `python -m evaluation.report results/<run>`. The checkpoints load with `BaseModel.load`.
 
 How training works for the `rnn` model:
 
@@ -77,7 +77,7 @@ How training works for the `rnn` model:
 Caveats:
 
 - With 4 people the inner loop validates on one person at a time, who has only a few lying windows (they overlap, see "How windows are labelled"). Tuning is noisy, so keep the search small.
-- The cost is (people - 1) trainings per setting and per outer fold, plus one refit, so 4 x 3 = 12 trainings per setting for 4 people. Run it on the PC (`scripts/pc/train.sh`).
+- The cost is (people - 1) trainings per setting and per outer fold, plus one refit, so 4 x 3 = 12 trainings per setting for 4 people. Run it on the PC (`scripts/remote_pc/train.sh`).
 - The outer scores describe the whole procedure (tuning included) on a new person, not the one final model.
 - The setting chosen for the final model comes from folds that each saw different people, so it is a vote, not a score.
 

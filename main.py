@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 from omegaconf.errors import OmegaConfBaseException
 from config import load_run_config
-from utils.experiment import run
+from training.pipelines import run
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
