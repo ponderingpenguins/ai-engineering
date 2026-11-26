@@ -101,7 +101,11 @@ def build_augment(cfg: ModelConfig) -> BatchAugment | None:
     """Build batch augmentation separately from the model architecture."""
     if cfg.name == "baseline":
         return None
-    augment = (HeatmapAugment if cfg.name == "rnn" else PointAugment)(**asdict(cfg.augment))
+    augment_classes: dict[str, type[HeatmapAugment] | type[PointAugment]] = {
+        "rnn": HeatmapAugment,
+        "pointnet": PointAugment,
+    }
+    augment = augment_classes[cfg.name](**asdict(cfg.augment))
     return augment if augment.active else None
 
 
