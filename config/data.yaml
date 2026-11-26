@@ -1,0 +1,28 @@
+# Shared by bake, annotation tools and training. Relative paths start at the repo root.
+paths:
+  raw_root: data/raw/floor_posture_dataset
+  baked_dir: data/baked/floor_posture
+  annotations_dir: data/annotations
+# Existing recording filters; unknown participants are always dropped by the built-in rule.
+selection:
+  sensor_config: Config_4.cfg  # null keeps all sensor configs; window shape checks still apply
+  exclude_recordings:
+  - '2311__20231124_152926'
+  - '2311__20231124_153817'
+# Optional heatmap denoising: subtract the range noise floor, then the temporal background.
+denoising:
+  range_normalise:
+    enabled: false
+    percentile: 10.0  # recording-wide estimate, including future frames (not causal)
+    smooth_bins: 41  # positive odd median window along range
+  temporal_background:
+    enabled: false
+    tau_frames: 300.0  # causal background estimate (~60 s); may suppress a still person
+# How selected frames become labelled windows. Unlabelled frames stay in the baked data.
+windowing:
+  target: lying_annotation  # hand-reviewed labels; label_pose selects the original pose track
+  collapse_lying: true  # lying_* -> lying; other labelled poses -> not_lying
+  window_len: 16  # frames (~3.2 s)
+  stride: 8  # frames between starts (~1.6 s); excluded from saved signatures
+  label_rule: any_lying  # any positive frame; last uses the final frame label
+  max_points: 128  # strongest radar points retained per PointNet window

@@ -1,55 +1,51 @@
+"""Load the baked radar dataset, cut labelled windows and run person-wise experiments.
+
+cv holds out people for cross-validation. tune selects hyperparameters inside the
+training folds. train-final fits one model on all available people using the saved
+tuned setting. bake builds the dataset from raw recordings and source annotations.
+Settings come from config/data.yaml, config/train.yaml and config/models/<name>.yaml;
+command-line key=value overrides take precedence.
+
+Examples:
+    python main.py cv model=baseline cv.folds=2
+    python main.py tune 'tune.grid=[{model.arch.hidden: 64}, {model.arch.hidden: 128, training.lr: 0.0003}]'
+    python main.py train-final
+    python main.py bake --num-proc 4 --overwrite
+    python main.py bake --refresh-annotations
 """
-Loads the baked dataset, cuts it into windows and cross-validates a model, person by person.
-
-Everything is configured in config/config.yaml and can be overridden from the command line.
-By default there is one fold per person; set eval.folds=<k> for k-fold instead:
-
-    python main.py model.name=baseline
-    python main.py model.rnn.epochs=5 eval.folds=3 eval.collapse_lying=false
-
-Tune first, then train the final model with the best setting (see "Evaluation workflow" in the README):
-
-    python main.py 'tune.grid=[{hidden: 64}, {hidden: 128, lr: 0.0003}]'
-    python main.py train.full_run=true
-"""
-
+import argparse
 import logging
 import sys
 from pathlib import Path
-
 from omegaconf.errors import OmegaConfBaseException
+from config import load_run_config
+from training.pipelines import run
 
-from models.factory import MODELS
-from utils.config import load_config
-from utils.experiment import check_config, run
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(asctime)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
+logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger(__name__)
-
 REPO = Path(__file__).resolve().parent
 
 
 def main() -> None:
-    """Reads the configuration, runs the experiment and turns errors into exit codes."""
+    """Parse the command and config, then run the requested experiment or bake."""
+    if len(sys.argv) > 1 and sys.argv[1] == "bake":
+        from data.bake import main as bake
+        sys.argv = [f"{Path(sys.argv[0]).name} bake", *sys.argv[2:]]
+        bake()
+        return
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("command", choices=("cv", "tune", "train-final", "bake"))
+    args, overrides = parser.parse_known_args()
     try:
-        cfg = load_config(REPO, sys.argv[1:])  # unknown keys and bad types raise here
-        check_config(cfg)
-    except (TypeError, ValueError, OmegaConfBaseException) as e:  # pylint: disable=broad-exception-raised
-        logger.error(
-            "Error: %s\n\nUsage: python main.py [data.baked=<path>] [model.name=%s] "
-            "[model.rnn.epochs=<n>] [train.oversample=<ratio>] [train.validation=true|false] [model.rnn.augment.range_shift_bins=<n>] [model.pointnet.augment.shift_m=<m>] [eval.folds=<k>] [eval.collapse_lying=true|false] [tune.grid=<list of settings>] [train.full_run=true|false]",
-            e,
-            "|".join(MODELS),
-        )
-        sys.exit(1)
+        cfg = load_run_config(REPO, overrides)
+        if args.command == "tune" and not cfg.tune.grid:
+            raise ValueError("tune requires a non-empty tune.grid")
+    except (TypeError, ValueError, OmegaConfBaseException) as error:
+        parser.error(str(error))
     try:
-        run(cfg, REPO)
-    except ValueError as e:
-        logger.error("%s", e)
+        run(cfg, REPO, args.command)
+    except ValueError as error:
+        logger.error("%s", error)
         sys.exit(1)
 
 

@@ -16,7 +16,8 @@ from datasets import Dataset, Features, Value, concatenate_datasets
 from datasets import Sequence as ListOf
 from scipy.signal import lfilter
 
-from data.extract import NO_PERSON
+from config import PreprocessConfig, SelectionConfig
+from data.annotations import NO_PERSON
 
 logger = logging.getLogger(__name__)
 
@@ -48,14 +49,17 @@ class RowFilter(Preprocessor):
         return ds if mask.all() else ds.select(np.flatnonzero(mask))
 
 
-class KeepConfig4(RowFilter):
-    """Keeps only recordings made with sensor Config 4; the other configs are experimental."""
+class KeepSensorConfig(RowFilter):
+    """Keeps only recordings made with the requested sensor configuration."""
 
-    name = "config_4"
+    name = "sensor_config"
     columns = ("cfg_file",)
 
+    def __init__(self, sensor_config: str = CONFIG_4) -> None:
+        self.sensor_config = sensor_config
+
     def keep(self, meta):
-        return meta.cfg_file == CONFIG_4
+        return meta.cfg_file == self.sensor_config
 
 
 class DropUnknownPerson(RowFilter):
@@ -80,7 +84,7 @@ class DropRecordings(RowFilter):
     def keep(self, meta):
         missing = self.recordings - set(meta.recording)
         if missing:
-            logger.warning("data.exclude names recordings that are not in the dataset: %s", sorted(missing))
+            logger.warning("selection.exclude_recordings names recordings that are not in the dataset: %s", sorted(missing))
         return ~meta.recording.isin(self.recordings)
 
 
@@ -189,40 +193,41 @@ class TemporalBackground(HeatmapTransform):
         return frames - background
 
 
-PREPROCESSORS: dict[str, type[Preprocessor]] = {
-    cls.name: cls for cls in (KeepConfig4, DropUnknownPerson, RangeNormalise, TemporalBackground)
-}
+def _apply_steps(ds: Dataset, steps: Sequence[Preprocessor]) -> Dataset:
+    """Apply steps in order, logging frame counts at each step."""
+    for step in steps:
+        before = len(ds)
+        ds = step(ds)
+        logger.info("preprocess %s: %d -> %d frames", step.name, before, len(ds))
+    return ds
 
 
-class Pipeline:
-    """Runs preprocessors in order and logs what each one removes."""
-
-    def __init__(self, steps: Sequence[Preprocessor]) -> None:
-        self.steps = list(steps)
-
-    def __call__(self, ds: Dataset) -> Dataset:
-        for step in self.steps:
-            before = len(ds)
-            ds = step(ds)
-            logger.info("preprocess %s: %d -> %d frames", step.name, before, len(ds))
-        return ds
+def select_recordings(ds: Dataset, selection: SelectionConfig) -> Dataset:
+    """Apply participant, recording and sensor gates without changing signal values."""
+    steps: list[RowFilter] = []
+    if selection.require_known_person:
+        steps.append(DropUnknownPerson())
+    if selection.exclude_recordings:
+        steps.append(DropRecordings(selection.exclude_recordings))
+    if selection.sensor_config is not None:
+        steps.append(KeepSensorConfig(selection.sensor_config))
+    return _apply_steps(ds, steps)
 
 
-def build_pipeline(names: Sequence[str], exclude: Sequence[str] = ()) -> Pipeline:
-    """A pipeline that first drops unknown persons and the `exclude` recordings, then runs the named preprocessors.
+def denoise_heatmaps(ds: Dataset, denoising: PreprocessConfig) -> Dataset:
+    """Apply enabled range normalisation, then temporal background subtraction.
 
-    Dropping recordings without a known person is not optional: they would all share one pseudo-person in the
-    person-level splits. `known_person` in `names` is accepted and ignored. The `exclude` recordings are dropped
-    from training and testing alike.
-
-    Raises:
-        ValueError: If a name is not in `PREPROCESSORS`.
+    If neither transform is enabled, return the original dataset untouched.
     """
-    unknown = [name for name in names if name not in PREPROCESSORS]
-    if unknown:
-        raise ValueError(f"unknown preprocessor {unknown}, choose from {list(PREPROCESSORS)}")
-    steps: list[Preprocessor] = [DropUnknownPerson()]
-    if exclude:
-        steps.append(DropRecordings(exclude))
-    steps += [PREPROCESSORS[name]() for name in names if name != DropUnknownPerson.name]
-    return Pipeline(steps)
+    steps: list[HeatmapTransform] = []
+    rn, tb = denoising.range_normalise, denoising.temporal_background
+    if rn.enabled:
+        steps.append(RangeNormalise(rn.percentile, rn.smooth_bins))
+    if tb.enabled:
+        steps.append(TemporalBackground(tb.tau_frames))
+    return _apply_steps(ds, steps)
+
+
+def preprocess_dataset(ds: Dataset, selection: SelectionConfig, denoising: PreprocessConfig) -> Dataset:
+    """Select recordings, then denoise their heatmaps before windowing."""
+    return denoise_heatmaps(select_recordings(ds, selection), denoising)

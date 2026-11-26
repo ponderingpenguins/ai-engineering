@@ -1,4 +1,4 @@
-"""Training-time augmentation of windows of heatmaps.
+"""Training-time augmentation of heatmap windows and point clouds.
 
 Runs on a batch of windows inside the training loop and never on validation or test data, so it adds variety
 without touching the evaluation. Every transform is off by default.
@@ -51,6 +51,7 @@ class HeatmapAugment:
     1. `time_reverse`: plays a window backwards.
     2. `range_shift_bins`: moves the whole scene along range, as if the sensor were mounted higher or lower.
     3. `floor_jitter`: adds a smooth random baseline along range, as the noise floor differs between setups.
+    4. `noise`: adds Gaussian noise in standardised input units.
 
     Conflicts (`CONFLICTS`): `range_shift_bins` and `floor_jitter` both mimic a different setup, so they are not
     stacked on one window. If both are on, each window gets one of them, chosen at random.
@@ -69,6 +70,7 @@ class HeatmapAugment:
         floor_jitter: float = 0.0,
         time_reverse: bool = False,
         floor_knots: int = 8,
+        noise: float = 0.0,
     ) -> None:
         """Stores the settings.
 
@@ -81,11 +83,12 @@ class HeatmapAugment:
             time_reverse: Play each window backwards with probability 0.5. Only valid when the label does not
                 depend on the order of the frames, which holds for the `any_lying` label rule but not for `last`.
             floor_knots: Number of random values the baseline is interpolated between along range.
+            noise: Gaussian noise std, relative to the training input std.
 
         Raises:
             ValueError: If a setting is negative or `floor_knots` is below 2.
         """
-        if min(range_shift_bins, floor_jitter) < 0:
+        if min(range_shift_bins, floor_jitter, noise) < 0:
             raise ValueError("augmentation sizes must not be negative")
         if floor_knots < 2:
             raise ValueError("floor_knots must be at least 2")
@@ -93,11 +96,17 @@ class HeatmapAugment:
         self.floor_jitter = floor_jitter
         self.time_reverse = time_reverse
         self.floor_knots = floor_knots
+        self.noise = noise
+        self._input_std = torch.ones(1)
+
+    def set_input_std(self, std: torch.Tensor) -> None:
+        """Scale noise before standardisation to preserve its standardised magnitude."""
+        self._input_std = std.detach().clone()
 
     @property
     def active(self) -> bool:
         """Whether any transform is switched on."""
-        return bool(self.range_shift_bins or self.floor_jitter or self.time_reverse)
+        return bool(self.range_shift_bins or self.floor_jitter or self.time_reverse or self.noise)
 
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
         """Augments a batch.
@@ -116,6 +125,8 @@ class HeatmapAugment:
             x = self._shift(x, run["range_shift_bins"])
         if self.floor_jitter:
             x = self._jitter(x, run["floor_jitter"])
+        if self.noise:
+            x = x + (self.noise * self._input_std.to(x)) * torch.randn_like(x)
         return x
 
     def _reverse(self, x: torch.Tensor) -> torch.Tensor:
@@ -179,7 +190,7 @@ def _rotations(b: int, tilt: float | torch.Tensor, yaw: float | torch.Tensor, de
 class PointAugment:
     """Random augmentation of a batch of radar point clouds, applied in this order.
 
-    The points are in the sensor frame (see `data.windows._window_points`): x, y, z in metres, with y along the
+    The points are in the sensor frame (see `data.windowing._window_points`): x, y, z in metres, with y along the
     boresight. The sensor looks down at the floor, so y is the distance to the floor (median about 1.8 m in
     Config_4 recordings) and the floor plane is x-z. z is NOT height above the floor.
 
@@ -191,11 +202,11 @@ class PointAugment:
        point is rescaled for its new range (power falls as R^-4, so 40*log10(r_old/r_new) dB).
     4. `ghost_points`: adds false alarms in empty slots of the window.
     5. `snr_jitter_db`: one random SNR offset per window.
+    6. `point_drop` and `jitter`: drop random points, then jitter the five standardised features.
 
     Conflicts (`CONFLICTS`): `yaw_deg` and `mirror` both change which way a person lies, so they are not stacked on one
     window. If both are on, each window gets one of them, chosen at random.
 
-    Dropping points and jitter already happen inside `MiniPointNet` (`point_drop`, `jitter`), so they are not repeated.
     The sizes are for Config_4, the only sensor config used for model development.
     """
 
@@ -211,6 +222,8 @@ class PointAugment:
         ghost_points: float = 0.0,
         snr_jitter_db: float = 0.0,
         range_max_m: float = RANGE_MAX_M,
+        point_drop: float = 0.0,
+        jitter: float = 0.0,
     ) -> None:
         """Stores the settings.
 
@@ -219,18 +232,22 @@ class PointAugment:
             height_m: The same along y, the boresight.
             yaw_deg: Each window is rotated about the boresight by a uniform random angle in [-n, n] degrees.
                 180 gives every direction. Changes which way a person lies, so it is only valid for labels that
-                do not depend on that (`eval.collapse_lying=true`).
+                do not depend on that (`windowing.collapse_lying=true`).
             tilt_deg: Each window is tilted about x and about z by a uniform random angle in [-n, n] degrees.
             mirror: Mirror half of the windows. Swaps left and right, so the same label restriction as `yaw_deg`.
             ghost_points: Mean number of false-alarm points added per window (Poisson), into empty slots only.
             snr_jitter_db: Std of one Gaussian SNR offset per window, in dB.
             range_max_m: Points farther than this from the sensor after the move are dropped.
+            point_drop: Probability of dropping each real point.
+            jitter: Gaussian jitter std for x, y, z, doppler and snr, in standardised units.
 
         Raises:
             ValueError: If a size is negative.
         """
-        if min(shift_m, height_m, yaw_deg, tilt_deg, ghost_points, snr_jitter_db) < 0:
+        if min(shift_m, height_m, yaw_deg, tilt_deg, ghost_points, snr_jitter_db, jitter) < 0:
             raise ValueError("augmentation sizes must not be negative")
+        if not 0 <= point_drop <= 1:
+            raise ValueError("point_drop must be in [0, 1]")
         self.shift_m = shift_m
         self.height_m = height_m
         self.yaw_deg = yaw_deg
@@ -239,12 +256,19 @@ class PointAugment:
         self.ghost_points = ghost_points
         self.snr_jitter_db = snr_jitter_db
         self.range_max_m = range_max_m
+        self.point_drop = point_drop
+        self.jitter = jitter
+        self._input_std = torch.ones(5)
+
+    def set_input_std(self, std: torch.Tensor) -> None:
+        """Set the training std of x, y, z, doppler and snr for scaled jitter."""
+        self._input_std = std.detach().clone()
 
     @property
     def active(self) -> bool:
         """Whether any transform is switched on."""
         return bool(self.shift_m or self.height_m or self.yaw_deg or self.tilt_deg or self.mirror
-                    or self.ghost_points or self.snr_jitter_db)
+                    or self.ghost_points or self.snr_jitter_db or self.point_drop or self.jitter)
 
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
         """Augments a batch.
@@ -255,6 +279,10 @@ class PointAugment:
         Returns:
             A tensor of the same shape; `x` itself is not modified. Dropped points become padding (all zeros).
         """
+        return self.apply_with_count(x)[0]
+
+    def apply_with_count(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Augment points and return the real count after geometry/ghosts, before random dropping."""
         B, P, _ = x.shape
         names = ("shift_m", "height_m", "yaw_deg", "tilt_deg", "mirror", "ghost_points", "snr_jitter_db")
         run = _pick_one_per_group(B, [n for n in names if getattr(self, n)], self.CONFLICTS, x.device)
@@ -285,7 +313,15 @@ class PointAugment:
         out[..., 6] = valid.to(out.dtype)
         if self.ghost_points:
             out = self._add_ghosts(out, on["ghost_points"])
-        return out
+        valid = out[..., 6] > 0.5
+        n_points = valid.sum(dim=1, keepdim=True)
+        if self.point_drop:
+            valid = valid & (torch.rand_like(out[..., 6]) >= self.point_drop)
+            out = torch.where(valid.unsqueeze(-1), out, torch.zeros_like(out))
+        if self.jitter:
+            noise = (self.jitter * self._input_std.to(out)) * torch.randn_like(out[..., :5])
+            out[..., :5] = out[..., :5] + noise * valid.unsqueeze(-1)
+        return out, n_points
 
     def _add_ghosts(self, x: torch.Tensor, on: torch.Tensor) -> torch.Tensor:
         """Fills some empty slots with false alarms: random range and direction, low SNR, random time."""

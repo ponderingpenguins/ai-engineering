@@ -22,7 +22,7 @@ import numpy as np
 from datasets import Dataset
 from datasets import Image as HFImage
 
-from data.annotation import Marks, capture_positions, make_marks, read_annotations, write_annotations
+from data.annotations import Marks, capture_positions, make_marks, read_annotations, write_annotations
 
 logger = logging.getLogger(__name__)
 
