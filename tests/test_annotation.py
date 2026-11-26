@@ -4,8 +4,8 @@ import pandas as pd
 import pytest
 from datasets import Dataset
 
-from data import extract
-from data.annotation import (LYING, NOT_LYING, capture_positions, check_interval, lying_labels, make_marks, merge,
+from data import annotations
+from data.annotations import (LYING, NOT_LYING, capture_positions, check_interval, lying_labels, make_marks, merge,
                              read_annotations, write_annotations)
 
 START = datetime(2026, 1, 1)
@@ -87,7 +87,7 @@ def test_a_crash_while_replacing_keeps_the_old_file_and_leaves_no_temporary_file
     def crash(*_):
         raise OSError("disk gone")
 
-    monkeypatch.setattr("data.annotation.os.replace", crash)
+    monkeypatch.setattr("data.annotations.os.replace", crash)
     with pytest.raises(OSError):
         write_annotations({"a": marks([(7, 8)])}, path)
     monkeypatch.undo()
@@ -140,17 +140,45 @@ def test_annotations_for_unknown_recordings_warn(caplog):
 
 # ---- the join at bake time -------------------------------------------------------------------------
 
-def test_extract_adds_the_lying_annotation_column(tmp_path, monkeypatch):
+def test_attach_adds_the_lying_annotation_column(tmp_path, monkeypatch):
     path = tmp_path / "lying.csv"
     write_annotations({"a": marks([(1, 1)])}, path)
-    monkeypatch.setattr(extract, "LYING_INTERVALS", path)
+    monkeypatch.setattr(annotations, "LYING_INTERVALS", path)
     ds = Dataset.from_pandas(pd.concat([frames("a", [0, 1, 2]), frames("b", [0, 1])], ignore_index=True))
-    out = extract._add_lying_annotation(ds)
+    out = annotations.attach_lying_annotation(ds)
     assert out["lying_annotation"] == [NOT_LYING, LYING, NOT_LYING, None, None]
 
 
-def test_extract_without_a_file_gives_none_everywhere(tmp_path, monkeypatch, caplog):
-    monkeypatch.setattr(extract, "LYING_INTERVALS", tmp_path / "none.csv")
+def test_attach_without_a_file_gives_none_everywhere(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(annotations, "LYING_INTERVALS", tmp_path / "none.csv")
     with caplog.at_level("WARNING"):
-        out = extract._add_lying_annotation(Dataset.from_pandas(frames("a", [0, 1])))
+        out = annotations.attach_lying_annotation(Dataset.from_pandas(frames("a", [0, 1])))
     assert out["lying_annotation"] == [None, None] and "None everywhere" in caplog.text
+
+
+def test_attach_annotations_is_idempotent_and_replaces_stale_columns(tmp_path):
+    (tmp_path / "person_map.csv").write_text("recording,person\na,Alice\nb,\n")
+    (tmp_path / "presence_events.csv").write_text("recording,frame_idx,event\na,0,enter\na,2,leave\n")
+    write_annotations({"a": marks([(1, 1)])}, tmp_path / "lying_intervals.csv")
+    ds = Dataset.from_pandas(pd.concat([frames("a", [0, 1, 2]), frames("b", [0, 1])], ignore_index=True))
+    ds = ds.add_column("person", ["stale"] * 5)
+    ds = ds.add_column("person_present", [True] * 5)
+    ds = ds.add_column("lying_annotation", [LYING] * 5)
+
+    once = annotations.attach_annotations(ds, tmp_path)
+    twice = annotations.attach_annotations(once, tmp_path)
+    assert twice.to_dict() == once.to_dict()
+    assert twice.features == once.features
+    assert twice["person"] == ["Alice"] * 3 + [annotations.NO_PERSON] * 2
+    assert twice["person_present"] == [True, True, False, None, None]
+    assert twice["lying_annotation"] == [NOT_LYING, LYING, NOT_LYING, None, None]
+    assert twice.select_columns(ds.column_names[:3]).to_dict() == ds.select_columns(ds.column_names[:3]).to_dict()
+
+    # Removing source annotations must clear old values, keeping typed null columns.
+    (tmp_path / "presence_events.csv").unlink()
+    (tmp_path / "lying_intervals.csv").unlink()
+    cleared = annotations.attach_annotations(twice, tmp_path)
+    assert cleared["person_present"] == [None] * 5
+    assert cleared["lying_annotation"] == [None] * 5
+    assert cleared.features["person_present"].dtype == "bool"
+    assert cleared.features["lying_annotation"].dtype == "string"

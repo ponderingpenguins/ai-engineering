@@ -24,7 +24,7 @@ import pandas as pd
 from datasets import Dataset, load_from_disk
 from omegaconf.errors import OmegaConfBaseException
 
-from data.annotation import LYING_INTERVALS, REPO, Annotations, Interval, capture_positions, read_annotations
+from data.annotations import LYING_INTERVALS, REPO, Annotations, Interval, capture_positions, read_annotations
 from data.preprocess import configured_pipeline
 from config import load_data_config
 

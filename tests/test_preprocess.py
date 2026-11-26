@@ -3,7 +3,7 @@ import pandas as pd
 import pytest
 from datasets import Dataset
 
-from data.extract import NO_PERSON
+from data.annotations import NO_PERSON
 from data.preprocess import (
     CONFIG_4,
     DropRecordings,

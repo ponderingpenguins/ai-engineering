@@ -9,8 +9,8 @@ from omegaconf import OmegaConf
 from omegaconf.errors import OmegaConfBaseException
 
 from config import DataConfig, ModelConfig, RunConfig, WindowConfig, load_data_config, load_run_config
-from data import extract
-from data.annotation import Marks, write_annotations
+from data import bake
+from data.annotations import Marks, attach_person, attach_presence, attach_lying_annotation, write_annotations
 from data.preprocess import DropUnknownPerson, RangeNormalise, TemporalBackground, configured_pipeline
 from models.factory import build_model
 from utils.tuning import with_setting
@@ -128,9 +128,9 @@ def test_dotted_tuning_settings_are_typed_and_do_not_mutate_the_original():
 
 def test_bake_execution_options_are_flags_not_yaml(monkeypatch):
     seen = []
-    monkeypatch.setattr(extract, "extract", lambda cfg, **options: seen.append((cfg, options)))
-    monkeypatch.setattr("sys.argv", ["extract", "--num-proc", "1", "--overwrite", "--recording", "example"])
-    extract.main()
+    monkeypatch.setattr(bake, "bake_dataset", lambda cfg, **options: seen.append((cfg, options)))
+    monkeypatch.setattr("sys.argv", ["bake", "--num-proc", "1", "--overwrite", "--recording", "example"])
+    bake.main()
     cfg, options = seen[0]
     assert isinstance(cfg, DataConfig) and not hasattr(cfg, "bake")
     assert options == {"num_proc": 1, "overwrite": True, "recordings": ["example"]}
@@ -144,9 +144,9 @@ def test_annotation_join_reads_a_configured_input_directory(tmp_path):
     write_annotations({"a": Marks(((1, 1),), True)}, annotations / "lying_intervals.csv")
     ds = Dataset.from_dict({"recording": ["a", "a"], "frame_idx": [0, 1],
                             "timestamp": [datetime(2026, 1, 1), datetime(2026, 1, 1, 0, 0, 1)]})
-    ds = extract._add_person(ds, annotations)
-    ds = extract._add_presence(ds, annotations)
-    ds = extract._add_lying_annotation(ds, annotations)
+    ds = attach_person(ds, annotations)
+    ds = attach_presence(ds, annotations)
+    ds = attach_lying_annotation(ds, annotations)
     assert ds["person"] == ["NewPerson", "NewPerson"]
     assert ds["person_present"] == [True, False]
     assert ds["lying_annotation"] == ["not_lying", "lying"]

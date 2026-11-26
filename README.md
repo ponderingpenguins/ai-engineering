@@ -19,7 +19,7 @@ Type check: `uv run mypy main.py --ignore-missing-imports` (the flag is needed b
 
 The repository uses 2 initial stages for raw data and annotations, then a final baked dataset for use in modeling tasks. `data/raw/` holds the raw recordings in Git LFS which were received from Valtes. `data/annotations/` holds the source annotation CSVs as normal Git text files. `data/baked/` holds generated datasets, gitignored to be created on individual machines. 
 
-When running the bake, it automatically joins `person_map.csv`, `presence_events.csv`, and `lying_intervals.csv` from `data/annotations/`. Any annotation tools or labelling notebooks save their source CSVs there. After any editions or changes to annotations, rebuilding with `python main.py bake --overwrite` uses the newest source annotations unchanged, deleting stale `data/baked/`.
+When running the bake, it automatically joins `person_map.csv`, `presence_events.csv`, and `lying_intervals.csv` from `data/annotations/`. Any annotation tools or labelling notebooks save their source CSVs there. After editing annotations, run `python main.py bake --refresh-annotations` to replace these columns in the existing dataset without parsing raw recordings again. Use `--overwrite` for a full rebuild.
 
 `python main.py bake` reads every recording once and writes one Hugging Face dataset (one row per frame) to `data/baked/floor_posture` (gitignored, about 4.4 GB, about 20 s with `--num-proc 6`). Run it before anything else. Columns, the hand-made `person` and `person_present` labels and the pitfalls (centring the heatmap, empty heatmaps) are in [docs/data_notes/baked-dataset.md](docs/data_notes/baked-dataset.md). The baked data contains identifiable camera feeds.
 
@@ -43,6 +43,7 @@ python main.py cv model=pointnet training.epochs=5 model.augment.shift_m=0.3
 python main.py tune 'tune.grid=[{model.arch.hidden: 64}, {model.arch.hidden: 128, training.lr: 0.0003}]'
 python main.py train-final
 python main.py bake --num-proc 4 --overwrite
+python main.py bake --refresh-annotations
 ```
 
 | Key | Default | Meaning |
@@ -118,7 +119,7 @@ docs/                     notes (modeling.md, data_notes/), report, slides
 notebooks/                exploration and annotation notebooks
 scripts/pc/               helpers for running on the PC
 results/                  one folder per run (gitignored)
-src/data/                 extract, preprocess, windows, augment, resample
+src/data/                 bake, annotations, preprocess, windows, augment, resample
 src/config/               typed data/model/training settings, loaders and validation
 src/models/               RNN, PointNet, baseline, shared training loop, factory
 src/utils/                experiment, trainer, tuning, fitting, results, report

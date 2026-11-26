@@ -10,7 +10,7 @@ from datasets import Image as HFImage
 from PIL import Image
 
 from annotation_tool.server import Annotator, Catalogue, host_allowed, make_server
-from data.annotation import make_marks, read_annotations, write_annotations
+from data.annotations import make_marks, read_annotations, write_annotations
 
 START = datetime(2026, 1, 1)
 

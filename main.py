@@ -11,6 +11,7 @@ Examples:
     python main.py tune 'tune.grid=[{model.arch.hidden: 64}, {model.arch.hidden: 128, training.lr: 0.0003}]'
     python main.py train-final
     python main.py bake --num-proc 4 --overwrite
+    python main.py bake --refresh-annotations
 """
 import argparse
 import logging
@@ -28,7 +29,7 @@ REPO = Path(__file__).resolve().parent
 def main() -> None:
     """Parse the command and config, then run the requested experiment or bake."""
     if len(sys.argv) > 1 and sys.argv[1] == "bake":
-        from data.extract import main as bake
+        from data.bake import main as bake
         sys.argv = [f"{Path(sys.argv[0]).name} bake", *sys.argv[2:]]
         bake()
         return

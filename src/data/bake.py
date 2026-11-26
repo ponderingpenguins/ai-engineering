@@ -1,11 +1,12 @@
 """Bake the raw floor-posture recordings into one Hugging Face dataset.
 
-Besides the raw labels, hand annotations are joined in: `person` (data/annotations/person_map.csv)
-and `person_present` (data/annotations/presence_events.csv, from notebooks/label_presence.ipynb).
+Besides the raw labels, hand annotations are joined in: `person`, `person_present`
+and `lying_annotation`, from the CSVs in data/annotations/.
 
 Run it:
 
-    python -m data.extract [paths.raw_root=...] [--num-proc 4] [--overwrite] [--recording a --recording b]
+    python -m data.bake [paths.raw_root=...] [--num-proc 4] [--overwrite] [--recording a --recording b]
+    python -m data.bake --refresh-annotations [paths.annotations_dir=...]
 
 Usage:
     ds = load_from_disk("data/baked/floor_posture")
@@ -13,6 +14,7 @@ Usage:
 """
 
 import argparse
+import gc
 import logging
 import shutil
 import sys
@@ -21,10 +23,10 @@ from typing import Any, Iterator, cast
 
 import numpy as np
 import pandas as pd
-from datasets import Dataset, Features, Image, Sequence, Value
+from datasets import Dataset, Features, Image, Sequence, Value, load_from_disk
 from omegaconf.errors import OmegaConfBaseException
 
-from data.annotation import LYING_INTERVALS, lying_labels, read_annotations
+from data.annotations import attach_annotations
 from config import DataConfig, load_data_config
 
 logging.basicConfig(
@@ -36,9 +38,6 @@ logger = logging.getLogger(__name__)
 
 REPO = Path(__file__).resolve().parents[2]
 ALIGN_TOLERANCE = pd.Timedelta("2us")  # CSV rounding
-PERSON_MAP = REPO / "data" / "annotations" / "person_map.csv"  # recording -> pseudonym, hand-labelled
-NO_PERSON = "NA"
-PRESENCE_EVENTS = REPO / "data" / "annotations" / "presence_events.csv"  # recording, frame_idx, event; hand-labelled
 
 
 # --- labels ---------------------------------------------------------------
@@ -251,65 +250,6 @@ def _rows(recordings: list[dict[str, Any]], kinds: dict[str, str]) -> Iterator[d
             yield row
 
 
-def _add_person(ds: Dataset, annotations_dir: Path | None = None) -> Dataset:
-    """Add a `person` column from person_map.csv; unlabelled recordings get "NA"."""
-    df = pd.read_csv(PERSON_MAP if annotations_dir is None else annotations_dir / "person_map.csv", keep_default_na=False)  # keep_default_na: don't turn a name into NaN
-    mapping = {r: p.strip() or NO_PERSON for r, p in zip(df.recording, df.person)}
-    recs = ds.select_columns(["recording"]).to_pandas().recording
-    unlisted = sorted(set(recs) - set(mapping))
-    if unlisted:
-        logger.warning("not in %s, person set to %s: %s", PERSON_MAP.name, NO_PERSON, unlisted)
-    return ds.add_column("person", recs.map(lambda r: mapping.get(r, NO_PERSON)).tolist())
-
-
-def _add_presence(ds: Dataset, annotations_dir: Path | None = None) -> Dataset:
-    """Add a `person_present` column from presence_events.csv.
-
-    A person is present from each "enter" event until the next "leave" event (or the end of
-    the recording). Recordings without any events are unannotated and get None, so they are
-    not mistaken for empty rooms.
-    """
-    path = PRESENCE_EVENTS if annotations_dir is None else annotations_dir / "presence_events.csv"
-    events = pd.read_csv(path) if path.exists() else pd.DataFrame(columns=["recording", "frame_idx", "event"])
-    if events.empty:
-        logger.warning("no events in %s, person_present is None everywhere", PRESENCE_EVENTS.name)
-    meta = ds.select_columns(["recording", "frame_idx"]).to_pandas()
-    present = np.full(len(meta), None, dtype=object)
-    for rec, evs in events.sort_values("frame_idx").groupby("recording"):
-        rows = np.flatnonzero(meta.recording == rec)
-        if rows.size == 0:
-            logger.warning("%s in %s but not in the dataset", rec, PRESENCE_EVENTS.name)
-            continue
-        state, last = False, 0
-        flags = np.zeros(rows.size, dtype=bool)
-        for frame, event in zip(evs.frame_idx, evs.event):
-            flags[last:frame] = state
-            state, last = event == "enter", int(frame)
-        flags[last:] = state
-        present[rows[np.argsort(meta.frame_idx.values[rows])]] = flags  # rows ordered by frame_idx
-    unannotated = sorted(set(meta.recording) - set(events.recording))
-    if unannotated:
-        logger.warning("not in %s, person_present set to None: %s", PRESENCE_EVENTS.name, unannotated)
-    return ds.add_column("person_present", present.tolist()).cast_column("person_present", Value("bool"))
-
-
-def _add_lying_annotation(ds: Dataset, annotations_dir: Path | None = None) -> Dataset:
-    """Add a `lying_annotation` column from lying_intervals.csv: "lying", "not_lying", or None if not reviewed.
-
-    See `data.annotation`. Recordings that are not reviewed get None, so they are not mistaken for
-    recordings without lying.
-    """
-    annotations = read_annotations(LYING_INTERVALS if annotations_dir is None else annotations_dir / "lying_intervals.csv")
-    meta = ds.select_columns(["recording", "frame_idx", "timestamp"]).to_pandas()
-    labels = lying_labels(meta, annotations)
-    reviewed = {rec for rec, marks in annotations.items() if marks.reviewed} & set(meta.recording)
-    if not reviewed:
-        logger.warning("no reviewed recordings in %s, lying_annotation is None everywhere", LYING_INTERVALS.name)
-    logger.info("lying_annotation: %d recordings reviewed, %d not reviewed", len(reviewed),
-                meta.recording.nunique() - len(reviewed))
-    return ds.add_column("lying_annotation", labels).cast_column("lying_annotation", Value("string"))
-
-
 def _recordings(root: Path, only: list[str]) -> list[dict[str, Any]]:
     """Lists the recordings that are present on disk.
 
@@ -340,11 +280,11 @@ def _recordings(root: Path, only: list[str]) -> list[dict[str, Any]]:
     return recs
 
 
-def extract(cfg: DataConfig, *, num_proc: int = 4, overwrite: bool = False, recordings: list[str] | None = None) -> None:
+def bake_dataset(cfg: DataConfig, *, num_proc: int = 4, overwrite: bool = False, recordings: list[str] | None = None) -> None:
     """Bakes the raw recordings into a Hugging Face dataset and saves it to disk.
 
     Args:
-        cfg: The extraction configuration.
+        cfg: Dataset paths and annotation configuration.
 
     Raises:
         SystemExit: If the output exists and `overwrite` is False, or no
@@ -375,12 +315,49 @@ def extract(cfg: DataConfig, *, num_proc: int = 4, overwrite: bool = False, reco
         num_proc=min(num_proc, len(recs)) if num_proc > 1 else None,
         cache_dir=str(cache),
     )
-    ds = _add_person(ds, REPO / cfg.paths.annotations_dir)
-    ds = _add_presence(ds, REPO / cfg.paths.annotations_dir)
-    ds = _add_lying_annotation(ds, REPO / cfg.paths.annotations_dir)
+    ds = attach_annotations(ds, REPO / cfg.paths.annotations_dir)
     ds.save_to_disk(str(out))
     shutil.rmtree(cache, ignore_errors=True)
     logger.info("saved %d rows to %s", len(ds), out)
+
+
+def refresh_annotations(cfg: DataConfig) -> None:
+    """Refresh hand annotations in an existing bake without reading raw recordings.
+
+    Write a sibling copy and release Arrow memory maps before renaming directories
+    (required on Windows). Existing recovery folders are never overwritten.
+    """
+    out = REPO / cfg.paths.baked_dir
+    temporary = out.with_name(f".{out.name}.refresh_tmp")
+    backup = out.with_name(f".{out.name}.old")
+    if not out.is_dir():
+        raise FileNotFoundError(f"No baked dataset at {out}; run bake first.")
+    for path in (temporary, backup):
+        if path.exists():
+            raise FileExistsError(f"Refresh recovery folder already exists: {path}; inspect it before retrying.")
+
+    try:
+        ds = cast(Dataset, load_from_disk(str(out)))
+        try:
+            ds = attach_annotations(ds, REPO / cfg.paths.annotations_dir)
+            n_rows = len(ds)
+            ds.save_to_disk(str(temporary))
+        finally:
+            del ds
+            gc.collect()  # close Arrow memory maps before touching the source folder
+    except BaseException:
+        if temporary.exists():
+            shutil.rmtree(temporary)
+        raise
+
+    out.rename(backup)
+    try:
+        temporary.rename(out)
+    except OSError:
+        backup.rename(out)
+        raise
+    shutil.rmtree(backup)
+    logger.info("refreshed annotations for %d rows in %s", n_rows, out)
 
 
 def main() -> None:
@@ -389,11 +366,18 @@ def main() -> None:
     parser.add_argument("--num-proc", type=int, default=4, help="parallel workers (default: 4)")
     parser.add_argument("--overwrite", action="store_true", help="replace an existing baked dataset")
     parser.add_argument("--recording", action="append", default=[], help="recording to bake; repeat to select several")
+    parser.add_argument("--refresh-annotations", action="store_true",
+                        help="refresh annotations in the existing bake without re-reading raw recordings")
     args, overrides = parser.parse_known_args()
+    if args.refresh_annotations and (args.recording or args.overwrite):
+        parser.error("--refresh-annotations cannot be combined with --recording or --overwrite")
     try:
         cfg = load_data_config(REPO, overrides)
-        extract(cfg, num_proc=args.num_proc, overwrite=args.overwrite, recordings=args.recording)
-    except (TypeError, ValueError, OmegaConfBaseException) as e:
+        if args.refresh_annotations:
+            refresh_annotations(cfg)
+        else:
+            bake_dataset(cfg, num_proc=args.num_proc, overwrite=args.overwrite, recordings=args.recording)
+    except (TypeError, ValueError, OSError, OmegaConfBaseException) as e:
         parser.error(str(e))
 
 

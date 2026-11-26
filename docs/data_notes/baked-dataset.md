@@ -4,7 +4,7 @@
 
 The inputs are raw recordings in `data/raw/` (Git LFS) and source CSVs in `data/annotations/` (normal Git text). Every bake automatically reads both and joins the annotations into the generated dataset. `data/baked/` is entirely gitignored and can be deleted and rebuilt without losing annotation work.
 
-`src/data/extract.py` reads every recording once through `vt_radar` and writes a single Hugging Face dataset (one row per frame) to `data/baked/floor_posture` (gitignored):
+`src/data/bake.py` reads every recording once through `vt_radar` and writes a single Hugging Face dataset (one row per frame) to `data/baked/floor_posture` (gitignored):
 
 ```
 python main.py bake [paths.raw_root=...] [paths.baked_dir=...] [--num-proc 4] [--overwrite] [--recording a --recording b]
@@ -38,7 +38,14 @@ Keep in mind that the baked data contains identifiable feeds.
 
 ## Manual annotations
 
-Three columns of the baked dataset are not in the raw data: they were annotated by hand and are joined in by `src/data/extract.py`. The source CSVs live in `data/annotations/` and are tracked as normal Git text. Rebuild the dataset (`python main.py bake --overwrite`) after changing them; the current command does not automatically refresh existing baked labels.
+Three columns of the baked dataset are not in the raw data: they were annotated by hand and are joined in by `src/data/annotations.py`. The source CSVs live in `data/annotations/` and are tracked as normal Git text. After changing them, refresh all three columns without re-parsing raw recordings:
+
+```sh
+python main.py bake --refresh-annotations
+python main.py bake --refresh-annotations paths.annotations_dir=data/annotations paths.baked_dir=data/baked/floor_posture
+```
+
+Refresh requires an existing baked dataset and cannot be combined with `--recording` or `--overwrite`. It writes a sibling copy, releases Arrow memory maps, then swaps folders, restoring the old dataset if installation fails. Allow disk space for a second copy. If interrupted, inspect the sibling `.floor_posture.refresh_tmp` and `.floor_posture.old` recovery folders before retrying; refresh refuses to overwrite them. Use `--overwrite` for a full raw-data rebuild.
 
 | Column | Source file | Made with | Meaning |
 | ------ | ----------- | --------- | ------- |
@@ -48,4 +55,4 @@ Three columns of the baked dataset are not in the raw data: they were annotated 
 
 - **`person`** is one value per recording. The notebook shows the best face crops of each recording and you pick a name from a fixed list of pseudonyms. Unlabelled recordings are dropped by the `known_person` preprocessor.
 - **`person_present`** is stored as `enter` and `leave` events on frame indices. A person is present from each `enter` until the next `leave` (or the end of the recording), so a recording that starts with someone already in view needs an `enter` on frame 0. Recordings without any events get `None`, not `False`, so filter on `person_present.notna()` before training on it. This is separate from the raw `label_presence` track, which is not reliable (it is `False` wherever it exists).
-- **`lying_annotation`** is stored as lying intervals on capture positions (the time order of a recording, not always `frame_idx`). In a reviewed recording every frame outside the intervals is `not_lying`. Recordings that are not reviewed get `None`, which is not the same as `not_lying`. Add the column to an existing dataset without a full rebuild by running `_add_lying_annotation` from `data/extract.py` on it, or rebuild with `--overwrite`.
+- **`lying_annotation`** is stored as lying intervals on capture positions (the time order of a recording, not always `frame_idx`). In a reviewed recording every frame outside the intervals is `not_lying`. Recordings that are not reviewed get `None`, which is not the same as `not_lying`. Refresh it with `python main.py bake --refresh-annotations`, or call `attach_lying_annotation` from `data.annotations` on an in-memory dataset.

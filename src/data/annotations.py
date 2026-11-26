@@ -1,4 +1,4 @@
-"""The hand-made lying annotation: lying intervals per recording, and the per-frame labels built from them.
+"""Hand annotations: person identities, presence events and lying intervals.
 
 An annotator watches the camera video and marks the stretches where the person is lying. A stretch is an
 interval of capture positions (first and last frame included), see `capture_positions`. The marks are stored in
@@ -20,14 +20,19 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
+from datasets import Dataset, Value
 
 logger = logging.getLogger(__name__)
 
 REPO = Path(__file__).resolve().parents[2]
+PERSON_MAP = REPO / "data" / "annotations" / "person_map.csv"
+PRESENCE_EVENTS = REPO / "data" / "annotations" / "presence_events.csv"
 LYING_INTERVALS = REPO / "data" / "annotations" / "lying_intervals.csv"
+NO_PERSON = "NA"
 COLUMNS = ["recording", "first_capture_idx", "last_capture_idx", "reviewed"]
 LYING, NOT_LYING = "lying", "not_lying"  # the labels of the `lying_annotation` column
 
@@ -178,3 +183,77 @@ def lying_labels(meta: pd.DataFrame, annotations: Mapping[str, Marks]) -> list[s
     if unknown:
         logger.warning("lying annotations for recordings that are not in the dataset: %s", unknown)
     return labels.tolist()
+
+
+def _replace_column(ds: Dataset, name: str, values: list[Any], dtype: str) -> Dataset:
+    """Replace an annotation column with explicitly typed values, including all-null columns."""
+    if name in ds.column_names:
+        ds = ds.remove_columns(name)
+    # Set the feature on insertion to avoid casting/copying unrelated radar columns.
+    return ds.add_column(name, values, feature=Value(dtype))
+
+
+def attach_person(ds: Dataset, annotations_dir: Path | None = None) -> Dataset:
+    """Add a `person` column from person_map.csv; unlabelled recordings get "NA"."""
+    df = pd.read_csv(PERSON_MAP if annotations_dir is None else annotations_dir / "person_map.csv", keep_default_na=False)  # keep_default_na: don't turn a name into NaN
+    mapping = {r: p.strip() or NO_PERSON for r, p in zip(df.recording, df.person)}
+    recs = ds.select_columns(["recording"]).to_pandas().recording
+    unlisted = sorted(set(recs) - set(mapping))
+    if unlisted:
+        logger.warning("not in %s, person set to %s: %s", PERSON_MAP.name, NO_PERSON, unlisted)
+    return _replace_column(ds, "person", recs.map(lambda r: mapping.get(r, NO_PERSON)).tolist(), "string")
+
+
+def attach_presence(ds: Dataset, annotations_dir: Path | None = None) -> Dataset:
+    """Add a `person_present` column from presence_events.csv.
+
+    A person is present from each "enter" event until the next "leave" event (or the end of
+    the recording). Recordings without any events are unannotated and get None, so they are
+    not mistaken for empty rooms.
+    """
+    path = PRESENCE_EVENTS if annotations_dir is None else annotations_dir / "presence_events.csv"
+    events = pd.read_csv(path) if path.exists() else pd.DataFrame(columns=["recording", "frame_idx", "event"])
+    if events.empty:
+        logger.warning("no events in %s, person_present is None everywhere", PRESENCE_EVENTS.name)
+    meta = ds.select_columns(["recording", "frame_idx"]).to_pandas()
+    present = np.full(len(meta), None, dtype=object)
+    for rec, evs in events.sort_values("frame_idx").groupby("recording"):
+        rows = np.flatnonzero(meta.recording == rec)
+        if rows.size == 0:
+            logger.warning("%s in %s but not in the dataset", rec, PRESENCE_EVENTS.name)
+            continue
+        state, last = False, 0
+        flags = np.zeros(rows.size, dtype=bool)
+        for frame, event in zip(evs.frame_idx, evs.event):
+            flags[last:frame] = state
+            state, last = event == "enter", int(frame)
+        flags[last:] = state
+        present[rows[np.argsort(meta.frame_idx.values[rows])]] = flags  # rows ordered by frame_idx
+    unannotated = sorted(set(meta.recording) - set(events.recording))
+    if unannotated:
+        logger.warning("not in %s, person_present set to None: %s", PRESENCE_EVENTS.name, unannotated)
+    return _replace_column(ds, "person_present", present.tolist(), "bool")
+
+
+def attach_lying_annotation(ds: Dataset, annotations_dir: Path | None = None) -> Dataset:
+    """Add a `lying_annotation` column from lying_intervals.csv: "lying", "not_lying", or None if not reviewed.
+
+    See `data.annotations`. Recordings that are not reviewed get None, so they are not mistaken for
+    recordings without lying.
+    """
+    annotations = read_annotations(LYING_INTERVALS if annotations_dir is None else annotations_dir / "lying_intervals.csv")
+    meta = ds.select_columns(["recording", "frame_idx", "timestamp"]).to_pandas()
+    labels = lying_labels(meta, annotations)
+    reviewed = {rec for rec, marks in annotations.items() if marks.reviewed} & set(meta.recording)
+    if not reviewed:
+        logger.warning("no reviewed recordings in %s, lying_annotation is None everywhere", LYING_INTERVALS.name)
+    logger.info("lying_annotation: %d recordings reviewed, %d not reviewed", len(reviewed),
+                meta.recording.nunique() - len(reviewed))
+    return _replace_column(ds, "lying_annotation", labels, "string")
+
+
+def attach_annotations(ds: Dataset, annotations_dir: Path | None = None) -> Dataset:
+    """Attach or refresh all hand annotations from their source CSVs."""
+    ds = attach_person(ds, annotations_dir)
+    ds = attach_presence(ds, annotations_dir)
+    return attach_lying_annotation(ds, annotations_dir)

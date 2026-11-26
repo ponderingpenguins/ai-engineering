@@ -4,8 +4,8 @@ import numpy as np
 import pandas as pd
 from datasets import Dataset
 
-from data.annotation import capture_positions
-from data.extract import NO_PERSON
+from data.annotations import capture_positions
+from data.annotations import NO_PERSON
 
 # Every labelled recording is Config_4: 256 range bins x 16 Doppler bins (see data/preprocess.py, which drops
 # the other sensor configs).

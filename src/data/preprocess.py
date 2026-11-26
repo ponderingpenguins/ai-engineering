@@ -17,7 +17,7 @@ from datasets import Sequence as ListOf
 from scipy.signal import lfilter
 
 from config import PreprocessConfig, SelectionConfig
-from data.extract import NO_PERSON
+from data.annotations import NO_PERSON
 
 logger = logging.getLogger(__name__)
 

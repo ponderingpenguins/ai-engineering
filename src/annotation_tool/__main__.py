@@ -17,7 +17,7 @@ from datasets import Dataset, load_from_disk
 from omegaconf.errors import OmegaConfBaseException
 
 from annotation_tool.server import Annotator, Catalogue, make_server
-from data.annotation import LYING_INTERVALS, REPO
+from data.annotations import LYING_INTERVALS, REPO
 from data.preprocess import configured_pipeline
 from config import load_data_config
 
