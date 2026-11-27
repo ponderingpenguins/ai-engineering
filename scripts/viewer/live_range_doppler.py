@@ -18,7 +18,7 @@ from matplotlib.animation import FuncAnimation
 from vt_radar.config.ti_config import ConfigFile
 from vt_radar.parsing_utils.parseFrame import parseStandardFrame
 
-DEFAULT_CFG = Path(__file__).resolve().parents[2] / "data/raw/floor_posture_dataset/recorder/cfgs/Config_4.cfg"
+DEFAULT_CFG = Path(__file__).resolve().parents[2] / "config/radar/Config_4.cfg"
 
 
 def to_db(heatmap: np.ndarray) -> np.ndarray:
@@ -88,7 +88,11 @@ def main():
                 break
             if not raw:
                 continue
-            heatmap = parseStandardFrame(raw, cfg).range_doppler_heatmap
+            try:
+                heatmap = parseStandardFrame(raw, cfg).range_doppler_heatmap
+            except Exception as e:  # a partial/garbled frame (e.g. right after reconnecting): skip it
+                print(f"skipped corrupt frame: {type(e).__name__}: {e}", flush=True)
+                continue
             if heatmap is None:
                 continue
             latest["heatmap"] = heatmap

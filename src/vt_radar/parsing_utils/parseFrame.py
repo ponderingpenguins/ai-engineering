@@ -93,8 +93,9 @@ def parseStandardFrame(frameData: bytes, config, verbose: bool = False) -> 'RawR
             pass
         # Static Azimuth Heatmap
         elif (tlvType == MMWDEMO_OUTPUT_MSG_AZIMUT_STATIC_HEAT_MAP):
-            logger.error("MMWDEMO_OUTPUT_MSG_AZIMUT_STATIC_HEAT_MAP")
-            pass
+            outputDict["azimuthStaticHeatmap"] = parseAzimuthStaticHeatmap(
+                frameData[:tlvLength], num_range_bins=config.sensor().num_range_bins
+            )
         # Range Doppler Heatmap
         elif (tlvType == MMWDEMO_OUTPUT_MSG_RANGE_DOPPLER_HEAT_MAP):
             outputDict["rangeDopplerHeatmap"] = parseRangeDopplerHeatmap(
@@ -110,8 +111,10 @@ def parseStandardFrame(frameData: bytes, config, verbose: bool = False) -> 'RawR
             outputDict['pointCloud'] = parseSideInfoTLV(frameData[:tlvLength], tlvLength, outputDict['pointCloud'])
          # Azimuth Elevation Static Heatmap
         elif (tlvType == MMWDEMO_OUTPUT_MSG_AZIMUT_ELEVATION_STATIC_HEAT_MAP):
-            logger.error("MMWDEMO_OUTPUT_MSG_AZIMUT_ELEVATION_STATIC_HEAT_MAP")
-            pass
+            # Same cmplx16ImRe_t layout as TLV 4, but for all virtual antennas (AOP boards send this one).
+            outputDict["azimuthStaticHeatmap"] = parseAzimuthStaticHeatmap(
+                frameData[:tlvLength], num_range_bins=config.sensor().num_range_bins
+            )
         # Temperature Statistics
         elif (tlvType == MMWDEMO_OUTPUT_MSG_TEMPERATURE_STATS):
             outputDict['temperatureStats'] = parseTemperatureStatsTLV(frameData[:tlvLength])

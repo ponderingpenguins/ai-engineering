@@ -64,6 +64,7 @@ class RawRadarData:
     # Profile and heatmap data
     range_profile: Optional[List[float]] = None
     range_doppler_heatmap: Optional[np.ndarray] = None
+    azimuth_static_heatmap: Optional[np.ndarray] = None  # complex (range_bins, virtual_antennas), zero Doppler
     range_profile_major: Optional[List[float]] = None
     range_profile_minor: Optional[List[float]] = None
     
@@ -114,6 +115,7 @@ class RawRadarData:
             num_detected_heights=data_dict.get('numDetectedHeights', 0),
             range_profile=data_dict.get('rangeProfile'),
             range_doppler_heatmap=data_dict.get('rangeDopplerHeatmap'),
+            azimuth_static_heatmap=data_dict.get('azimuthStaticHeatmap'),
             range_profile_major=data_dict.get('rangeProfileMajor'),
             range_profile_minor=data_dict.get('rangeProfileMinor'),
             stats=data_dict.get('stats'),

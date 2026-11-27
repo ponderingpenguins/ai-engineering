@@ -329,6 +329,10 @@ def velocity_state_handling(handle, um):
     if inst.velocityHandling == ekf_utils.VelocityHandlingState().VELOCITY_INIT:
         um[2] = inst.rangeRate
         inst.velocityHandling = ekf_utils.VelocityHandlingState().VELOCITY_RATE_FILTER
+    elif (inst.heartBeatCount - inst.allocationTime) * inst.dt == 0:
+        # No time since allocation yet: the range rate below would divide by zero (inf -> OverflowError
+        # in the unroll). Keep the current estimate until a frame has passed.
+        um[2] = ekf_utils.gtrack_unrollRadialVelocity(inst.maxRadialVelocity, inst.rangeRate, rvIn)
     elif inst.velocityHandling == ekf_utils.VelocityHandlingState().VELOCITY_RATE_FILTER:
         instanteneousRangeRate = np.float32(
             (um[0] - inst.allocationRange) / ((inst.heartBeatCount - inst.allocationTime) * (inst.dt)))

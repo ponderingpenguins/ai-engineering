@@ -218,6 +218,16 @@ def parseSphericalPointCloudTLV(tlvData: bytes, tlvLength: int, pointCloud: np.n
     pointCloud[:,0:3] = sphericalToCartesianPointCloud(pointCloud[:, 0:3])
     return numPoints, pointCloud
 
+def parseAzimuthStaticHeatmap(tlvData: bytes, num_range_bins: int) -> np.ndarray:
+    """Zero-Doppler complex samples per range bin and virtual antenna, shape (range_bins, antennas).
+
+    Each sample is a cmplx16ImRe_t (int16 imaginary, then int16 real), range-major.
+    """
+    x = np.frombuffer(tlvData, dtype=np.int16).astype(np.float32)
+    z = x[1::2] + 1j * x[0::2]
+    return z.reshape(num_range_bins, -1)
+
+
 def parseRangeDopplerHeatmap(tlvData: bytes, num_doppler_bins: int, num_range_bins: int) -> np.ndarray:
     # Reads in the Range-Doppler heatmap, which consists of 2byte integers. The demo visualizer of TI itself
     # does a manual conversion from 8 bit integers (np.add(x[:num_bytes:2], np.multiply(x[1:num_bytes:2], 256)).
