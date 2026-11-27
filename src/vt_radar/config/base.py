@@ -1,3 +1,20 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:86a20583cfbf89faa71c44681540a847900411ecb57dd0da93c03f71a492c51b
-size 626
+"""
+Base configuration classes for TI mmWave SDK configurations.
+"""
+from typing import Any, List
+
+
+class Cfg(object):
+    """Base class for all configuration classes."""
+
+    def parse(self, args: List[str]) -> None:
+        """Parse configuration parameters from command line arguments.
+
+        Args:
+            args: List of command line arguments
+        """
+        raise NotImplementedError("Subclasses must implement parse method")
+
+    def describe(self) -> None:
+        """Describe the configuration parameters."""
+        raise NotImplementedError("Subclasses must implement describe method")

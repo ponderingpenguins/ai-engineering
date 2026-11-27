@@ -1,3 +1,12 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:d4ed22347d1d8ae77566d54e65c329016342a004b23c17760432f0c69b10ab63
-size 223
+settings:
+  room-dimensions:
+    command: request_stats
+    stats_type: cpu
+  sensor-position:
+    azimuth: 4.0
+    elevation: 5.0
+    height: 3.0
+  settings:
+    azimuth: 4.0
+    elevation: 5.0
+    height: 3.0
