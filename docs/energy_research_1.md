@@ -1,280 +1,924 @@
-# Radar Configuration Quality & Energy Functions for Pre- and In-Collection Adjustment
+# Energy functions for radar recording quality: research and implementation guide
 
-**Context:** TI `IWR6843AOP` (60 GHz FMCW mmWave, SDK 3.6 OOB Demo), `vt_radar` recorder (`python main.py record`), top-down indoor floor-posture dataset (`Config_4.cfg`, `256 × 16` Range-Doppler heatmaps + 3D point clouds → CNN-GRU `rnn` and `pointnet` classifiers).
+**Purpose:** explain what we should measure, why it might help, and exactly what each implementation step should take in and produce.
 
----
+**Project:** TI IWR6843AOP radar, range-Doppler heatmaps, point clouds, and the floor-posture classifiers in this repository.
 
-## 1. Executive Summary & The Core "Camera AE-Lock" Principle
+**Status:** research and proposed implementation, reviewed against the repository on 27 November 2026. The quality module, calibration command, quality logs, and automatic controller below are proposed additions. They have not been implemented or tested on hardware as part of this work.
 
-In photography, **auto-exposure (AE)** and **autofocus (AF)** maximize an image-quality functional (exposure headroom, gradient sharpness, histogram entropy, zero clipping) by adjusting ISO, shutter speed, aperture, and focus before and during capture. Translating this paradigm to FMCW mmWave radar data collection for machine learning requires respecting one critical difference between human photography and ML dataset collection:
+## 1. What problem are we trying to solve?
 
-> **The AE-Lock Principle for ML Radar Recording:**
-> **Before** recording, treat radar tuning like camera AE/AF — run a short active sweep (empty room + live target) to optimize an energy function over RF/DSP settings and verify mounting geometry.
-> **During** recording, **lock RF and FFT-grid parameters** (just as videographers use *AE-Lock* to prevent brightness pumping mid-shot) so the recording stays stationary and compatible with downstream neural models. Run the energy function continuously as a **real-time Signal Quality Index (SQI) / exposure meter** to warn the operator, log frame-level usability, and (optionally, only for point-cloud density) adapt runtime-safe `cfarCfg` thresholds that do **not** alter the underlying Range-Doppler heatmap.
+We want to know whether a radar recording contains useful information about a person, especially a person lying still on the floor. We also want to know what an operator should change when the recording is poor.
 
-This project's own data history illustrates why this separation matters:
-- Ten `Experiment_1.cfg` recordings had to be discarded because `guiMonitor` omitted the point-cloud TLV and the range bin was `0.7687 m` (putting an entire person in 2–3 bins) (`docs/data_notes/floor-posture-cohorts.md`).
-- Even among retained `Config_4.cfg` recordings, the point cloud yields a **median of 2 points/frame with 27% empty frames** (`docs/modeling.md`), and the empty-room heatmap noise floor shifts by `100–180` raw units across recordings.
-- Changing RF parameters (`profileCfg`, `frameCfg`, `clutterRemoval`) mid-recording would break range-bin spacing, Doppler scale, and noise-floor stationarity inside a single `.h5` session, creating severe covariate shift for the `rnn` model.
+A bright heatmap is not enough. A metal object can produce a strong reflection while the person remains difficult to see. A large point cloud is not enough either: lowering the detection threshold can produce extra points from noise. Conversely, a frame with no detected points can be normal when the room is empty.
 
----
+Our quality assessment therefore needs to answer separate questions:
 
-## 2. Mapping the Camera Analogy to TI `IWR6843AOP` Hardware
+1. Did we receive complete, correctly interpreted radar data?
+2. Does a person produce a measurable change from the empty room?
+3. Does the heatmap contain useful structure rather than only background or isolated interference?
+4. Does the point cloud contain enough plausible detections for PointNet?
+5. Is there evidence of receiver saturation, recording problems, or changing background conditions?
 
-Every intuitive camera adjustment maps directly to a specific TI mmWave CLI parameter and observable TLV signal in `src/vt_radar/`:
+An **energy function** converts measurements into a penalty. A larger penalty means a worse result. A window with many missing frames should receive a large penalty for missing data; a complete window should receive none for that issue.
 
-| Camera Concept | Radar Equivalent (`TI IWR6843AOP`) | `.cfg` Command / Knob | Observable in `vt_radar` | Runtime-Safe Without `sensorStop`? |
-| :--- | :--- | :--- | :--- | :--- |
-| **Exposure / ISO Gain** | Receiver analog/IF gain & TX power backoff | `profileCfg` (`rxGain`, `txOutPowerBackoff`) | Heatmap floor & peak (`uint16`), point `SNR` & `Noise` (0.1 dB) | **No** (requires `sensorStop` → `flushCfg` → `sensorStart`) |
-| **Highlight Clipping / Zebras** | ADC / LNA saturation from close strong reflectors (ceiling fixture, metal) | `rxGain`, `hpfCornerFreq1/2`, `txOutPowerBackoff`, `CQRxSatMonitor`, `analogMonitor` | `CQRxSatMonitor` saturation count; heatmap values near `65535` ceiling | Monitor configured pre-start; `rxGain` requires stop/start |
-| **Dark Frame / Black Level** | Empty-room static clutter & TX-RX antenna leakage (DC bin) | `calibDcRangeSig`, `clutterRemoval` | Range bins `0..5` spike; zero-Doppler ridge in `rangeDopplerHeatmap` | `clutterRemoval` / `calibDcRangeSig` generally set pre-start (and must stay fixed per ML recording) |
-| **Focus / Spatial Resolution** | Bandwidth (range res), chirp count (Doppler res), unambiguous range/velocity | `profileCfg` (`freqSlopeConst`, `numAdcSamples`, `digOutSampleRate`), `frameCfg` (`numLoops`) | `range_resolution_m`, `bin_spacing_m`, `max_range`, target spread in RD map | **No** — and **must stay locked** across an ML cohort (e.g. `256 × 16`, `0.0237 m/bin`) |
-| **Edge / Feature Thresholding** | Detection threshold separating target points from noise/clutter | `cfarCfg` (range & Doppler `thresholdScale`, mode `CA/OS/GO/SO`, `peakGrouping`), `multiObjBeamForming` | `numDetectedPoints`, point `SNR`, spatial clustering, empty-frame rate | **Yes** — TI mmWave SDK explicitly documents `cfarCfg` as dynamically updatable while running (and it does **not** mutate the RD heatmap) |
-| **Framing / Crop (ROI)** | Physical mounting height, tilt, and angular/range FoV | Physical mount, `cfarFovCfg`, `aoaFovCfg` | Floor-peak range bin (~1.8–2.5 m), point `(x, y, z)` footprint | Pre-recording verification (manual mount + `.cfg` bounds) |
-| **Dropped Frames / Thermal Drift** | UART framing errors, DSP overload, RF die heating | `frameCfg` (`framePeriodicity`), `guiMonitor` | `frameNum` gaps, `heatmap_ok`, `parseStatsTLV` margins, `parseTemperatureStatsTLV` | Monitored continuously live |
+Here, “energy” means **a mathematical cost to minimise**. It does not measure electrical consumption or transmitted radar power. It is also separate from the loss used to train the posture classifier.
 
-> **Hardware note on `vt_radar`:** Currently, `Config_4.cfg` sets `analogMonitor 0 0` (leaving TI's built-in `CQRxSatMonitor` and `CQSigImgMonitor` inactive) and `guiMonitor -1 1 1 0 0 1 1` (disabling the noise-profile TLV). Furthermore, `src/vt_radar/parsing_utils/parseFrame.py` currently logs an error and skips `MMWDEMO_OUTPUT_MSG_NOISE_PROFILE`. Enabling noise-profile parsing and chirp-quality monitors is a high-leverage prerequisite for hardware-grounded quality scoring.
+### Two uses, with different inputs and outputs
 
----
+| Use | Input | Output | What happens next? |
+| --- | --- | --- | --- |
+| Assess a recording | Radar frames, configuration, optional empty-room reference, and known or unknown occupancy | Measurements, validity flags, separate heatmap and point-cloud scores, and explanations | An operator reviews the result; later, validated rules can flag model windows |
+| Choose a radar setting | Allowed configurations, calibration recordings made under each setting, and their quality reports | Comparison table and recommended configuration, or a report that none passed | Apply the selected configuration before recording and keep it fixed |
 
-## 3. Paper-Backed Literature Review of Radar Quality & Energy Functions
+The scorer measures quality. The tuner chooses settings using those measurements. Keeping those responsibilities separate lets us test the scorer on existing recordings before it influences the sensor.
 
-Five established research families provide mathematically grounded energy functions for assessing radar signal clarity and downstream usability.
+### Before recording and during recording
 
-### Family 1: Radar Image Autofocus & Focus/Sparsity Energy (SAR / ISAR)
+Before recording, compare settings using repeatable empty-room and occupied tests. During a recording intended for the training dataset, keep the radar configuration fixed and monitor quality.
 
-In Synthetic Aperture Radar (SAR) and Inverse SAR (ISAR), *autofocusing* automatically tunes unknown signal parameters by optimizing a blind image-quality functional — the direct radar counterpart to camera autofocus.
-
-1. **Minimum Image Entropy (Shannon Entropy)** — Xi, Liu & Ni (*IEEE TAES*, 1999) [1]; Wang, Liu & Zhou (*IEE Proc. Radar, Sonar & Navig.*, 2004) [2].
-   Let $P_{r,d} \ge 0$ be the **linear** (or background-subtracted) power at range bin $r$ and Doppler bin $d$ in a Range-Doppler map. Normalize to a probability mass distribution:
-   $$p_{r,d} = \frac{P_{r,d}}{\sum_{r',d'} P_{r',d'} + \varepsilon}, \qquad H(P) = -\sum_{r,d} p_{r,d} \ln(p_{r,d} + \varepsilon)$$
-   - **Interpretation:** A well-focused, high-SCR target concentrates energy into a compact region of the Range-Doppler plane (**low entropy**). Defocused, smeared, noisy, or saturated heatmaps spread energy uniformly across bins (**high entropy**).
-   - **Critical caveat for `Config_4.cfg`:** TI OOB heatmaps are stored as log-magnitude `uint16` values with an elevated non-zero floor. Computing $H$ directly on raw `uint16` values is dominated by the flat background floor. Entropy **must** be computed on the floor-subtracted excess energy $\tilde{P}_{r,d} = \max(I_{r,d} - \hat{b}_r, 0)$ (or linear power $10^{\tilde{P}_{r,d}/c} - 1$).
-
-2. **Normalized Image Contrast (IC)** — Berizzi & Corsini (*IEEE TAES*, 1996) [3]; Martorella, Berizzi & Haywood (*IEE Proc. Radar, Sonar & Navig.*, 2005) [4].
-   $$\text{IC}(P) = \frac{\sqrt{\frac{1}{N}\sum_{r,d} \left(P_{r,d} - \bar{P}\right)^2}}{\bar{P}}, \qquad \bar{P} = \frac{1}{N}\sum_{r,d} P_{r,d}$$
-   - **Interpretation:** Dimensionless ratio of intensity standard deviation to mean intensity (coefficient of variation). Maximizing $\text{IC}$ (equivalently minimizing $-\text{IC}$) makes real target scatterers stand out sharply against the background noise floor.
-   - **Advantage:** Completely **invariant to multiplicative gain scaling** of linear power, making it well suited for comparing different `rxGain` settings when evaluated in linear units.
-
-3. **Generalized Sharpness & Axiomatic Sparsity (Gini Index)** — Fienup & Miller (*JOSA A*, 2003) [5]; Hurley & Rickard (*IEEE Trans. Inf. Theory*, 2009) [6].
-   Fienup & Miller generalize sharpness to $S_\alpha(P) = \sum_{r,d} P_{r,d}^\alpha$ ($\alpha > 1$, commonly $\alpha = 2$, the Muller-Buffington squared-intensity metric). However, raw $S_\alpha$ is not scale-invariant across gain changes. Hurley & Rickard [6] evaluate 16 sparsity/concentration measures against 6 formal axioms (*Robin Hood*, *Scaling*, *Rising Tide*, *Cloning*, *Bill Gates*, *Babies*) and prove that the **Gini Index** is the **only** standard measure satisfying all six:
-   $$\text{Gini}(P) = 1 - 2 \sum_{k=1}^{N} \frac{P_{(k)}}{\|P\|_1} \left(\frac{N - k + \tfrac{1}{2}}{N}\right), \quad 0 \le P_{(1)} \le P_{(2)} \le \dots \le P_{(N)}$$
-   - **Why Gini beats raw entropy & $L_2/L_1$ for radar auto-gain:** Because it satisfies *Scaling* (invariant to multiplying all bins by a gain factor) **and** *Rising Tide* (strictly decreases if the noise floor rises uniformly relative to target peaks), Gini naturally penalizes noise-floor elevation and receiver compression while remaining bounded in $[0, 1]$.
-
----
-
-### Family 2: Camera Auto-Exposure Energy Functions Adapted to Radar
-
-Modern robotics camera AE algorithms abandoned simple "mean brightness = 128" heuristics because mean brightness fails in high-dynamic-range scenes — the exact same failure mode as indoor radar (strong static ceiling/floor return vs weak lying human return).
-
-4. **Nonlinear Gradient Information Metric** — Shim, Lee & Kweon (*IEEE/RSJ IROS*, 2014 [7]; *IEEE TCSVT*, 2018 [8]).
-   Computes the spatial gradient magnitude $g_{r,d} = \|\nabla I(r,d)\|_2$ of the log-magnitude image (here, the Range-Doppler heatmap) and applies a logarithmic activation above a noise threshold $\delta$:
-   $$m(g) = \begin{cases} \dfrac{1}{N_\text{norm}} \ln\!\left(\lambda (g - \delta) + 1\right) & g \ge \delta \\ 0 & g < \delta \end{cases}, \qquad M_{\text{grad}}(I) = \sum_{r,d} m(g_{r,d})$$
-   - **Why it translates directly to Range-Doppler heatmaps:** If `rxGain` is too low, target returns sink below $\delta$ → $M_{\text{grad}} \to 0$. If `rxGain` is too high, clipping creates flat saturated plateaus whose gradient is $0$, while background noise raises the floor → $M_{\text{grad}}$ drops. Thus $M_{\text{grad}}$ is **unimodal** in gain/exposure, peaking precisely where target contours are cleanest.
-
-5. **Entropy-Weighted Gradient + Saturation Penalty with Bayesian Optimization** — Kim, Cho & Kim (*IEEE ICRA*, 2018) [9]; Zhang, Forster & Scaramuzza (*IEEE ICRA*, 2017) [10].
-   Kim et al. combine image entropy, gradient quality, and an explicit clipping penalty into a single black-box objective optimized via **Bayesian Optimization (Gaussian Process)**:
-   $$Q_{\text{Kim}}(I) = \alpha \cdot \bar{G}_{\text{weighted}}(I) + (1 - \alpha) \cdot H_{\text{hist}}(I) - \beta \cdot \left(f_{\text{sat}}(I) + f_{\text{floor}}(I)\right)$$
-   where $f_{\text{sat}}$ is the fraction of clipped/saturated bins and $f_{\text{floor}}$ is the fraction of under-exposed (noise-clipped) bins.
-   - **Key takeaway:** Kim et al. show that evaluating a black-box sensor quality score with **Bayesian Optimization** converges to the optimal exposure setting in **5–10 probe frames** without needing an analytical camera response model — directly applicable to tuning TI radar parameters (`rxGain`, `cfarCfg`) in a 10–15 second pre-recording sweep.
-
----
-
-### Family 3: Cognitive Radar & Statistical Separability Objectives
-
-6. **Mutual Information & SNR-Matched Illumination** — Bell (*IEEE TIT*, 1993) [11]; Haykin (*IEEE SPM*, 2006) [12]; Leshem, Naparstek & Nehorai (*IEEE JSTSP*, 2007) [13]; Romero, Bae & Goodman (*IEEE TAES*, 2011) [14].
-   - Bell [11] established the **Mutual Information** between target impulse response $g$ and received echo $y$ in additive noise/clutter $n$:
-     $$I(g; y) = \frac{1}{2} \sum_k \ln\!\left(1 + \frac{\sigma_{g,k}^2}{\sigma_{n,k}^2}\right)$$
-   - Romero et al. [14] proved a classic duality directly relevant to ML classification:
-     - **Maximizing SNR** puts all energy into the single strongest scattering mode (best for binary *presence detection*).
-     - **Maximizing Mutual Information** distributes dynamic range across multiple scattering modes (best for *target characterization / posture classification*, where subtle torso/limb reflections matter more than just the brightest specular bounce).
-   - **Practical proxy in `vt_radar`:** Compare an occupied calibration snippet ($P_{\text{occ}}$) against an empty-room baseline ($P_{\text{empty}}$, mean $\mu_{r,d}^{(0)}$ and variance $(\sigma_{r,d}^{(0)})^2$) inside the active human ROI (e.g., range `0.5 m` to floor distance `~2.5 m`):
-     - **Active-Zone Signal-to-Clutter-and-Noise Ratio (SCNR):**
-       $$\text{SCNR}_{\text{ROI}} = 10 \log_{10}\!\left(\frac{\text{quantile}_{0.98}(\max(I_{\text{ROI}} - \mu^{(0)}_{\text{ROI}}, 0))}{\text{median}(\sigma^{(0)}_{\text{ROI}}) + \varepsilon}\right)$$
-     - **Symmetric KL / Deflection Distance (Background-to-Target Separability):**
-       $$D_{\text{sep}} = \frac{1}{|\text{ROI}|} \sum_{(r,d) \in \text{ROI}} \frac{\left(\mu^{(1)}_{r,d} - \mu^{(0)}_{r,d}\right)^2}{(\sigma^{(0)}_{r,d})^2 + (\sigma^{(1)}_{r,d})^2 + \varepsilon}$$
-       Directly quantifies how easily a downstream classifier can separate "person present / posture state" from empty-room clutter.
-
----
-
-### Family 4: Radar Signal Quality Index (SQI) & Hardware Dynamic Range
-
-7. **Active Radar Signal Quality Index (SQI)** — Nguyen et al. (*IEEE Sensors Letters*, 2026) [15].
-   Formulates an explicit bounded **Signal Quality Index** for Doppler radar human sensing specifically to guide **active positioning / alignment** before and during measurement. Rather than relying on raw amplitude (which can be high due to static clutter or motion artifacts), an effective human-sensing SQI evaluates:
-   - Target-band SNR / spectral prominence over noise floor,
-   - Temporal continuity (stability of target signature across adjacent frames vs erratic drops),
-   - Clutter-to-signal contamination ratio.
-
-8. **FMCW Receiver Dynamic Range, Saturation & Chirp Quality Monitoring** — Texas Instruments *SWRA553A* [16] & mmWave SDK User Guide [17].
-   - In short-range top-down indoor deployments (`~1.8–2.5 m` to the floor), specular reflections from the ceiling mount, metal fixtures, or floor can saturate the RX LNA/ADC, causing **intermodulation spurs and harmonic ghost ridges** across the entire Range-Doppler map that *cannot* be removed in post-processing.
-   - TI's `CQRxSatMonitor` measures the exact percentage of ADC samples saturated per time slice, and `CQSigImgMonitor` compares in-band signal power against image-band interference. Pairing hardware saturation counters with heatmap ceiling checks (`frac(I >= 0.95 * I_max)`) gives an exact, physics-backed **clipping barrier** in the energy function.
-
----
-
-### Family 5: Indoor Extended-Target CFAR & Point-Cloud Usability
-
-9. **Temporal vs. Spatial CFAR for Indoor mmWave Point Clouds** — Yang et al. (*ACM IMWUT*, 2025, ETCM-CFAR) [18].
-   - Demonstrates why standard spatial CA-CFAR (such as `Config_4.cfg`'s `cfarCfg -1 0 2 8 4 3 0 15 1` and `cfarCfg -1 1 0 4 2 3 1 15 1`) performs poorly for indoor human sensing: at `1.5–3 m`, a human body is an **extended target** spanning multiple range and Doppler bins, so neighboring body reflections spill into the CFAR reference window, inflating the local noise estimate and **self-masking the person**.
-   - This directly explains the repo's empirical finding in `docs/modeling.md`: `Config_4.cfg` produces **0 to 16 points/frame (median 2; 27% empty frames)** — starving `pointnet` of spatial geometry, especially when a person lies still on the floor.
-   - **Implication for our energy function:** For `pointnet` usability, we must explicitly score **point-cloud yield inside the human ROI** (penalizing both starvation `< 2 pts/frame` and false-alarm flooding `> 12 pts/frame` that causes `max_points = 128` truncation per 16-frame window), weighted by point SNR margin and spatial compactness.
-
----
-
-## 4. Comparative Matrix of Candidate Energy Functions
-
-| Energy / Metric | Primary Reference | Catches Under-Gain / Low SNR | Catches Saturation / Clipping | Catches Clutter / Floor Shift | Catches Point-Cloud Starvation | Scale / Gain Invariant? | Needs Empty-Room Ref? | Live Cost (per 200 ms frame) |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Shannon Image Entropy** $H(\tilde{P})$ | Xi et al. 1999 [1]; Wang et al. 2004 [2] | Partial | Partial | Yes (if floor-sub.) | No | Yes | Recommended | `< 0.5 ms` |
-| **Normalized Image Contrast (IC)** | Berizzi & Corsini 1996 [3]; Martorella et al. 2005 [4] | Yes | Partial | Yes | No | Yes | Recommended | `< 0.2 ms` |
-| **Gini Sparsity Index** | Hurley & Rickard 2009 [6] | Yes | Yes (flat ceiling lowers Gini) | Yes (Rising Tide) | No | Yes | Recommended | `~0.8 ms` (sort 4096 bins) |
-| **Shim Gradient Metric** $M_{\text{grad}}$ | Shim et al. 2014/2018 [7, 8] | Yes | Yes (clipped = 0 grad) | Partial | No | No (threshold $\delta$) | No | `< 0.5 ms` |
-| **Kim Entropy-Grad + Clip Penalty** | Kim et al. 2018 [9] | Yes | **Strong** | Yes | No | Tuned | No | `~1.0 ms` |
-| **ROI SCNR & Deflection $D_{\text{sep}}$** | Bell 1993 [11]; Romero et al. 2011 [14] | **Strong** | No (alone) | **Strong** | No | Yes | **Yes** | `< 0.3 ms` |
-| **Hardware Saturation + Transport Gate** | TI SWRA553A [16]; SDK Guide [17] | No | **Exact (ADC)** | No | Detects missing TLV | N/A | No | `< 0.1 ms` |
-| **Point-Cloud Yield / Coherence Energy** | Yang et al. 2025 [18] | Indirect | Indirect | Yes (false alarms) | **Strong** | N/A | Optional | `< 0.3 ms` |
-
-**Key Insight:** **No single scalar metric catches every failure mode.**
-- Entropy / Contrast / Gini alone can be fooled by a single saturated metallic reflector (high contrast, low entropy, completely useless for a lying human).
-- Raw SNR alone rewards turning `rxGain` up until ADC clipping occurs.
-- Heatmap metrics alone cannot detect a misconfigured `cfarCfg` or disabled `detectedObjects` TLV (the exact failure mode that ruined the 10 `Experiment_1.cfg` recordings).
-
-Therefore, the right formulation is a **barrier-gated composite energy function** whose individual sub-energies remain inspectable for manual guidance.
-
----
-
-## 5. Recommended Composite Energy Function: $E_{\text{radar}}$
-
-Define a **minimization energy** $E_{\text{total}} \in [0, \infty)$ (lower is better; mapped to a human-friendly $[0, 100]$ **Radar Usability Score** $Q = 100 \cdot \exp(-E_{\text{total}})$ for live HUD display). Evaluate over a sliding window $W$ of $T = 16$ frames (`3.2 s`, matching `windowing.window_len` in `config/data.yaml`).
-
-$$E_{\text{total}}(\theta; W) = E_{\text{gate}}(W) + w_{\text{head}} E_{\text{headroom}} + w_{\text{focus}} E_{\text{focus}} + w_{\text{sep}} E_{\text{sep}} + w_{\text{pc}} E_{\text{pc}} + w_{\text{stab}} E_{\text{stab}}$$
-
-### Term 0: Hard Usability Barrier $E_{\text{gate}}$ (Fail-Fast Structural Check)
-Returns $+\infty$ (hard red flag: **DO NOT RECORD / UNUSABLE**) if any structural requirement fails:
-1. **Schema / TLV integrity:** `heatmap_ok == False` on $> 5\%$ of frames, or `detectedObjects` TLV absent (catches `Experiment_1.cfg` immediately).
-2. **Grid compatibility (ML cohort lock):** `(num_range_bins, num_doppler_bins)` or `bin_spacing_m` deviates from target cohort (e.g., `Config_4`: `256 × 16`, `bin_spacing_m ≈ 0.0237 m`).
-3. **Transport / timing integrity:** Frame-drop rate (from `frameNum` increments) $> 2\%$, or `interFrameProcessingMargin == 0` in `parseStatsTLV`.
-4. **Severe ADC / heatmap saturation:** `CQRxSatMonitor` saturation ratio $> 1\%$ OR $> 0.5\%$ of heatmap cells hit the `uint16` ceiling.
-
-### Term 1: Dynamic-Range & Exposure Headroom $E_{\text{headroom}}$ (Camera Auto-Exposure Equivalent)
-Prevents both clipping (too hot) and quantization/floor burial (too cold), inspired by Kim et al. [9]:
-$$E_{\text{headroom}} = \lambda_{\text{sat}} \cdot \max\!\left(0, \frac{q_{0.999}(I) - I_{\text{hi}}}{I_{\max} - I_{\text{hi}}}\right)^2 + \lambda_{\text{low}} \cdot \max\!\left(0, \frac{D_{\min} - \left(q_{0.995}(I_{\text{ROI}}) - q_{0.20}(I_{\text{ROI}})\right)}{D_{\min}}\right)^2$$
-- Penalizes peak heatmap values approaching ceiling $I_{\text{hi}}$ (e.g., $0.85 \cdot I_{\max}$ or ADC headroom $< 6\text{ dB}$).
-- Penalizes compressed dynamic range where the 99.5th-percentile return in the human ROI is not at least $D_{\min}$ above the 20th-percentile noise floor.
-
-### Term 2: Heatmap Focus & Feature Sharpness $E_{\text{focus}}$ (Autofocus + Gradient Information)
-Combines Hurley & Rickard's scale-invariant **Gini Index** [6] on the floor-subtracted Range-Doppler excess map $\tilde{P}_{r,d} = \max(I_{r,d} - \hat{b}_r, 0)$ inside the ROI with Shim et al.'s **nonlinear gradient energy** [7, 8]:
-$$E_{\text{focus}} = \left(1 - \text{Gini}(\tilde{P}_{\text{ROI}})\right) + \gamma \cdot \exp\!\left(-\frac{M_{\text{grad}}(I_{\text{ROI}})}{M_0}\right)$$
-- Rewards crisp, well-localized human reflections in Range-Doppler space (including micro-Doppler limbs/breathing) and penalizes smeared noise or flat saturated plateaus.
-- Works **both** with and without an empty-room baseline (using per-frame robust range-median floor $\hat{b}_r$ when no baseline is stored).
-
-### Term 3: Target-to-Background Separability $E_{\text{sep}}$ (Cognitive Radar / SCNR)
-Used whenever an empty-room reference $(\mu^{(0)}, \sigma^{(0)})$ is captured during pre-flight calibration (or via slow empty-scene initialization):
-$$E_{\text{sep}} = \exp\!\left(-\frac{\max(\text{SCNR}_{\text{ROI}}, 0)}{\tau_{\text{scnr}}}\right) + \eta \cdot \exp\!\left(-\frac{D_{\text{sep}}}{\tau_{\text{sep}}}\right)$$
-- Directly measures whether a human (especially **lying on the floor** near the floor range bin!) produces statistically separable energy above static room clutter (e.g., target $\text{SCNR}_{\text{ROI}} \ge 12\text{–}15\text{ dB}$).
-- Also flags **static-clutter over-suppression**: if `clutterRemoval` is enabled and a stationary lying person vanishes into the background, $\text{SCNR}_{\text{ROI}}$ during the lying calibration check drops toward $0\text{ dB}$, immediately raising $E_{\text{sep}}$!
-
-### Term 4: Point-Cloud Usability Energy $E_{\text{pc}}$ (Tailored to `PointNet` & Indoor CFAR)
-Directly guards against the `Config_4` starvation problem (median 2 pts/frame, 27% empty frames) and the `max_points = 128` window truncation cap:
-$$E_{\text{pc}} = \underbrace{\left(\frac{\bar{n}_W - n^*}{n_{\text{scale}}}\right)^2}_{\text{density band}} + \lambda_{\text{empty}} f_{\text{empty}}(W) + \lambda_{\text{snr}} \max\!\left(0, \frac{\text{SNR}_{\min} - \text{median}(\text{SNR}_{\text{ROI}})}{\text{SNR}_{\min}}\right)^2 + \lambda_{\text{ghost}} f_{\text{oob}}(W)$$
-where:
-- $\bar{n}_W$ is total ROI points per 16-frame window, targeting $n^* \approx 64\text{–}80$ (i.e., `4–5 pts/frame`, comfortably inside `PointNet`'s `128`-point cap without truncating or starving).
-- $f_{\text{empty}}(W)$ is the fraction of zero-point frames in the window (currently `0.27`; target `< 0.05` when a person is present).
-- $\text{median}(\text{SNR}_{\text{ROI}})$ ensures detections carry real margin above noise (e.g., $\ge 10\text{ dB}$).
-- $f_{\text{oob}}(W)$ is the fraction of points falling outside the plausible room/floor bounding box (penalizes multipath ghosts or overly loose CFAR thresholds).
-
-### Term 5: Temporal & Thermal Stability $E_{\text{stab}}$ (Live Drift Monitor)
-Tracks slow degradation during long recordings:
-$$E_{\text{stab}} = \left(\frac{\|\hat{b}(t) - \hat{b}(t_0)\|_2}{\|\hat{b}(t_0)\|_2 + \varepsilon}\right)^2 + \lambda_T \cdot \max\!\left(0, \frac{|T_{\text{die}}(t) - T_{\text{die}}(t_0)| - \Delta T_{\text{tol}}}{\Delta T_{\text{tol}}}\right)^2$$
-- Flags noise-floor drift (e.g., caused by RF self-heating after cold start, a moved piece of furniture, or environmental interference) and die temperature excursions from `parseTemperatureStatsTLV` (e.g., $\Delta T_{\text{tol}} = 10\,^\circ\text{C}$).
-
-### Suggested Starting Weights (Before Empirical Calibration)
-Normalize each sub-term to $\mathcal{O}(1)$ at nominal acceptable quality and start with:
-- $w_{\text{head}} = 0.30$ (protect dynamic range / zero clipping first — unrecoverable if bad)
-- $w_{\text{sep}} = 0.25$ (target visibility above static room clutter)
-- $w_{\text{pc}} = 0.25$ (eliminate `PointNet` starvation without ghost flooding)
-- $w_{\text{focus}} = 0.15$ (Range-Doppler sharpness & sparsity)
-- $w_{\text{stab}} = 0.05$ (drift monitoring during long runs)
-
-*(Exact weights should be calibrated against downstream CV F1 / balanced loss on the existing 25 recordings in Phase 1 below.)*
-
----
-
-## 6. Best Path Forward: Two-Stage Architecture (Before vs. During Collection)
+Changing gain, clutter removal, detection thresholds, or the mounting changes the data distribution. Even with the same heatmap dimensions, the model input can change. A later deployment experiment may investigate runtime CFAR changes, but the first implementation should only measure and report.
 
 ```mermaid
-flowchart LR
-    subgraph PRE["Phase A: Pre-Collection Calibration (15–30 s)"]
-        E0["1. Empty Room (5 s)\nNoise floor + DC calib + Sat check"] --> T1["2. Active Target Check (10 s)\nStanding + Lying on floor"]
-        T1 --> OPT["3. Optimizer / Manual Assist\nSweep rxGain & cfarCfg\nMinimize E_total (Grid Locked)"]
-        OPT --> LOCK["4. AE-LOCK\nFreeze RF & Grid Config\nSave quality_meta.json"]
-    end
-
-    subgraph LIVE["Phase B: During Collection (200 ms loop)"]
-        LOCK --> REC["Record TLV + Webcam\n(HDF5 chunks)"]
-        REC --> HUD["Sliding 16-Frame E_total\nLive Quality HUD + Alerts\nWrite frame_sqi.parquet"]
-        HUD -.->|"Optional deployment mode only\n(Deadband + Hysteresis)"| CFAR["Dynamic cfarCfg UART\n(Heatmap stays invariant)"]
-    end
+flowchart TD
+    A[Recorded or live radar frames] --> B[Decode and check configuration]
+    B --> C[Check shape, timing and required data]
+    C --> D[Compare with matching empty-room reference]
+    D --> E[Measure heatmap structure and target visibility]
+    C --> F[Measure point-cloud coverage and SNR]
+    E --> G[Quality report with reasons and missing measurements]
+    F --> G
+    G --> H[Before recording: compare candidate settings]
+    G --> I[During recording: display and save warnings]
+    H --> J[Select and freeze configuration]
 ```
 
-### Stage A: Before Data Collection (Auto or Guided Manual Adjustment)
+## 2. What we actually have in this repository
 
-1. **Lock the ML-invariant geometry first:** Never auto-vary `freqSlopeConst`, `numAdcSamples`, `digOutSampleRate`, `numLoops`, or `framePeriodicity` when collecting data for an existing model cohort (`Config_4`: `256 × 16`, `0.2 s/frame`, `0.0237 m/bin`).
-2. **Step 1 — Empty-Room Pre-Flight (5 s, ~25 frames):**
-   - Enable `analogMonitor 1 1` and `guiMonitor` noise profile.
-   - Verify `E_gate` passes (valid TLVs, expected shape, zero dropped frames, zero saturation).
-   - Measure the room's static range profile $\mu^{(0)}$, noise variance $\sigma^{(0)}$, and check that the dominant static floor peak matches the expected mounting height (`~1.8–2.5 m`). Warn immediately if the sensor is tilted awkwardly or blocked by a near-field obstacle (`< 0.4 m`).
-3. **Step 2 — Active Target Calibration (10 s, ~50 frames: person walks in & lies on floor):**
-   - **Auto mode (Bayesian Optimization / Coordinate Search):** Following Kim et al. [9], run a tiny 6–10 evaluation sweep (or 2D grid/BO over safe discrete sets) tuning:
-     - `rxGain` $\in \{24, 28, 30, 34, 38, 42\}\text{ dB}$ (requires brief `sensorStop`/`sensorStart`, ~0.5 s per step) — minimizes $E_{\text{headroom}} + E_{\text{focus}} + E_{\text{sep}}$.
-     - `cfarCfg` range & Doppler `thresholdScale` $\in \{8, 10, 12, 15\}\text{ dB}$ (runtime-safe, instant) and mode (`CA-CFAR` vs `OS-CFAR` / `GO-CFAR`) — minimizes $E_{\text{pc}}$.
-   - **Manual-assist mode:** Show the operator the live decomposed sub-scores (`Headroom`, `Clutter Sep`, `Focus`, `Point Density`, `Mount Height`) with plain-English actionable hints (e.g., *"ADC saturating at 0.3 m — lower rxGain or move away from ceiling beam"*, *"Lying person yields 0.6 pts/frame — lower CFAR threshold from 15 dB to 11 dB"*).
-4. **Step 3 — Lock & Stamp (`AE-Lock`):**
-   - Write the chosen `.cfg` plus `quality_meta.json` (empty-room floor $\mu^{(0)}, \sigma^{(0)}$, baseline die temperature, pre-flight $E_{\text{total}}$ and sub-scores) into `recording/<YYYYMMDD_HHMMSS>/`.
+These facts determine which parts we can implement offline and which need new collection or firmware investigation.
 
-### Stage B: During Data Collection (Online Monitoring vs. Controlled Adaptation)
+| Existing component | What it provides | Consequence for implementation |
+| --- | --- | --- |
+| [Baking code](../src/data/bake.py) | One row per frame, including `heatmap`, `heatmap_ok`, `pointcloud`, `timestamp`, `radar_frame_num`, `frame_idx`, and `radar_payload` | Start with baked data. Raw bytes remain available for packet checks |
+| [Data configuration](../config/data.yaml) | `window_len: 16`, `stride: 8`, `max_points: 128`, and recording selection | Read these values rather than hard-coding them in quality functions |
+| [Window construction](../src/data/windowing.py) | Heatmaps become `float32`, pass through `log1p`, and enter windows; point windows keep the strongest 128 points by SNR when needed | Measure raw heatmaps before the model transform, and count points before truncation |
+| [Annotation helpers](../src/data/annotations.py) | `capture_positions` reconstructs capture order; `person_present` and `lying_annotation` have different meanings | Use capture order and occupancy labels only where known |
+| [Recorder](../src/vt_radar/recording_utils/recorder.py) | Raw packets and optional camera images written in HDF5 chunks, with a configuration copy | Add quality outputs alongside recordings after offline validation |
+| [Frame parser](../src/vt_radar/parsing_utils/parseFrame.py) | Heatmap, point-cloud, statistics, and temperature dispatch; the noise-profile branch logs and skips its payload | Noise-profile scoring needs parser work. Expose optional telemetry to the scorer |
+| [TLV parsers](../src/vt_radar/parsing_utils/parseTLVs.py) | Heatmap cells are read as `uint16`; ordinary point side information is multiplied by `0.1` | Ordinary decoded point SNR is already in dB. Do not scale it by `0.1` again |
 
-1. **For ML Training Dataset Collection — Monitor & Gate, Do Not Mutate RF:**
-   - Compute $E_{\text{total}}$ every frame on the trailing 16-frame buffer (`< 2 ms` CPU time — negligible next to the `200 ms` frame period, safe even on Raspberry Pi).
-   - Display a compact terminal status line (replacing or extending the `Halo` spinner in `src/vt_radar/recording_utils/recorder.py`):
-     `Recording... Q=84/100 [Headroom: OK | Sep: 14.2dB | Pts: 5.1/f | Sat: 0% | Drops: 0 | Temp: 46°C]`
-   - Persist per-frame quality telemetry (`quality_log.csv` or column in HDF5) so `python main.py bake` can report usability statistics and flag corrupted windows automatically before manual camera annotation!
-2. **Optional Live Adaptation — Runtime-Safe `cfarCfg` Only (Deployment / Exploratory Mode):**
-   - Because TI's SDK allows updating `cfarCfg` over the CLI UART **without** `sensorStop`, and because CFAR runs *after* the 2D Range-Doppler FFT, adjusting `cfarCfg` **does not corrupt the `rangeDopplerHeatmap` tensor** while dynamically preventing `pointnet` point-cloud starvation!
-   - Guard any live `cfarCfg` controller with:
-     - **Occupancy gate:** Only adapt when `E_sep` / heatmap energy confirms a person is present (never lower threshold down into noise when the room is empty!).
-     - **Deadband + Hysteresis:** Only step `thresholdScale` by $\pm 1\text{ dB}$ if rolling 5 s point density stays outside `[3, 9] pts/frame` for 3 consecutive windows, clamped to `[8, 18] dB`, with a minimum `10 s` cooldown.
-     - **Full audit log:** Record every dynamic CLI command and its exact `frame_idx` timestamp into the session folder so replay and ML preprocessing always know the exact threshold active on every frame.
+Some configuration and parser files in this checkout are Git LFS pointer files. Their locally available LFS object contents were inspected for this review. Before implementing or importing those modules, ensure the working files contain the real source rather than the three-line pointer. That is a checkout prerequisite, separate from the quality algorithm.
 
----
+### Existing observations that motivate the work
 
-## 7. Concrete Implementation Roadmap for This Repository
+[The modeling notes](modeling.md) report a median of two detected points per frame and 27% empty frames among the labelled frames they analysed. They also report about 41 points per 16-frame window and truncation in only 0.3% of windows at the current 128-point limit. These are existing documented observations, not measurements rerun for this document. The first offline analysis should reproduce them on its explicitly selected dataset.
 
-| Phase | Scope | Files Touched | Validation Criterion |
-| :--- | :--- | :--- | :--- |
-| **Phase 1: Offline Energy Validation** | Implement `E_gate`, `E_headroom`, `E_focus` (Gini + Shim gradient), `E_sep`, `E_pc` and score all 25 existing recordings (plus synthetic corrupted/saturated/empty perturbations). | New `src/vt_radar/quality.py` + exploration script/notebook | Verify energy cleanly separates high-usability Cohort A recordings from low-point-density, floor-shifted, and bad-config recordings, and correlates with per-recording `rnn`/`pointnet` error rates. |
-| **Phase 2: Hardware Telemetry & Pre-Flight Check** | Parse `MMWDEMO_OUTPUT_MSG_NOISE_PROFILE` in `parseFrame.py`; test enabling `analogMonitor 1 1` & noise profile on `IWR6843AOP`; add `--check-only` / pre-flight wizard + live quality HUD to `python main.py record`. | `src/vt_radar/parsing_utils/parseFrame.py`, `parseTLVs.py`, `src/vt_radar/recording_utils/recorder.py` | Live loop adds `< 3 ms/frame` overhead; operator sees real-time score + actionable warnings; `quality_meta.json` & per-frame SQI saved beside `.h5` chunks. |
-| **Phase 3: Pre-Collection Auto-Tuner** | Add `python main.py calibrate` (empty-room + active target sweep using coordinate search or GP Bayesian Optimization over `rxGain` and `cfarCfg`, locking FFT grid to `Config_4`). | New `src/vt_radar/recording_utils/calibrate.py`, `main.py` | Converges in `< 30 s`; increases lying-posture point density from median `2 pts/frame` (27% empty) to `4–6 pts/frame` (`< 5%` empty) with `0%` ADC saturation. |
-| **Phase 4: Guarded Live CFAR Assist (Optional)** | Add opt-in `--auto-cfar` flag with occupancy gate, deadband, hysteresis, and CLI change logging. | `src/vt_radar/recording_utils/recorder.py`, `record_tlv.py` | Zero dropped frames during UART updates; heatmap distribution strictly unchanged; logged threshold transitions replay cleanly. |
+The [cohort notes](data_notes/floor-posture-cohorts.md) describe ten removed recordings whose configuration disabled point-cloud output, and retained cohorts with different grids and physical scales. They warn that the same configuration filename can refer to different contents.
 
----
+Compare **configuration contents and derived physical parameters**; `Config_4.cfg` alone is not a sufficient identity check. For example, the bundled `config/radar/Config_4.cfg` contains `clutterRemoval -1 0`, whereas the historical cohort table describes other recordings with clutter removal enabled. Inspect the copy stored with each recording.
 
-## 8. References
+The baked schema stores `range_resolution_m`, but has no dedicated `bin_spacing_m` column or configuration hash. Obtain those from the original configuration for the quality context. Do not silently treat physical resolution as bin spacing.
 
-1. **Xi, L., Liu, G.-S., & Ni, J. (1999).** *Autofocusing of ISAR images based on entropy minimization.* IEEE Transactions on Aerospace and Electronic Systems, 35(4), 1240–1252. DOI: [10.1109/7.805442](https://doi.org/10.1109/7.805442)
-2. **Wang, J., Liu, X., & Zhou, Z. (2004).** *Minimum-entropy phase adjustment for ISAR.* IEE Proceedings – Radar, Sonar and Navigation, 151(4), 203–209. DOI: [10.1049/ip-rsn:20040692](https://doi.org/10.1049/ip-rsn:20040692)
-3. **Berizzi, F., & Corsini, G. (1996).** *Autofocusing of inverse synthetic aperture radar images using contrast optimization.* IEEE Transactions on Aerospace and Electronic Systems, 32(3), 1185–1191. DOI: [10.1109/7.508512](https://doi.org/10.1109/7.508512)
-4. **Martorella, M., Berizzi, F., & Haywood, B. (2005).** *Contrast maximisation based technique for 2-D ISAR autofocusing.* IEE Proceedings – Radar, Sonar and Navigation, 152(4), 253–262. DOI: [10.1049/ip-rsn:20045123](https://doi.org/10.1049/ip-rsn:20045123)
-5. **Fienup, J. R., & Miller, J. J. (2003).** *Aberration correction by maximizing generalized sharpness metrics.* Journal of the Optical Society of America A (JOSA A), 20(4), 609–620. DOI: [10.1364/JOSAA.20.000609](https://doi.org/10.1364/JOSAA.20.000609)
-6. **Hurley, N., & Rickard, S. (2009).** *Comparing Measures of Sparsity.* IEEE Transactions on Information Theory, 55(10), 4723–4741. DOI: [10.1109/TIT.2009.2027527](https://doi.org/10.1109/TIT.2009.2027527)
-7. **Shim, I., Lee, J.-Y., & Kweon, I. S. (2014).** *Auto-adjusting camera exposure for outdoor robotics using gradient information.* IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS), 1011–1017. DOI: [10.1109/IROS.2014.6942682](https://doi.org/10.1109/IROS.2014.6942682)
-8. **Shim, I., Oh, T.-H., Lee, J.-Y., Choi, J., Choi, D.-G., & Kweon, I. S. (2018).** *Gradient-Based Camera Exposure Control for Outdoor Mobile Platforms.* IEEE Transactions on Circuits and Systems for Video Technology, 29(6), 1569–1583. DOI: [10.1109/TCSVT.2018.2846292](https://doi.org/10.1109/TCSVT.2018.2846292)
-9. **Kim, J., Cho, Y., & Kim, A. (2018).** *Exposure Control Using Bayesian Optimization Based on Entropy Weighted Image Gradient.* IEEE International Conference on Robotics and Automation (ICRA), 857–864. DOI: [10.1109/ICRA.2018.8462881](https://doi.org/10.1109/ICRA.2018.8462881)
-10. **Zhang, Z., Forster, C., & Scaramuzza, D. (2017).** *Active Exposure Control for Robust Visual Odometry in HDR Environments.* IEEE International Conference on Robotics and Automation (ICRA), 3894–3901. DOI: [10.1109/ICRA.2017.7989449](https://doi.org/10.1109/ICRA.2017.7989449)
-11. **Bell, M. R. (1993).** *Information theory and radar waveform design.* IEEE Transactions on Information Theory, 39(5), 1578–1597. DOI: [10.1109/18.259642](https://doi.org/10.1109/18.259642)
-12. **Haykin, S. (2006).** *Cognitive radar: a way of the future.* IEEE Signal Processing Magazine, 23(1), 30–40. DOI: [10.1109/MSP.2006.1593335](https://doi.org/10.1109/MSP.2006.1593335)
-13. **Leshem, A., Naparstek, O., & Nehorai, A. (2007).** *Information Theoretic Adaptive Radar Waveform Design for Multiple Extended Targets.* IEEE Journal of Selected Topics in Signal Processing, 1(1), 42–55. DOI: [10.1109/JSTSP.2007.900103](https://doi.org/10.1109/JSTSP.2007.900103)
-14. **Romero, R. A., Bae, J., & Goodman, N. A. (2011).** *Theory and Application of SNR and Mutual Information Matched Illumination Waveforms.* IEEE Transactions on Aerospace and Electronic Systems, 47(2), 912–927. DOI: [10.1109/TAES.2011.5751234](https://doi.org/10.1109/TAES.2011.5751234)
-15. **Nguyen, H.-S., Kurosawa, M., Yen, H. T., Hashimoto, T., Pham, C.-K., & Sun, G. (2026).** *A Signal Quality Index for Active Positioning of CW Doppler Radar in Vital-Sign Monitoring.* IEEE Sensors Letters, 10, 1–4, Art. no. 3506704. DOI: [10.1109/LSENS.2026.3737169](https://doi.org/10.1109/LSENS.2026.3737169)
-16. **Texas Instruments (2020).** *Programming Chirp Parameters in TI Radar Devices* (Application Report SWRA553A).
-17. **Texas Instruments (2021).** *mmWave SDK User Guide* (SDK v03.06 — CLI configuration, runtime `cfarCfg`, and `CQRxSatMonitor` / `analogMonitor`).
-18. **Yang, H., Zhang, D., Zhang, X., Xiong, J., Fan, Z., Ning, W., Chen, W., Zhang, F., Han, Z., & Zhang, D. (2025).** *From Spatial Domain to Temporal Domain: Unleashing the Capability of CFAR for mmWave Point Cloud Generation.* Proceedings of the ACM on Interactive, Mobile, Wearable and Ubiquitous Technologies (IMWUT). DOI: [10.1145/3729465](https://doi.org/10.1145/3729465)
+### Terms used below
+
+| Term | Plain-English meaning |
+| --- | --- |
+| Frame | One radar measurement/update, containing several kinds of output |
+| Packet / TLV | A packet carries one frame. A TLV is a typed section inside it, such as points, heatmap, or temperature |
+| Firmware / SDK | Firmware is the software running on the radar; the SDK provides code and documentation for building it |
+| FFT | A calculation that converts sampled signals into frequency bins, used to estimate range and radial velocity |
+| CFAR | Constant false-alarm rate detection: compare a cell with an estimated local background and keep sufficiently strong detections |
+| SNR / SCNR | Signal-to-noise ratio / signal-to-clutter-and-noise ratio. These need defined signal and noise quantities; arbitrary heatmap values do not automatically supply them |
+| Clutter | Reflections from the room and other objects that are unwanted for the current task |
+| ADC | The analogue-to-digital converter, which turns receiver voltages into numbers; a later heatmap is not its raw output |
+| Saturation / clipping | A stage cannot represent a larger input correctly, so information can be lost |
+| Baseline / reference | A measurement of the room under known conditions, used to interpret subsequent changes |
+| Penalty / weight | A penalty expresses one problem numerically; a weight controls its contribution to a combined penalty |
+
+## 3. Understand the input before choosing a formula
+
+### 3.1 One range-Doppler heatmap
+
+A heatmap is a two-dimensional array:
+
+```text
+I.shape = (R, D)
+R = number of range bins
+D = number of Doppler bins
+```
+
+For the current model shape, `R = 256` and `D = 16`: 4,096 cells per frame.
+
+- A **range bin** represents a distance interval from the sensor.
+- A **Doppler bin** represents a radial velocity interval: motion towards or away from the sensor.
+- A **cell value** comes from the firmware's detection matrix. A larger value means a stronger response under that firmware's encoding.
+
+A heatmap does not directly give a person's full three-dimensional location or posture. Two objects at the same range and radial velocity can contribute to the same cell.
+
+The baked heatmap has zero radial velocity at Doppler bin `0`. `fftshift` centres zero velocity for a plot. Pick one convention for scoring and store it in metadata; using a shifted mask on an unshifted map selects the wrong velocities.
+
+**Unit rule:** storing a value as `uint16` does not establish that it is linear physical power. Verify the detection-matrix representation in the firmware actually used. Until then, use names such as `raw_excess` and `standardised_change`. Do not report physical SNR or SCNR in dB from arbitrary raw heatmap ratios. TI documents the packet layout; check application processing against the matching demo. [TI UART format](https://dev.ti.com/tirex/explore/content/radar_toolbox_2_20_00_05/docs/software_guides/Understanding_UART_Data_Output_Format.html)
+
+### 3.2 One point cloud
+
+The baked point cloud is a variable-length array:
+
+```text
+points.shape = (N, 7)
+columns = [x, y, z, Doppler, SNR, Noise, Track index]
+```
+
+`N` may be zero. Coordinates are in metres in the sensor coordinate system; Doppler is radial velocity in metres per second. For ordinary detected-points side information, the parser already converts SNR and noise to dB. Other packet types, including compressed tracking outputs, need separate unit verification.
+
+For this top-down geometry, the modeling notes identify `y` as the sensor boresight, with the floor approximately in the `x-z` plane. Do not interpret `z` as height above the floor without a coordinate transform.
+
+The classifier combines points from 16 frames into a fixed `(128, 7)` input. Its columns are `[x, y, z, Doppler, SNR, relative_time, valid]`, which differs from the seven raw columns. The quality module should consume **raw per-frame clouds**, before padding, augmentation, standardisation, or truncation.
+
+### 3.3 One scoring window
+
+A window is a consecutive section of one recording. At five frames per second, 16 frames occupy about 3.2 seconds of acquisition time; the first-to-last timestamp difference is about 3.0 seconds. Store actual times rather than inferring them from this approximation.
+
+Input for a complete window:
+
+```text
+heatmaps:       float32 array (16, 256, 16), made from raw uint16 values
+pointclouds:    list of 16 arrays, each (N_t, 7)
+timestamps:     16 capture timestamps
+frame_numbers:  16 device frame numbers
+context:        configuration identity, axes, masks, units
+reference:      matching empty-room statistics, or missing
+occupancy:      present / empty / unknown
+```
+
+Whole-window occupancy is known only when that state holds throughout the window. Mixed windows should retain per-frame occupancy and be reported separately during calibration.
+
+`not_lying` is not the same as `empty`: someone may be standing or sitting. Likewise, the model's `any_lying` window label means at least one frame was labelled lying; it does not mean the person lay still throughout the window. Use reviewed occupancy and actual posture intervals for the calibration conditions.
+
+### 3.4 Region of interest: where should we look?
+
+A **region of interest**, or ROI, is the part of the measurement relevant to the person. Use distinct heatmap and point-cloud masks:
+
+| Mask | Input | Output | Limitation |
+| --- | --- | --- | --- |
+| Heatmap ROI | Range and velocity limits plus decoded axes | Boolean array `(R, D)` | Selects range and radial velocity, not a room footprint |
+| Point-cloud ROI | Sensor coordinates and measured room/test-area bounds | One Boolean per point | Requires correct mounting geometry and coordinate interpretation |
+
+Include zero and near-zero Doppler in the main heatmap ROI: a lying person may be still. A separate moving-target metric can exclude those bins, but cannot replace the main metric.
+
+For range bin `r`, distance is approximately `r * bin_spacing_m`, subject to range bias. Bin spacing and physical range resolution differ when the FFT uses zero-padding. A finer display grid does not mean equally fine physical resolving ability. [TI chirp parameter guide](https://www.ti.com/lit/an/swra553a/swra553a.pdf)
+
+## 4. What the research contributes
+
+The literature supplies candidate measurements and design principles. Combining them into a recording-quality score for this dataset is our engineering proposal. Each candidate needs validation on relevant people, rooms, and postures.
+
+### 4.1 Radar image focus: is the response concentrated?
+
+Xi, Liu, and Ni use image-entropy minimisation to correct motion-related defocus in ISAR imaging. Their task is image reconstruction rather than indoor posture-sensor tuning. The transferable idea is measuring whether a response is concentrated or spread out. [Original paper](https://doi.org/10.1109/7.805442)
+
+Hurley and Rickard compare sparsity measures against six mathematical properties. Gini satisfies all six among the measures they compare. This supports Gini as a concentration descriptor; it does not establish that maximising Gini produces the best human-sensing configuration. [Paper](https://arxiv.org/abs/0811.4706)
+
+**Implement:** entropy, Gini, and normalised contrast as diagnostic features on a background-adjusted map. Compare their behaviour before combining them, since they measure overlapping properties.
+
+**Failure case:** one strong unwanted reflector can be highly concentrated. A useful extended body reflection can occupy several bins. Concentration needs evidence that the response changes when a person enters.
+
+### 4.2 Camera exposure: does the measurement preserve useful detail?
+
+Shim and colleagues use image gradients to guide camera exposure for vision tasks. Kim, Cho, and Kim use an entropy-weighted image gradient with Bayesian optimisation to select exposure. These camera results motivate detail-sensitive metrics and economical search; they do not establish a radar formula, convergence time, or quality threshold. [Shim paper](https://joonyoung-cv.github.io/assets/paper/18_tcsvt_gradient_based.pdf), [Kim publication record and abstract](https://snu.elsevierpure.com/en/publications/exposure-control-using-bayesian-optimization-based-on-entropy-wei/)
+
+**Implement:** a simple noise-thresholded gradient descriptor, then a small explicit candidate sweep once the scorer works. Consider Bayesian optimisation later if hardware evaluations justify it.
+
+**Failure case:** noise creates gradients, and a clipped region still has edges. Range and Doppler represent different quantities. Do not assume a smooth, single-peaked score versus gain or that camera exposure transformations simulate radar gain changes.
+
+### 4.3 Information-based radar design: strength versus useful information
+
+Bell distinguishes optimising radar waveforms for detection from optimising them for information extraction. Under the paper's models, the objectives distribute waveform energy differently. This supports the broader point that the strongest return need not provide the most useful information. [Author-hosted paper](https://engineering.purdue.edu/~mrb/SelPub/ITRadarWaveforms.pdf)
+
+**Implement:** empty-room versus occupied comparisons under the same setting, including lying still.
+
+**Failure case:** distinguishing a person from an empty room is easier than distinguishing lying from sitting or standing. Presence separation does not prove better posture information. Do not label a convenient mean-difference formula “mutual information” or “symmetric KL divergence”; those quantities require additional assumptions and calculations.
+
+### 4.4 Sensor diagnostics: can we trust the measurement?
+
+TI's SDK guide describes configuration commands, chirp-quality monitors, and runtime CFAR configuration. These describe interfaces rather than a validated composite quality function. Match their use to the installed firmware. [TI-hosted SDK guide](https://e2e.ti.com/cfs-file/__key/communityserver-discussions-components-files/1023/5415.mmwave_5F00_sdk_5F00_user_5F00_guide.pdf)
+
+**Implement:** packet integrity, required-output checks, configuration checks, frame continuity, and optional telemetry with explicit availability.
+
+**Failure case:** enabling a monitor does not automatically deliver its measurements in our UART packets. A heatmap value near `65535` does not prove analogue receiver or ADC saturation. Missing telemetry remains unknown.
+
+### 4.5 CFAR research: are body reflections being discarded?
+
+Yang and colleagues report that spatial CFAR can underestimate indoor human point clouds when an extended body contaminates the noise-estimation neighbourhood. Their ETCM-CFAR uses temporal information to address this. It is a plausible cause to investigate, not proof of why our clouds are sparse. [Authors' institution record and abstract](https://researchportal.ip-paris.fr/fr/publications/from-spatial-domain-to-temporal-domain-unleashing-the-capability-/)
+
+**Implement:** point counts, empty-frame fraction, SNR, room-boundary checks, and empty-room detections. Compare them across supported CFAR thresholds.
+
+**Failure case:** ETCM-CFAR is a separate detection-processing project. Changing a stock CLI threshold does not implement it. Existing point clouds cannot recover reflections discarded by firmware. Extra points can also be noise or multipath.
+
+### Research-to-implementation comparison
+
+| Candidate | Question | Input | Output | Initial role |
+| --- | --- | --- | --- | --- |
+| Entropy | How spread out is the adjusted response? | Non-negative ROI values | Normalised entropy or unavailable | Diagnostic |
+| Gini | How unevenly is the response distributed? | Same values | Concentration or unavailable | Diagnostic |
+| Normalised contrast | How variable are cells relative to their mean? | Same values | Standard deviation divided by mean | Diagnostic |
+| Gradient descriptor | Do neighbouring cells differ beyond background variation? | Float map, ROI, background thresholds | Detail descriptor | Diagnostic, then possible score term |
+| Standardised background change | Does the person change the map beyond empty-room variation? | Frame and matching reference | Visibility and changed-cell measurements | First heatmap score candidate |
+| Point-cloud measurements | Does the classifier receive plausible detections? | Raw clouds, occupancy, ROI, unit metadata | Counts, SNR, empty fraction, truncation | First point score candidates |
+| Integrity and telemetry | Is the measurement valid and observed? | Packets, configuration, timing, optional monitors | Pass/fail/unknown with reasons | Required before interpreting scores |
+
+## 5. The implementation contract
+
+These are proposed interfaces, not existing functions. Keep numerical code independent of serial ports, camera capture, plots, and model training.
+
+```python
+context = build_quality_context(config_text, firmware_info, geometry, policy)
+reference = fit_empty_reference(empty_frames, context)
+frame_metrics = [measure_frame(frame, context, reference) for frame in consecutive_frames]
+report = score_window(frame_metrics, context, policy, occupancy="present")
+```
+
+| Proposed object | Contents |
+| --- | --- |
+| `QualityContext` | Exact configuration hash; derived grid/timing; heatmap encoding; SNR units/validity; physical axes; coordinate convention; heatmap and point ROIs |
+| `EmptyReference` | Context identity; source frame IDs; background centre `(R, D)`; variation `(R, D)`; scale floor; fitting method/time; held-out empty statistics |
+| `FrameMetrics` | Frame identity; packet/shape validity; measurements; optional telemetry; missing-measurement reasons |
+| `WindowQuality` | Start/end identity/times; completeness; occupancy source; modality statuses; measurements; penalties; scores; warnings; reference/policy versions |
+
+Use status meanings consistently:
+
+- **Invalid:** a requirement fails, such as wrong grid or malformed required heatmap. The affected score is `null`.
+- **Partial:** useful measurements exist but a required reference or measurement is missing. Preserve available values and explain what cannot be concluded.
+- **Valid:** all requirements for that scoring profile are available. This says the score can be calculated, not that quality is good.
+- **Warming up:** fewer than 16 consecutive valid frames are available for a live window. Show frame diagnostics, without a full-window score.
+
+Separate validity from quality warnings. A valid window can have poor visibility; a bad point-cloud result need not invalidate a sound heatmap.
+
+Do not use JSON `Infinity` or `NaN`. Use `null`, a status, and a reason such as `"reference_missing"` or `"wrong_heatmap_shape"`.
+
+## 6. Step 1: load and audit the recordings
+
+**Question:** can we reconstruct correctly interpreted, time-ordered frames?
+
+**Input:** baked dataset, original recording directories and configuration copies, and data-selection settings.
+
+**Implement:** a read-only analysis entry point, proposed as `scripts/analysis/score_radar_quality.py`, with reusable helpers in proposed `src/vt_radar/quality.py`.
+
+1. Read the schema and count recordings actually available. An old count of 25 or a manifest entry does not prove current file availability.
+2. Load radar/metadata columns without decoding all camera images. Use images only for a small review sample.
+3. Reconstruct capture order with `capture_positions`. Preserve original `frame_idx`, device frame number, and capture position: they serve different purposes.
+4. Read each recording's actual configuration, hash its contents, and derive its axes. Record acquisition and detection settings explicitly.
+5. Check heatmap shapes and cloud columns. `heatmap_ok` currently checks non-emptiness and is insufficient alone.
+6. Record unavailable information. A baked cloud alone may not establish whether point output was enabled; inspect configuration/raw packets when needed.
+7. Mark discontinuities. Never silently join frames on either side of missing or corrupt data into a quality window.
+
+**Output:** `recording_inventory.csv`: one row per recording, with frame count, configuration identity, grid/scale, period, available outputs, occupancy coverage, invalid-frame counts, and unresolved units.
+
+**Done when:** comparable groups and unavailable measurements have explicit explanations. No sensor settings or training data have changed.
+
+## 7. Step 2: define geometry and comparison conditions
+
+**Question:** are we comparing the same physical measurement?
+
+**Input:** decoded configuration, measured mounting geometry, intended collection area, model input requirements, and candidate settings.
+
+**Implement:** `build_quality_context` and reference/context compatibility checks.
+
+1. Store `R`, `D`, bin spacing, physical resolution, Doppler spacing, frame period, antennas, and heatmap ordering.
+2. Define the heatmap ROI in metres and metres per second, then convert to indices. Reject empty masks and unsupported limits.
+3. Define a separate plausible-point region. Measure mounting/floor geometry; the brightest range peak alone cannot reliably identify the floor.
+4. Store clutter removal, gain, transmit power, and CFAR settings. Retain the full file hash even when a smaller parameter signature supports comparisons.
+5. Fix waveform/grid parameters for the initial tuning study. Vary one allowed setting at a time; unchanged dimensions do not guarantee an unchanged distribution.
+
+**Output:** serialisable context with masks/axes and compatibility results for recording-reference pairs.
+
+**Done when:** physically mismatched grids or references are refused even when filenames and array shapes agree.
+
+## 8. Step 3: measure the empty-room reference
+
+**Question:** what does this room look like without a person under this setting?
+
+**Input:** valid frames independently known to be empty and their context. For old data, use reviewed `person_present == False` where available. Missing occupancy means unknown. The raw `label_presence` track is not a substitute; see [baked data notes](data_notes/baked-dataset.md).
+
+### Calculation
+
+Convert heatmaps from `uint16` to `float32` **before subtraction**. Unsigned subtraction can turn a negative difference into a large positive number.
+
+For each range-Doppler cell:
+
+$$
+B_{r,d}=\operatorname{median}_{t\in\mathrm{empty}} I_{t,r,d}
+$$
+
+$$
+S_{r,d}=\max\left(1.4826\,\operatorname{median}_{t\in\mathrm{empty}}|I_{t,r,d}-B_{r,d}|,\ s_{\min}\right)
+$$
+
+`B` is the usual empty-room value. `S` estimates normal variation. Median absolute deviation is less affected by occasional unusual frames than an ordinary variance estimate. The factor `1.4826` gives a conventional standard-deviation-equivalent scale for Gaussian data; it does not make radar data Gaussian.
+
+`s_min` is a positive floor in raw units, preventing division by zero and excessive amplification of tiny variations. Estimate/store it from reference data. One raw unit can be an initial software default, but is not a validated noise model.
+
+For a new frame, form separate arrays:
+
+$$
+Z_{r,d}=\frac{I_{r,d}-B_{r,d}}{S_{r,d}},\qquad
+Z^+_{r,d}=\max(Z_{r,d},0),\qquad
+A_{r,d}=\max(I_{r,d}-B_{r,d},0).
+$$
+
+- `Z`: unusual change relative to background variation; can be negative.
+- `Z_positive`: increases only; used for initial visibility measurements.
+- `A`, or `raw_excess`: positive raw differences; used for concentration descriptors. It is not calibrated physical power.
+
+Example: a cell normally reads `1100`, varies by about `50`, and now reads `1300`. Its `Z = 4`: four estimated background scales, not 4 dB.
+
+### Reference collection rules
+
+For a first hardware experiment, propose at least 50 valid empty frames, about ten seconds at five frames/second, plus a separate empty segment for validation. This is a protocol to test, not a proven sufficient sample size. Consecutive frames can be correlated.
+
+Estimate `B` and `S` using the fitting segment only. Use separate empty data to measure how often the method falsely flags a change. Testing on the fitting frames would give an overly favourable result.
+
+Acquire a matching reference for every candidate setting initially. In particular, do not judge a gain or clutter-removal change using the old reference. Keep this conservative rule until measurements establish which changes preserve the relevant distributions.
+
+Do not update the empty reference automatically with occupied frames. A person lying still could become part of the estimated background.
+
+**Output:** `background_reference.npz` with `B`, `S`, masks, and fitting arrays, plus metadata identifying configuration, geometry, units, and source frames.
+
+**Done when:** held-out empty windows usually stay below the proposed visibility trigger, arithmetic is correct, and mismatched references are refused.
+
+**Without a reference:** integrity and basic point measurements still work. A per-frame median is only an exploratory floor estimate, not an empty-room reference. Label those features separately; leave reference-dependent scores unavailable.
+
+## 9. Step 4: reject invalid data before visual-quality scoring
+
+**Question:** is the window structurally usable for the requested input?
+
+**Input:** decoded frames, packet metadata when available, timestamps, context, and requested modality.
+
+**Implement:** frame-integrity and window-continuity checks returning named failures and unknowns.
+
+| Check | Calculation | Action |
+| --- | --- | --- |
+| Heatmap integrity | Required payload parses; correct cell count/shape; finite converted values | Invalidate affected frame if required data is malformed/missing |
+| Configuration/grid | Compare physical context and scoring profile | Reject mismatch; do not resize into apparent compatibility |
+| Point integrity | Header count, cloud length, side information, finite coordinates, supported units | Distinguish empty output from missing/malformed output |
+| Continuity | Time order, timestamp gaps, device increments, reset/wrap indicators | Split at gaps/resets; no window crosses a split |
+| Processing statistics | Meaning/validity of reported timings and margins | Record diagnostics; missing or zero fields alone do not prove failure |
+| Hardware monitors | Validity, age, coverage, documented interpretation | Unknown when absent; use rejection thresholds only after validation |
+
+### Empty cloud versus missing output
+
+An empty room can legitimately have `numDetectedObj == 0` and no point TLV. That differs from disabled point output or a packet declaring detections without the required payload.
+
+Check firmware behaviour, header, and configuration together. If baked fields cannot distinguish the cases, return `point_output_state: "unknown"`. TI documents conditional output for some point messages. [UART format](https://dev.ti.com/tirex/explore/content/radar_toolbox_2_20_00_05/docs/software_guides/Understanding_UART_Data_Output_Format.html)
+
+### Loss versus reset
+
+Within a verified continuous device sequence, increment `k > 1` suggests `k - 1` missing frames. Calculate loss as:
+
+```text
+missing / (received + missing)
+```
+
+Do not apply that subtraction across resets, wrap, duplicate packets, or uncertain session boundaries. Report those events separately, using timestamps as another check. A 16-frame window crossing a confirmed gap is incomplete even if recording-wide loss is low.
+
+**Output:** frame validity, modality/window statuses, failed/unknown checks, and recording-level loss summaries.
+
+**Done when:** wrong grids and required malformed payloads are caught, legitimate empty clouds pass, and no window crosses a known gap.
+
+## 10. Step 5: measure whether the person changes the background
+
+**Question:** does an occupied scene differ from normal empty-room variation?
+
+**Input:** valid raw heatmaps, matching `B`/`S`, heatmap ROI, and occupancy for interpretation.
+
+**Implement first:** standardised positive-change strength and changed-cell fraction.
+
+For each frame, average the `K` largest `Z_positive` values in the ROI:
+
+$$
+V_t=\frac{1}{K}\sum_{i\in\operatorname{topK}(Z^+_{t,\mathrm{ROI}})} Z^+_{t,i}.
+$$
+
+`K` is a fixed policy parameter, for example `16` initially, bounded by ROI size. Several cells reduce dependence on a single maximum, but still need a false-alarm check. Keep `K` fixed across comparable contexts.
+
+Also calculate:
+
+$$
+C_t=\frac{\#\{i\in\mathrm{ROI}: |Z_{t,i}|>z_{\mathrm{change}}\}}{|\mathrm{ROI}|}.
+$$
+
+`C_t` includes decreases as well as increases: a person can block or alter an existing reflection. Keep this diagnostic even though the initial `V_t` focuses on increases.
+
+Report median `V_t`, its lower tenth percentile, and changed-cell fractions over the window. The median describes typical change; the lower percentile can reveal intermittent disappearance. Preserve the locations of changed cells for review.
+
+For calibration segments, also report a standardised mean-difference descriptor:
+
+$$
+D_{\mathrm{change}}=\frac{1}{|\mathrm{ROI}|}\sum_{i\in\mathrm{ROI}}
+\frac{(\mu^{\mathrm{occ}}_i-\mu^{\mathrm{empty}}_i)^2}
+{(\sigma^{\mathrm{occ}}_i)^2+(\sigma^{\mathrm{empty}}_i)^2+s_{\min}^2}.
+$$
+
+This is a descriptive separation proxy, not KL divergence or classifier accuracy. Compute it separately for standing, sitting, movement, and lying still.
+
+### Convert a measurement to a penalty
+
+For non-negative `x` and positive desired minimum `l`, define:
+
+$$
+\operatorname{shortfall}(x,l)=\left[\max\left(0,\frac{l-x}{l}\right)\right]^2.
+$$
+
+If `x >= l`, the penalty is zero. If `x = 0`, it is one. Half the desired minimum gives `0.25`.
+
+A first visibility penalty is:
+
+$$
+E_{\mathrm{visibility}}=\operatorname{shortfall}(\operatorname{median}_t V_t,V_{\min}).
+$$
+
+Choose `V_min` using held-out empty windows and reviewed occupied examples. A value such as `4` is an illustrative hypothesis, not physical SNR or a validated acceptance rule.
+
+For a concrete development procedure, inspect the 95th percentile of empty-window visibility as a candidate lower bound for `V_min`, then measure how many occupied windows exceed it, separately by posture. This is a starting trade-off, not a guaranteed 5% field false-alarm rate. Empty data used to choose this threshold is held out from reference fitting, but is still development data; evaluate final error rates on another independent segment or trial. Fit `z_change` using the same development-only discipline and record its value.
+
+Only interpret weak occupied visibility when a person is independently known to be present. Empty scenes should have low `V`. With unknown occupancy, say “weak change from reference; occupancy unknown”.
+
+**Output:** visibility values, changed-cell fractions, calibration separation where possible, and `E_visibility` when its requirements are met.
+
+**Done when:** empty-scene false warnings are measured and lying-still changes are characterised. Failure to detect them is a documented limitation requiring a different measurement or configuration.
+
+## 11. Step 6: measure heatmap structure
+
+**Question:** is the response above the reference concentrated and structured?
+
+**Input:** raw-excess map `A`, standardised map `Z`, ROI, and thresholds fitted on separate empty data.
+
+### 11.1 Entropy: how spread out is the response?
+
+Flatten ROI values of `A` into `a_1, ..., a_M`. For a total above a declared minimum and at least two cells:
+
+$$
+p_i=\frac{a_i}{\sum_j a_j},\qquad
+H_{\mathrm{norm}}=-\frac{\sum_{i:p_i>0}p_i\ln p_i}{\ln M}.
+$$
+
+Near zero means a few cells dominate; near one means an even spread. For four cells, `[8, 0, 0, 0]` gives zero, whereas `[2, 2, 2, 2]` gives one. Multiplying all values by a positive constant leaves entropy unchanged.
+
+For zero/negligible total excess, return `null` with `"insufficient_excess"`. An absent signal must not be called perfectly focused because a numerical entropy expression returned zero.
+
+This is entropy across cells. It differs from intensity-histogram entropy, which groups cells by value. State which version is implemented.
+
+### 11.2 Gini: how uneven are the values?
+
+Sort the same values in ascending order and calculate:
+
+$$
+G=1-\frac{2}{M}\sum_{i=1}^{M}\frac{a_{(i)}}{\sum_j a_j}\left(M-i+\frac12\right).
+$$
+
+Equal values give zero. One non-zero cell gives `1 - 1/M`, approaching one for large arrays. Keep this finite-array convention or explicitly document a rescaling. Again, negligible total excess means unavailable.
+
+Gini is invariant to positive scaling of its input vector. Real receiver gain changes can affect background, noise, compression, and detection, so this does not prove gain invariance in hardware.
+
+### 11.3 Normalised contrast
+
+$$
+\mathrm{IC}=\frac{\operatorname{std}(a)}{\operatorname{mean}(a)}.
+$$
+
+Calculate only above a declared minimum mean. This dimensionless descriptor measures relative variation, not guaranteed posture information. Uniform positive scaling leaves it unchanged.
+
+### 11.4 Gradient descriptor: neighbouring-cell differences
+
+Calculate floating-point adjacent differences of `Z` separately along range and Doppler. Include only pairs whose two cells belong to the ROI. Initially do not wrap the last Doppler column to the first; document this boundary choice.
+
+```text
+range_detail   = mean(log1p(max(abs(range_difference) - delta_range, 0)))
+doppler_detail = mean(log1p(max(abs(doppler_difference) - delta_doppler, 0)))
+gradient_detail = (range_detail + doppler_detail) / 2
+```
+
+Fit non-negative `delta_range` and `delta_doppler` from separate empty-scene differences, for example their 95th percentiles initially. Store them with the policy/reference. If an axis has no valid neighbour pairs, return that descriptor unavailable rather than taking a mean of an empty array.
+
+This is a per-bin descriptor within a compatible grid, not a physical spatial derivative. It suppresses routine detail without assuming interchangeable range/velocity units. Test its actual response to captured gain changes; do not assume a single optimum.
+
+**Output:** entropy, Gini, contrast, range/Doppler detail, gradient detail, and unavailability reasons.
+
+**Done when:** absent signal cannot earn a misleading focus result, isolated interference is represented as a failure case, and features have been compared on reviewed empty, standing, and lying examples.
+
+**First scoring choice:** retain all descriptors, but promote a structure descriptor only if it adds evidence beyond visibility. An experimental term is `E_focus = shortfall(gradient_detail, gradient_min)`, with `gradient_min` fitted on development data. Omit it from the selected profile if unhelpful.
+
+## 12. Step 7: measure point-cloud usefulness for PointNet
+
+**Question:** are there enough plausible points, and what will the model's input limit discard?
+
+**Input:** 16 raw clouds, point ROI, verified SNR units/availability, occupancy, and `max_points`.
+
+### Counts before transformation
+
+For each frame, calculate total `n_all_t` and plausible-region `n_roi_t`. For a fully occupied window:
+
+```text
+N_all        = sum(n_all_t)
+N_roi        = sum(n_roi_t)
+empty_frac   = count(n_roi_t == 0) / 16
+outside_frac = (N_all - N_roi) / N_all, when N_all > 0
+overflow_frac = max(N_all - max_points, 0) / N_all, when N_all > 0
+median_snr_db = median valid SNR among ROI points, when available
+```
+
+`N_all` determines current truncation: the window builder pools full clouds. An ROI count under 128 does not prevent truncation when the whole cloud exceeds 128. Also simulate the current strongest-SNR selection and report retained ROI points. Do not change selection as a side effect of analysis.
+
+For `N_all == 0`, overflow is zero; outside fraction and median SNR are unavailable. Occupied count/empty-frame measurements still show starvation.
+
+### Proposed penalties
+
+For fraction `f` and positive tolerated upper value `u`, define:
+
+$$
+\operatorname{excess}(f,u)=\min\left(1,\max\left(0,\frac{f-u}{u}\right)\right)^2.
+$$
+
+Then:
+
+$$
+E_{\mathrm{count}}=\operatorname{shortfall}(N_{\mathrm{ROI}},N_{\min}),\qquad
+E_{\mathrm{empty}}=\operatorname{excess}(f_{\mathrm{empty}},f_{\max}),
+$$
+
+$$
+E_{\mathrm{snr}}=\operatorname{shortfall}(\max(\operatorname{medianSNR}_{\mathrm{dB}},0),\mathrm{SNR}_{\min}),\qquad
+E_{\mathrm{cap}}=f_{\mathrm{overflow}}.
+$$
+
+Require positive thresholds. These are heuristics; decoded point SNR is not necessarily a margin over the CFAR threshold.
+
+`N_min = 32` per window, `f_max = 0.10`, and `SNR_min = 10 dB` are **illustrative development settings**. They are not established requirements for lying recognition. Fit or reject them through section 18's validation.
+
+Do not penalise exceeding an arbitrary ideal count such as 80. More real points can help; measure actual truncation and false-detection candidates instead.
+
+If `N_roi == 0`, report starvation and assign `E_snr = 1` for the occupied profile with reason `"no_roi_detections"`; no median SNR was measured. If points exist but SNR is missing/unverified, the SNR-dependent profile is partial and its score is `null`.
+
+### Empty-room and spatial checks
+
+In known empty scenes, report points per frame and persistent apparent clusters as false-detection candidates. Do not penalise starvation. Fans, curtains, and objects can create returns, so preserve the scene description.
+
+Initially keep outside fraction and spatial spread as diagnostics. A lying body is extended; forcing points into a tiny cluster may discard useful geometry. A point within room bounds is not automatically a true person return.
+
+**Output:** counts, empty fraction, SNR, outside fraction, truncation/retention, penalties, and separate occupied/empty/unknown interpretation.
+
+**Done when:** current point retention is reproduced, empty output is distinguished from missing output where possible, and candidate settings cannot appear better merely by adding empty-room points.
+
+## 13. Step 8: dynamic-range and hardware diagnostics
+
+**Question:** is there evidence of a digital representation or receiver operating-range problem?
+
+**Input:** raw heatmaps, optional valid monitor reports, firmware identity, and documented units.
+
+**Implement now:** raw minimum/maximum, high percentiles, and `heatmap_ceiling_fraction`: the fraction equal to the storage ceiling.
+
+`uint16` has ceiling `65535`. Repeated ceiling values deserve investigation, but do not measure ADC saturation. Analogue clipping can occur without a ceiling-valued heatmap, and high stored values alone do not prove clipping.
+
+The bundled configuration contains `CQRxSatMonitor` and `CQSigImgMonitor`, but uses `analogMonitor 0 0`. The parser does not expose a demonstrated UART saturation ratio. Do not fabricate `adc_saturation_fraction` from heatmap maxima or assume the command enables host transmission.
+
+Before using a hardware saturation penalty, establish:
+
+1. Support/enabling on this actual firmware and device.
+2. The host access path: documented payload, firmware addition, supported capture path, or no available path.
+3. What is counted, over which channels/slices, and the correct denominator.
+4. Validity/staleness handling and any throughput effect.
+5. A justified threshold and controlled observation demonstrating the host detects the condition.
+
+Missing hardware values remain `null` with reasons. Heatmap/point scores can exist alongside `adc_saturation_status: "unknown"`.
+
+Do not treat the final `profileCfg` value as plain gain in dB. The bundled value is `158`; TI describes a field combining RX gain and RF gain target. A tuner must preserve the documented bit fields and legal device values. [SDK guide](https://e2e.ti.com/cfs-file/__key/communityserver-discussions-components-files/1023/5415.mmwave_5F00_sdk_5F00_user_5F00_guide.pdf)
+
+**Output:** digital-range diagnostics and independently identified hardware measurements only where available.
+
+**Done when:** unknown saturation is never reported as zero and hardware rejection always traces to a valid measurement.
+
+## 14. Step 9: monitor drift without learning the person as background
+
+**Question:** has the reference become less representative?
+
+**Input:** initial reference, later frames, independent occupancy or a validated background-only mask, and optional valid temperature.
+
+For independently confirmed empty segments:
+
+$$
+D_{\mathrm{drift}}=\operatorname{median}_{i\in\mathrm{backgroundROI}}
+\frac{|B_{\mathrm{later},i}-B_{\mathrm{initial},i}|}{S_{\mathrm{initial},i}}.
+$$
+
+This describes change in reference-variation units. Record the segment and mask used.
+
+During occupied/unknown scenes, whole-map changes can come from the person. Without a validated background-only mask, report ambiguous reference mismatch. Do not label every change thermal drift or refit the empty reference from those frames.
+
+Record temperature validity, named readings, time, and initial-to-current change. Temperature increase alone does not establish unusable data. A penalty requires measured evidence of degradation or an applicable device limit.
+
+**Output:** measurable background drift, available temperature, and an explicit request for an empty-room recheck when warranted.
+
+**Done when:** automatic adaptation cannot make a stationary person disappear, and unknown occupancy cannot generate a falsely certain drift diagnosis.
+
+## 15. Step 10: combine measurements into explainable scores
+
+First save measurements and reasons. A single number is useful only after its components behave sensibly.
+
+**Input:** measurements and validity from steps 4–9, a named/versioned profile with its thresholds and weights, and independently known occupancy for the occupied profiles below.
+
+**Implement:** `score_window`: check profile requirements, calculate individual penalties, combine only the required valid terms, and return reasons alongside the numbers. The scorer does not change the data or send commands to the sensor.
+
+### Separate scoring profiles
+
+Use named, versioned profiles with fixed requirements. After validating the descriptors, an experimental choice is:
+
+$$
+E_{\mathrm{heatmap}}=0.8E_{\mathrm{visibility}}+0.2E_{\mathrm{focus}},
+$$
+
+$$
+E_{\mathrm{pointcloud}}=0.35E_{\mathrm{count}}+0.25E_{\mathrm{empty}}+0.20E_{\mathrm{snr}}+0.20E_{\mathrm{cap}}.
+$$
+
+These weights are illustrative, not fitted. Before focus proves useful, use a separately named visibility-only profile. Both example profiles require independently known occupied windows; empty/unknown scenes retain diagnostics without receiving these occupied-quality scores.
+
+If both requested profiles are valid, an optional combined summary is:
+
+$$
+E_{\mathrm{combined}}=0.6E_{\mathrm{heatmap}}+0.4E_{\mathrm{pointcloud}}.
+$$
+
+Keep both modality results visible. `rnn` uses heatmaps and `pointnet` uses points; point-cloud problems affect them differently.
+
+Map available energies to a display score:
+
+$$
+Q=100\exp(-E).
+$$
+
+Zero penalty gives 100; penalty 1 gives about 37. This is **not a probability of correctness**. Compare only compatible contexts with the same profile/reference policy. Establish colour/acceptance thresholds through validation.
+
+Do not remove missing terms and renormalise: a score could improve because a measurement disappeared. Return the affected score as `null`. A profile supporting fewer inputs needs a distinct name.
+
+Transport/hardware failures remain visible checks; good unrelated features must not hide them. Keep drift, digital ceiling, and outside fraction as diagnostics initially, until their relevance is established.
+
+### Worked example
+
+An independently confirmed occupied window has 16 valid frames, matching reference, and valid SNR. Using the illustrative thresholds/weights:
+
+| Measurement | Observation | Calculation | Penalty |
+| --- | --- | --- | --- |
+| Median visibility | `3`, minimum `4` | `((4 - 3) / 4)^2` | `0.0625` |
+| Gradient detail | `0.5`, illustrative minimum `1.0` | `((1.0 - 0.5) / 1.0)^2` | `0.25` |
+| ROI count | `40`, minimum `32` | Above minimum | `0` |
+| Empty ROI frames | `4/16 = 0.25`, tolerated `0.10` | `min(1, (0.25 - 0.10) / 0.10)^2` | `1` |
+| Median SNR | `8 dB`, minimum `10 dB` | `((10 - 8) / 10)^2` | `0.04` |
+| All points | `48`, cap `128` | No truncation | `0` |
+
+`E_heatmap = 0.10`, giving about `90/100`; `E_pointcloud = 0.258`, giving about `77/100`. The optional combined score is about `85/100`.
+
+The explanation matters: “The heatmap changed from the empty reference, but points disappeared in four occupied frames. Review those frames and compare the CFAR candidate against empty-room detections.” An `85` alone hides the issue. Hardware saturation is still unknown without a valid report.
+
+### Proposed output record
+
+```json
+{
+  "schema_version": 1,
+  "recording": "example_session",
+  "window_start_capture_position": 100,
+  "window_end_capture_position": 115,
+  "frames_expected": 16,
+  "frames_received": 16,
+  "occupancy": "present",
+  "occupancy_source": "reviewed_calibration",
+  "context_id": "example-context-hash",
+  "reference_id": "example-empty-reference",
+  "policy_id": "development-example-v1",
+  "heatmap_status": "valid",
+  "pointcloud_status": "valid",
+  "heatmap_score": 90.48,
+  "pointcloud_score": 77.26,
+  "combined_score": 84.94,
+  "measurements": {
+    "visibility_median": 3.0,
+    "gradient_detail": 0.5,
+    "roi_points": 40,
+    "all_points": 48,
+    "empty_roi_frame_fraction": 0.25,
+    "median_point_snr_db": 8.0,
+    "point_overflow_fraction": 0.0
+  },
+  "penalties": {
+    "visibility": 0.0625,
+    "focus": 0.25,
+    "point_count": 0.0,
+    "empty_frames": 1.0,
+    "point_snr": 0.04,
+    "point_cap": 0.0
+  },
+  "adc_saturation_fraction": null,
+  "missing_measurements": ["adc_saturation_not_exposed"],
+  "warnings": ["point_cloud_empty_in_4_of_16_occupied_frames"]
+}
+```
+
+Also persist exact start/end timestamps, original frame IDs, profile names, and numerical thresholds. This example abbreviates them for readability.
+
+**Output:** one `WindowQuality` report with separate modality statuses/scores, individual penalties, underlying measurements, warnings, and missing-information reasons.
+
+**Done when:** the worked calculations reproduce, a missing required term makes the affected score unavailable, and a hardware/integrity failure cannot be concealed by a favourable average.
+
+## 16. Step 11: connect the scorer to recording
+
+Do this after offline features and limitations have been checked.
+
+**Input:** already captured packets, fixed context, optional matching reference, and selected policy.
+
+**Implement:** a bounded 16-frame rolling buffer. Parse each new packet once for quality, then update the report. Reuse parsed results rather than reprocessing the entire buffer.
+
+The current recorder mainly saves raw packets. Quality processing is extra work; add a worker queue only if timing measurements justify it. Keep any queue bounded and log skipped updates. Quality monitoring should not stall capture or silently display stale scores as current.
+
+Example status lines:
+
+```text
+Quality warming up: 9/16 consecutive frames
+Heatmap 90 | Points 77 | ROI empty 4/16 | ADC saturation unknown
+Reference missing: showing integrity and point counts only
+Frame gap detected: starting a new quality window
+Weak change from reference; occupancy unknown
+```
+
+Live occupied scores require independent occupancy, such as an operator-marked calibration interval or a separately validated source. Do not infer occupancy from the same weak visibility metric and then use it to certify that metric. With no independent source, show diagnostic measurements and explicit unknown occupancy.
+
+Save proposed sidecars in the session directory:
+
+| File | Contents |
+| --- | --- |
+| Exact `.cfg` copy | Already saved by the recorder |
+| `quality_meta.json` | Versions, configuration hash, units, geometry, reference, thresholds, capabilities |
+| `background_reference.npz` | Reference arrays if collected |
+| `quality_frames.csv` | Frame identity, validity, measurements, optional telemetry |
+| `quality_windows.csv` | Window boundaries, statuses, penalties, scores, reasons |
+
+Start with existing NumPy and CSV/JSON support. No need for Parquet, dashboard packages, or a search dependency. Encode reason lists consistently as JSON strings in CSV cells if needed.
+
+Optional noise-profile parsing must validate payload length, units, and availability. A high-Doppler-derived noise profile is not a full empty-room reference and can be contaminated by motion. [TI UART format](https://dev.ti.com/tirex/explore/content/radar_toolbox_2_20_00_05/docs/software_guides/Understanding_UART_Data_Output_Format.html)
+
+**Output:** replayable raw recordings plus frame-aligned telemetry, live status, and explicit missing/skipped updates.
+
+**Done when:** replay remains correct and measured acquisition loss/timing are acceptable on the target machine. Benchmark median and 95th-percentile scoring time; previous millisecond estimates were not measurements.
+
+## 17. Step 12: compare settings before collection
+
+**Question:** can an allowed setting improve human measurements without increasing empty-room detections or damaging model inputs?
+
+**Input:** working configuration, small legal candidate set, fixed geometry/grid, validated policy, repeatable calibration protocol.
+
+Begin with guided manual or coordinate search: change one parameter while holding the others fixed, choose a candidate, then investigate another. This makes changes inspectable and establishes whether automation is worthwhile.
+
+### Per-candidate protocol
+
+1. Save the complete configuration and its parameter difference from the starting setting.
+2. Apply it through the supported stop/configure/start or runtime sequence. Check acknowledgements and observed outputs.
+3. Allow measured settling, marking those frames separately.
+4. Collect matching empty fitting and separate empty validation segments.
+5. Collect independently marked standing, sitting, moving, and lying-still segments, including different body orientations. A provisional 10–20 seconds per condition must be assessed for repeatability before shortening.
+6. Report each condition separately; strong movement must not hide failure to see lying still.
+7. Repeat promising candidates and the original. Vary/alternate order so warm-up, movement, or room changes cannot masquerade as improvement.
+
+This development study can take several minutes per candidate. Do not promise a complete multi-setting calibration in 15–30 seconds. A later preflight can check an already validated setting much faster.
+
+### Knobs to investigate
+
+| Setting | Purpose | Required check |
+| --- | --- | --- |
+| CFAR threshold | Missed body detections versus extra detections | Occupied and empty trials; supported units/limits |
+| Receiver gain | Weak responses and dynamic range | Correct bit-field handling; supported reconfiguration; new reference |
+| Clutter removal | Possible suppression of still-person returns | Separate conditions; long lying-still trials; possible retraining |
+| Mounting | Coverage and unwanted reflectors | Measured geometry, new ROI/reference, model-distribution implications |
+| Waveform/grid | Later range/velocity trade-offs | Separate cohort/input-design study |
+
+TI documents runtime `cfarCfg` changes, but averaging modes and encodings depend on the demo. Do not assume a stock ordered-statistics mode is available. Verify the installed build. [SDK guide](https://e2e.ti.com/cfs-file/__key/communityserver-discussions-components-files/1023/5415.mmwave_5F00_sdk_5F00_user_5F00_guide.pdf)
+
+A threshold change in a normal detection pipeline does not redefine the FFT grid. Still check actual packet timing, processing load, and heatmap distributions. “Strictly unchanged heatmaps” is not an appropriate comparison between separate noisy captures of a moving person.
+
+### Selection
+
+Reject structural failures and demonstrated hardware problems first. Compare lying-still visibility, starvation, empty-scene detections, and post-cap retention among the remainder. Require repeatable improvement.
+
+Preserve trade-offs and measurements, rather than selecting only the largest scalar score. A setting that improves points but worsens heatmaps may suit different models differently.
+
+**Output:** `candidate_summary.csv`, condition reports, trial logs, selected `.cfg`, and a decision explanation. “No demonstrated improvement” is valid.
+
+**Done when:** selection repeats, references match, the chosen setting is rechecked, and model-input implications are documented.
+
+Only then add a proposed `python main.py calibrate` command. It does not exist today. Bayesian optimisation may later choose candidates more efficiently, but must use the same measurement/validation protocol.
+
+## 18. Validate the measurements and the task benefit separately
+
+Two claims need distinct evidence:
+
+1. **Measurement:** the system identifies missing data, weak responses, sparse clouds, and changes correctly.
+2. **Task:** better measured quality predicts or produces more reliable lying recognition.
+
+The first does not establish the second.
+
+### Offline validation
+
+Use recordings with reviewed occupancy/posture. Include empty, standing, sitting, movement, lying still, and transitions. Separate configuration groups. Missing labels/references limit conclusions; predictions cannot provide independent ground truth for validating the same quality system.
+
+Useful controlled software perturbations:
+
+| Perturbation | Expected result | Does not prove |
+| --- | --- | --- |
+| Remove/truncate required heatmap | Integrity failure | Real device corruption frequency |
+| Insert time/device gap | Split windows and report loss | Cause of real acquisition loss |
+| Replace occupied map with matching background centre | Lower visibility; structure may be unavailable | Analogue attenuation behaviour |
+| Add isolated synthetic peaks | Concentration can improve despite poor plausibility | Real multipath simulation |
+| Remove ROI points | Worse starvation measurements | Why firmware missed detections |
+| Add empty-scene/outside-region points | More false-detection/outside candidates | Faithful CFAR noise simulation |
+| Force values to `65535` | Increased digital-ceiling diagnostic | Actual ADC saturation detection |
+
+These are focused checks for meaningful failure cases, not tests that merely repeat the implementation formula.
+
+### Thresholds and evaluation splits
+
+Select thresholds/weights on development recordings or training portions of person-wise evaluation. Keep held-out people out of global policy selection. A held-out session may provide its own empty reference if that matches the intended deployment protocol; its posture outcomes must not tune the global policy.
+
+Use out-of-fold classifier predictions from models that did not train on the evaluated person. Overlapping windows are dependent: summarise by recording/person and report independent group counts.
+
+Report false quality warnings, missed known problems, and breakdowns by posture and occupancy. If filtering is proposed, show retained/removed classes and people. Otherwise apparent accuracy improvement may simply reflect removal of difficult lying examples.
+
+Hardware changes require newly labelled comparisons under original/candidate settings, using a fixed model or explicit retraining protocol. Existing data cannot establish benefits for gain/CFAR settings never used to capture it.
+
+**Output:** evidence report, numerical condition/configuration tables, failure examples, and any supported association with out-of-fold errors. Save plot inputs so conclusions are inspectable.
+
+## 19. Implementation phases and concrete deliverables
+
+Each phase should finish with a reviewable output. Paths below are proposals unless identified earlier as existing.
+
+| Phase | Implement | Input | Deliverable | Completion check |
+| --- | --- | --- | --- | --- |
+| A: inventory/contracts | Context, order, units/availability, integrity | Baked rows, configurations, needed packets | Inventory/context records | Comparable groups and unknowns explicit |
+| B: offline features | References, visibility, structure, points | Known empty/occupied segments | Frame/window CSVs and references | Reviewed examples/failure cases behave sensibly |
+| C: scores | Profiles, thresholds, weights, reasons | Development features and independent labels | Policy and evidence report | Useful evidence and limitations documented |
+| D: live monitor | Buffer, display, sidecars, optional parsing | Live packets, fixed context/reference | Replayable recording with logs | Alignment/missingness correct; acquisition unaffected within measured limits |
+| E: guided calibration | Candidate sweep and condition comparison | Legal settings, repeated trials | Summary, chosen cfg, decision | Improvements repeat for lying and empty scenes |
+| F: justified automation | Calibration CLI; perhaps improved search | Validated candidate protocol | Repeatable assisted/automatic procedure | Same conclusions with measured timing |
+| G: optional deployment | Guarded runtime CFAR | Independent occupancy and live measurements | Controller and command log | Runtime/model trade-offs measured |
+
+### Proposed code boundaries
+
+| Location | Responsibility |
+| --- | --- |
+| `src/vt_radar/quality.py` — new | Small contracts and numerical/context checks reusable offline/live; split only if needed for maintainability |
+| `scripts/analysis/score_radar_quality.py` — new | Load data, construct references/windows, export measurements |
+| `tests/vt_radar/test_quality.py` — new | Meaningful failures, missing data, occupancy interpretation, continuity |
+| Existing parsers and output types | Expose validated telemetry; distinguish legitimate empty output from failures |
+| Existing `recording_utils/recorder.py` | Call scorer; display/save outputs |
+| `src/vt_radar/recording_utils/calibrate.py` — later, new | Validated candidate protocol and selection |
+| Existing `main.py` and record argument parsing — later | Expose commands/flags after underlying behaviour exists |
+
+When thresholds become configurable, introduce a small quality policy with a loader/schema alongside existing `src/config` code. Avoid scattered recorder constants. Add a search library only after simple candidate evaluation demonstrates a need.
+
+### First implementation target
+
+Implement **offline, read-only phases A and B**: inventory, matching references where known empty data exists, visibility/structure descriptors, point measurements, integrity, and missing-information reasons.
+
+Do not yet change sensor settings, filter training data, or label every window confidently usable/unusable. Those decisions depend on the evidence from the first analysis.
+
+## 20. Optional runtime CFAR adaptation
+
+After guided calibration demonstrates benefit, investigate a deployment controller separately. Inputs are validated measurements, independent occupancy, legal threshold limits, and active configuration. Output is either “keep current setting” or one command with a decision record.
+
+Require persistent evidence, a deadband with no changes, and a cooldown. Choose durations empirically. An empty room having no points must not trigger progressively lower thresholds.
+
+Log command, acknowledgement, host time, configuration changes, and frame-boundary information. An acknowledgement may not identify the first affected frame: retain that uncertainty or add firmware support if exact attribution is required.
+
+Point-detector changes affect PointNet's input distribution even with a fixed upstream grid. Evaluate with the intended model and keep this experiment separate from fixed-configuration training collection.
+
+## 21. Corrections to earlier assumptions
+
+- The composite is an engineering hypothesis, not a cited formula validated for our radar/task.
+- `uint16` does not establish physical power units. Raw contrast ratios are not SCNR in dB.
+- Standardised mean differences are not automatically KL divergence or mutual information.
+- Missing point TLVs, disabled output, corrupt output, and legitimate zero detections require distinct handling.
+- Heatmap ceilings do not measure ADC saturation; host access to monitor values must be demonstrated.
+- Ordinary point SNR is already converted to dB in the parser.
+- Candidate settings require matching references and documented acquisition conditions.
+- More concentration/points do not guarantee better posture recognition.
+- The 128-point cap applies to the pooled full cloud, not an arbitrary per-frame band.
+- Unknown occupancy/telemetry/references and negligible signal need explicit unavailable results.
+- Timing, thresholds, weights, and recognition improvements require measurement rather than promises borrowed from other sensor domains.
+
+## 22. Sources and their role
+
+Project-specific formulas are labelled proposed above. These sources support the attributed ideas/interfaces, not the complete pipeline.
+
+1. **Xi, L., Liu, G.-S., and Ni, J. (1999).** *Autofocusing of ISAR images based on entropy minimization.* IEEE TAES, 35(4), 1240–1252. [DOI](https://doi.org/10.1109/7.805442). Original ISAR entropy objective; available abstract checked.
+2. **Hurley, N., and Rickard, S. (2009).** *Comparing Measures of Sparsity.* IEEE TIT, 55(10), 4723–4741. [Preprint](https://arxiv.org/abs/0811.4706), [DOI](https://doi.org/10.1109/TIT.2009.2027527). Mathematical comparison of sparsity measures.
+3. **Shim, I., et al.** *Gradient-Based Camera Exposure Control for Outdoor Mobile Platforms.* [Author-hosted paper](https://joonyoung-cv.github.io/assets/paper/18_tcsvt_gradient_based.pdf), [DOI](https://doi.org/10.1109/TCSVT.2018.2846292). Camera gradient-control analogy, not a radar experiment.
+4. **Kim, J., Cho, Y., and Kim, A. (2018).** *Exposure Control Using Bayesian Optimization Based on Entropy Weighted Image Gradient.* ICRA, 857–864. [Institutional record/abstract](https://snu.elsevierpure.com/en/publications/exposure-control-using-bayesian-optimization-based-on-entropy-wei/), [DOI](https://doi.org/10.1109/ICRA.2018.8462881). Exposure-search principle; no radar speed/accuracy guarantee inferred.
+5. **Bell, M. R. (1993).** *Information Theory and Radar Waveform Design.* IEEE TIT, 39(5), 1578–1597. [Author-hosted paper](https://engineering.purdue.edu/~mrb/SelPub/ITRadarWaveforms.pdf), [DOI](https://doi.org/10.1109/18.259642). Detection versus information-extraction objectives under the paper's assumptions.
+6. **Yang, H., et al. (2025).** *From Spatial Domain to Temporal Domain: Unleashing the Capability of CFAR for mmWave Point Cloud Generation.* ACM IMWUT, 9(2), article 59. [Institutional record/abstract](https://researchportal.ip-paris.fr/fr/publications/from-spatial-domain-to-temporal-domain-unleashing-the-capability-/), [DOI](https://doi.org/10.1145/3729465). Extended-target masking motivation; abstract/record reviewed, not a complete ETCM-CFAR implementation.
+7. **Texas Instruments.** *Understanding UART Data Output Format.* [Official documentation](https://dev.ti.com/tirex/explore/content/radar_toolbox_2_20_00_05/docs/software_guides/Understanding_UART_Data_Output_Format.html). Packet fields and conditional outputs; match exact firmware.
+8. **Texas Instruments.** *mmWave SDK User Guide*, TI-hosted 2021 copy. [Guide](https://e2e.ti.com/cfs-file/__key/communityserver-discussions-components-files/1023/5415.mmwave_5F00_sdk_5F00_user_5F00_guide.pdf), [SDK page](https://www.ti.com/tool/MMWAVE-SDK). CLI/monitoring concepts; check installed SDK/demo documentation before generating commands.
+9. **Texas Instruments (2020 revision).** *Programming Chirp Parameters in TI Radar Devices*, SWRA553A. [Report](https://www.ti.com/lit/an/swra553a/swra553a.pdf). Waveform/resolution/velocity trade-offs, not proof of a UART saturation measurement.
