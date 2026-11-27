@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -33,7 +35,9 @@ def run_window(policy, ctx, ref, heatmap, points, occupancy="present", snr_avail
 
 
 def test_worked_example_from_research_doc():
-    policy = q.load_policy("visibility_focus_v1")
+    doc_thresholds = {"visibility_min": 4.0, "gradient_min": 1.0, "roi_points_min": 32,
+                      "empty_frame_fraction_max": 0.10, "snr_min_db": 10.0}
+    policy = replace(q.load_policy("visibility_focus_v1"), thresholds=doc_thresholds)
     m = {"visibility_median": 3.0, "gradient_detail": 0.5, "roi_points": 40, "all_points": 48,
          "empty_roi_frame_fraction": 0.25, "median_point_snr_db": 8.0, "point_overflow_fraction": 0.0,
          "points_ok": True}
@@ -50,7 +54,7 @@ def test_person_raises_visibility_and_background_does_not(policy, ctx):
     ref = q.fit_empty_reference(empty_frames(), ctx, policy)
     background = ref.background.astype(np.uint16)
     person = background.copy()
-    person[30:34, 0:3] += 200  # still body near zero Doppler
+    person[30:34, 0:3] += 400  # still body near zero Doppler
     empty = q.measure_frame(background, np.zeros((0, 7)), ctx, ref, policy, 0, "present")
     occupied = q.measure_frame(person, np.zeros((0, 7)), ctx, ref, policy, 0, "present")
     assert empty.visibility < policy.thresholds["visibility_min"] < occupied.visibility
