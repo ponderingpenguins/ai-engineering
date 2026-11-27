@@ -1,0 +1,28 @@
+# Recording-quality energy functions (src/vt_radar/quality.py), see docs/energy_research_1.md.
+# Thresholds and z_change come from scripts/analysis/tune_quality_policy.py on the Config_4 recordings
+# (excluded recordings skipped; only 13 held-out empty windows). Development values, not validated.
+# Window length and the point cap come from config/data.yaml (windowing.window_len, windowing.max_points).
+policy_id: config4-tuned-v1
+roi_range_m: [0.3, 4.85]  # Heatmap ROI over all Doppler bins; also the distance limit for points.
+reference_frames: 50  # Empty frames collected for the empty-room reference, about 10 s at Config_4.
+visibility_top_k: 16  # Cells averaged for the visibility of one frame.
+z_change: 4.6  # |Z| above this counts as a changed cell.
+spread_floor: 1.0  # Smallest reference spread, in raw heatmap units.
+min_excess: 1.0  # Smallest total raw excess for entropy, Gini and contrast.
+delta_quantile: 0.95  # Empty-frame quantile of neighbour differences for the gradient thresholds.
+thresholds:
+  visibility_min: 8.4
+  gradient_min: 0.02
+  roi_points_min: 4
+  empty_frame_fraction_max: 0.875
+  snr_min_db: 14.6
+default_profile: visibility_only_v1
+profiles:
+  visibility_only_v1:
+    heatmap: {visibility: 1.0}
+    pointcloud: {point_count: 0.35, empty_frames: 0.25, point_snr: 0.20, point_cap: 0.20}
+    combined: {heatmap: 0.6, pointcloud: 0.4}
+  visibility_focus_v1:
+    heatmap: {visibility: 0.8, focus: 0.2}
+    pointcloud: {point_count: 0.35, empty_frames: 0.25, point_snr: 0.20, point_cap: 0.20}
+    combined: {heatmap: 0.6, pointcloud: 0.4}
