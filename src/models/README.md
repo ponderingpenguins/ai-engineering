@@ -71,9 +71,9 @@ Neural classifiers subclass `TorchModel`, which adds:
 - **Input:** `float32 (B, P, 7)` radar points `[x, y, z, doppler, snr, t_norm, valid]` (`preprocessing = "pointcloud_xyz_doppler_snr_time_v1"`).
 - **Standardisation:** Per-feature buffers `feat_mean` and `feat_std` $\in \mathbb{R}^5$ computed over valid training points (`valid > 0.5`) for `[x, y, z, doppler, snr]`; `t_norm` remains in $[0, 1]$.
 - **Per-point shared MLP** (width $W$, default `128`):
-  $$
+$$
   \text{Linear}(6 \to W/4) \to \text{ReLU} \to \text{Linear}(W/4 \to W/2) \to \text{ReLU} \to \text{Linear}(W/2 \to W) \to \text{ReLU} \to \text{Dropout}(\text{point\_dropout})
-  $$
+$$
 - **Masked symmetric pooling:** Over valid points $M = \{p : \text{valid}_p > 0.5\}$:
   - Masked max pool along points (set to $0$ when $|M| = 0$).
   - Masked mean pool along points (denominator clamped to $\ge 1$).
