@@ -66,19 +66,21 @@ Participants are never split across train, validation, and test sets:
 Inside `fit_torch()`:
 
 1. Maps string labels to integers `0..K-1`, stores `model.classes_`, builds a fresh `model.net`, and fits training-only input statistics via `model._set_input_stats(x)` (forwarding the scale tensor to `augment.set_input_std()` when augmentation is active).
-2. Computes inverse-frequency class weights over $N$ samples with $K$ present classes and counts $n_c$:
-   $$
+2. Computes inverse-frequency class weights over $`N`$ samples with $`K`$ present classes and counts $`n_c`$:
+
+   ```math
    w_c = \frac{N}{K \cdot n_c} \quad (n_c > 0), \qquad w_c = 0 \text{ otherwise.}
-   $$
+   ```
 
    Training cross-entropy uses these weights when `training.class_weights=true`.
 3. Trains with `Adam(lr, weight_decay)` on shuffled mini-batches (`batch_size`), running `augment` on each training batch (`PointAugment` uses `apply_with_count()` so `MiniPointNet` keeps the pre-drop point count).
-4. When validation data is provided, evaluates class-balanced validation cross-entropy every $\max(1, \lfloor \text{steps\_per\_epoch} / \text{evals\_per\_epoch} \rfloor)$ steps:
-   $$
-   \mathcal{L}_{\text{val}} = \frac{\sum_i w_{y_i}\,\ell_{\text{CE}}(f(x_i), y_i)}{\sum_i w_{y_i}}
-   $$
+4. When validation data is provided, evaluates class-balanced validation cross-entropy every $`\max(1, \lfloor \text{steps\_per\_epoch} / \text{evals\_per\_epoch} \rfloor)`$ steps:
 
-   With inverse-frequency validation weights, a uniform 50/50 binary predictor scores $\ln 2 \approx 0.693$ regardless of class balance. Each strict improvement deep-copies `state_dict` and records `history.best_step`. Training stops after `patience` non-improving evaluations and restores the best weights. Without validation data, training runs for all `epochs` and keeps the final weights.
+   ```math
+   \mathcal{L}_{\text{val}} = \frac{\sum_i w_{y_i}\,\ell_{\text{CE}}(f(x_i), y_i)}{\sum_i w_{y_i}}
+   ```
+
+   With inverse-frequency validation weights, a uniform 50/50 binary predictor scores $`\ln 2 \approx 0.693`$ regardless of class balance. Each strict improvement deep-copies `state_dict` and records `history.best_step`. Training stops after `patience` non-improving evaluations and restores the best weights. Without validation data, training runs for all `epochs` and keeps the final weights.
 
 
 
@@ -89,7 +91,7 @@ Inside `fit_torch()`:
 Inside each outer fold:
 
 1. `Tuner.tune()` evaluates every candidate in `tune.grid` over `inner_splits(train, groups)`. It passes `val_weight_labels = y[train]` (pooled over all outer-training participants) so every inner validation person is scored on the same loss scale.
-2. Each candidate's score is the mean of its kept validation losses across inner folds (lowest wins; ties keep the earlier entry in `tune.grid`). Its epoch count is $\max(1, \lceil \text{median}(\text{best\_epochs}) \rceil)$.
+2. Each candidate's score is the mean of its kept validation losses across inner folds (lowest wins; ties keep the earlier entry in `tune.grid`). Its epoch count is $`\max(1, \lceil \text{median}(\text{best\_epochs}) \rceil)`$.
 3. `CrossValidator` refits the winning candidate on all outer `train` participants (with `val_idx=None`) for that exact epoch count, then evaluates on the untouched outer test participant.
 
 After all outer folds complete, `best_overall()` selects the candidate that won the most outer folds (tie-break: lowest mean validation loss across its wins) with the median of its winning epoch counts, and writes `tune.best_path` (default `results/tuned.yaml`) plus a copy inside the run directory.

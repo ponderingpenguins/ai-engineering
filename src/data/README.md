@@ -34,7 +34,7 @@ flowchart TD
 
 ### 1. Baking and Annotation Refresh (`bake.py`, `annotations.py`)
 
-`bake_dataset()` reads `MANIFEST.csv` under `paths.raw_root`, parses each recording's `.cfg` and `.h5` files in parallel via `vt_radar`, aligns raw `labels/*.csv` tracks to frame timestamps within $\pm 2\,\mu\text{s}$, attaches manual annotations from `paths.annotations_dir`, and writes the resulting Arrow dataset to `paths.baked_dir`.
+`bake_dataset()` reads `MANIFEST.csv` under `paths.raw_root`, parses each recording's `.cfg` and `.h5` files in parallel via `vt_radar`, aligns raw `labels/*.csv` tracks to frame timestamps within $`\pm 2\,\mu\text{s}`$, attaches manual annotations from `paths.annotations_dir`, and writes the resulting Arrow dataset to `paths.baked_dir`.
 
 Because `.h5` chunks are read alphabetically (for example `data_10.h5` before `data_2.h5`), canonical temporal order is computed by `capture_positions(meta)` using a stable sort on `(recording, timestamp, frame_idx)`.
 
@@ -53,9 +53,9 @@ Unlabelled frames stay intact on disk. After editing any CSV in `data/annotation
 `preprocess_dataset(ds, selection, denoising)` runs identically on all splits before windowing:
 
 1. **Selection (`select_recordings`):** Drops recordings with `person == "NA"` (always enabled to prevent participant leakage), drops recordings listed in `selection.exclude_recordings`, and keeps `selection.sensor_config` (default `Config_4.cfg`, `256 x 16` bins).
-2. **Heatmap denoising (`denoise_heatmaps`, both disabled by default):** Rewrites heatmaps one recording at a time in capture order, clipped at $0$ as `float32`. No statistics are pooled across recordings.
-   - `RangeNormalise` (non-causal): computes a per-range-bin floor $f_r = \text{Percentile}_p(H[:, r, :])$ over the recording's time and Doppler axes, smooths $f_r$ along range with an odd running median of width `smooth_bins` (default `41`), and outputs $\max(H - \tilde{f}_r, 0)$.
-   - `TemporalBackground` (causal): tracks an exponential moving average $b_t = \alpha H_{t-1} + (1 - \alpha) b_{t-1}$ with $\alpha = 1 / \tau$ (default $\tau = 300$ frames, roughly $60\,\text{s}$, initialized at $b_0 = H_0$) and outputs $\max(H_t - b_t, 0)$.
+2. **Heatmap denoising (`denoise_heatmaps`, both disabled by default):** Rewrites heatmaps one recording at a time in capture order, clipped at $`0`$ as `float32`. No statistics are pooled across recordings.
+   - `RangeNormalise` (non-causal): computes a per-range-bin floor $`f_r = \text{Percentile}_p(H[:, r, :])`$ over the recording's time and Doppler axes, smooths $`f_r`$ along range with an odd running median of width `smooth_bins` (default `41`), and outputs $`\max(H - \tilde{f}_r, 0)`$.
+   - `TemporalBackground` (causal): tracks an exponential moving average $`b_t = \alpha H_{t-1} + (1 - \alpha) b_{t-1}`$ with $`\alpha = 1 / \tau`$ (default $`\tau = 300`$ frames, roughly $`60\,\text{s}`$, initialized at $`b_0 = H_0`$) and outputs $`\max(H_t - b_t, 0)`$.
 
 
 
@@ -64,7 +64,7 @@ Unlabelled frames stay intact on disk. After editing any CSV in `data/annotation
 `build_windows(ds, windowing, input_type, max_per_person, seed)` runs three stages:
 
 1. **`filter_valid_frames`:** Assigns `capture_idx` before dropping rows, then applies three exclusive checks in order: target label is non-null, `heatmap_ok` is `True`, and `(num_range_bins, num_doppler_bins) == (256, 16)`. Counts at each drop stage are recorded in `WindowCoverage` and logged.
-2. **`slice_window_indices`:** Slides windows of `window_len` frames (default `16`, roughly $3.2\,\text{s}$) with step `stride` (default `8`) in `capture_idx` order. Any window spanning dropped frames (`capture_idx[last] - capture_idx[start] != window_len - 1`) is skipped and counted in `windows_gap_skipped`.
+2. **`slice_window_indices`:** Slides windows of `window_len` frames (default `16`, roughly $`3.2\,\text{s}`$) with step `stride` (default `8`) in `capture_idx` order. Any window spanning dropped frames (`capture_idx[last] - capture_idx[start] != window_len - 1`) is skipped and counted in `windows_gap_skipped`.
    - **`label_rule="any_lying"`:** Assigns the last `lying*` label present in the window, or the final frame's label if none is lying.
    - **`label_rule="last"`:** Assigns the final frame's label.
    - **`collapse_lying=True`:** Maps any label starting with `"lying"` to `"lying"` and every other label to `"not_lying"`.
@@ -72,8 +72,8 @@ Unlabelled frames stay intact on disk. After editing any CSV in `data/annotation
 
 | `input_type`   | Shape & Dtype                       | Representation                                                                                                                                                                                                                                                                                       |
 | ---------------- | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `"heatmap"`    | `(N, T, 1, 256, 16)`, `float32` | $\log(1 + H)$ (`np.log1p`). Zero velocity stays at Doppler bin `0` (not `fftshift`-centred).                                                                                                                                                                                                 |
-| `"pointcloud"` | `(N, max_points, 7)`, `float32` | All radar points across the $T$ frames pooled into one set: `[x, y, z, doppler, snr, t_norm, valid]`, where $t_{\text{norm}} = t / \max(T - 1, 1) \in [0, 1]$ and `valid` is `1` for real points or `0` for padding. Windows exceeding `max_points` (128) keep the highest-SNR points. |
+| `"heatmap"`    | `(N, T, 1, 256, 16)`, `float32` | $`\log(1 + H)`$ (`np.log1p`). Zero velocity stays at Doppler bin `0` (not `fftshift`-centred).                                                                                                                                                                                                 |
+| `"pointcloud"` | `(N, max_points, 7)`, `float32` | All radar points across the $`T`$ frames pooled into one set: `[x, y, z, doppler, snr, t_norm, valid]`, where $`t_{\text{norm}} = t / \max(T - 1, 1) \in [0, 1]`$ and `valid` is `1` for real points or `0` for padding. Windows exceeding `max_points` (128) keep the highest-SNR points. |
 | `"none"`       | `(N, T)`, `float32`             | Zero placeholder array for label-only baselines.                                                                                                                                                                                                                                                     |
 
 ### 4. Training-Only Augmentations and Resampling (`augment.py`, `resample.py`)
@@ -82,19 +82,21 @@ Unlabelled frames stay intact on disk. After editing any CSV in `data/annotation
 
 Applied only to training folds inside `src/training/fitting.py`. When two enabled transforms belong to the same `CONFLICTS` group, each window executes exactly one of them chosen uniformly at random.
 
-- **`HeatmapAugment`** (sized for Config 4, $0.0237\,\text{m}$ per range bin):
-  1. `time_reverse`: reverses the time axis with probability $0.5$.
-  2. `range_shift_bins` / `floor_jitter` *(conflict group)*: fractional linear shift along range filled with the per-Doppler median noise floor, or an 8-knot smooth baseline added in raw heatmap space before re-applying $\log(1 + \cdot)$.
+- **`HeatmapAugment`** (sized for Config 4, $`0.0237\,\text{m}`$ per range bin):
+  1. `time_reverse`: reverses the time axis with probability $`0.5`$.
+  2. `range_shift_bins` / `floor_jitter` *(conflict group)*: fractional linear shift along range filled with the per-Doppler median noise floor, or an 8-knot smooth baseline added in raw heatmap space before re-applying $`\log(1 + \cdot)`$.
   3. `noise`: Gaussian noise scaled by the training heatmap standard deviation (`set_input_std`).
-- **`PointAugment`** (sensor frame: $y$ is boresight distance to the floor, $x\text{-}z$ is the floor plane):
-  1. `mirror` ($x \mapsto -x$, $p = 0.5$) / `yaw_deg` (rotation about $y$) *(conflict group)*, plus `tilt_deg` (rotations about $x$ and $z$).
-  2. `shift_m` ($x, z$) and `height_m` ($y$): drops points moved beyond $r_{\text{max}} = 4.85\,\text{m}$ and rescales SNR by the radar $R^{-4}$ power law:
-     $$
+- **`PointAugment`** (sensor frame: $`y`$ is boresight distance to the floor, $`x\text{-}z`$ is the floor plane):
+  1. `mirror` ($`x \mapsto -x`$, $`p = 0.5`$) / `yaw_deg` (rotation about $`y`$) *(conflict group)*, plus `tilt_deg` (rotations about $`x`$ and $`z`$).
+  2. `shift_m` ($`x, z`$) and `height_m` ($`y`$): drops points moved beyond $`r_{\text{max}} = 4.85\,\text{m}`$ and rescales SNR by the radar $`R^{-4}`$ power law:
+
+     ```math
      \text{SNR}' = \text{SNR} + 40 \log_{10}\!\left(\frac{r_{\text{old}}}{r_{\text{new}}}\right)
-     $$
-  3. `snr_jitter_db` (per-window Gaussian dB offset) and `ghost_points` (Poisson false alarms placed in empty padding slots within a $60^\circ$ boresight cone).
+     ```
+
+  3. `snr_jitter_db` (per-window Gaussian dB offset) and `ghost_points` (Poisson false alarms placed in empty padding slots within a $`60^\circ`$ boresight cone).
   4. `apply_with_count()` records the pre-drop point count `n_points`, then applies `point_drop` and Gaussian `jitter` scaled by the training per-feature standard deviation.
-- **`RandomOversampler`:** Keeps every original training window and appends random draws (with replacement) for each class smaller than $\text{round}(\text{ratio} \cdot \max_c n_c)$.
+- **`RandomOversampler`:** Keeps every original training window and appends random draws (with replacement) for each class smaller than $`\text{round}(\text{ratio} \cdot \max_c n_c)`$.
 
 
 

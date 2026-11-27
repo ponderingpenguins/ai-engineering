@@ -56,29 +56,36 @@ Neural classifiers subclass `TorchModel`, which adds:
 ### 1. `rnn` (`HeatmapGRU`, ~131k parameters)
 
 - **Input:** `float32 (B, T, 1, 256, 16)` `log1p`-scaled range-Doppler heatmaps (`preprocessing = "log1p_raw_heatmap_v1"`).
-- **Standardisation:** Global scalar buffers `input_mean` and `input_std` fit on training windows: $\hat{x} = (x - \mu) / \max(\sigma, 10^{-6})$.
-- **Frame encoder (`HeatmapEncoder`):** Applied identically to all $B \cdot T$ frames:
-  1. `Conv2d(1 -> 16, k=3, p=1) -> BatchNorm2d -> ReLU -> MaxPool2d((2, 1))` $\rightarrow$ `(16, 128, 16)`
-  2. `Conv2d(16 -> 32, k=3, p=1) -> BatchNorm2d -> ReLU -> MaxPool2d((2, 1))` $\rightarrow$ `(32, 64, 16)`
-  3. `Conv2d(32 -> 64, k=3, p=1) -> BatchNorm2d -> ReLU -> MaxPool2d((2, 2))` $\rightarrow$ `(64, 32, 8)`
+- **Standardisation:** Global scalar buffers `input_mean` and `input_std` fit on training windows: $`\hat{x} = (x - \mu) / \max(\sigma, 10^{-6})`$.
+- **Frame encoder (`HeatmapEncoder`):** Applied identically to all $`B \cdot T`$ frames:
+  1. `Conv2d(1 -> 16, k=3, p=1) -> BatchNorm2d -> ReLU -> MaxPool2d((2, 1))` $`\rightarrow`$ `(16, 128, 16)`
+  2. `Conv2d(16 -> 32, k=3, p=1) -> BatchNorm2d -> ReLU -> MaxPool2d((2, 1))` $`\rightarrow`$ `(32, 64, 16)`
+  3. `Conv2d(32 -> 64, k=3, p=1) -> BatchNorm2d -> ReLU -> MaxPool2d((2, 2))` $`\rightarrow`$ `(64, 32, 8)`
   4. `AdaptiveAvgPool2d((4, 2)) -> Flatten` (512 features) `-> Linear(512 -> feat_dim) -> Dropout(feature_dropout)`
-- **Sequence head (`HeatmapGRU`):** `GRU(feat_dim -> hidden, batch_first=True)` reads the sequence of frame embeddings; its final hidden state $h_{:, -1}$ passes through `Dropout(dropout) -> Linear(hidden -> n_classes)`.
+- **Sequence head (`HeatmapGRU`):** `GRU(feat_dim -> hidden, batch_first=True)` reads the sequence of frame embeddings; its final hidden state $`h_{:, -1}`$ passes through `Dropout(dropout) -> Linear(hidden -> n_classes)`.
 
 
 
 ### 2. `pointnet` (`MiniPointNet`, ~27k parameters)
 
 - **Input:** `float32 (B, P, 7)` radar points `[x, y, z, doppler, snr, t_norm, valid]` (`preprocessing = "pointcloud_xyz_doppler_snr_time_v1"`).
-- **Standardisation:** Per-feature buffers `feat_mean` and `feat_std` $\in \mathbb{R}^5$ computed over valid training points (`valid > 0.5`) for `[x, y, z, doppler, snr]`; `t_norm` remains in $[0, 1]$.
-- **Per-point shared MLP** (width $W$, default `128`):
-$$
-  \text{Linear}(6 \to W/4) \to \text{ReLU} \to \text{Linear}(W/4 \to W/2) \to \text{ReLU} \to \text{Linear}(W/2 \to W) \to \text{ReLU} \to \text{Dropout}(\text{point\_dropout})
-$$
-- **Masked symmetric pooling:** Over valid points $M = \{p : \text{valid}_p > 0.5\}$:
-  - Masked max pool along points (set to $0$ when $|M| = 0$).
-  - Masked mean pool along points (denominator clamped to $\ge 1$).
-  - Count feature $c = \log(1 + n_{\text{points}}) / 5.0$, where `forward(x, n_points=...)` accepts the pre-`point_drop` count during training.
-  - Concatenated vector $\in \mathbb{R}^{2W + 1}$.
+- **Standardisation:** Per-feature buffers `feat_mean` and `feat_std` $`\in \mathbb{R}^5`$ computed over valid training points (`valid > 0.5`) for `[x, y, z, doppler, snr]`; `t_norm` remains in $`[0, 1]`$.
+- **Per-point shared MLP** (width $`W`$, default `128`):
+
+  ```math
+  \begin{aligned}
+  &\text{Linear}(6 \to W/4) \to \text{ReLU} \\
+  &\to \text{Linear}(W/4 \to W/2) \to \text{ReLU} \\
+  &\to \text{Linear}(W/2 \to W) \to \text{ReLU} \\
+  &\to \text{Dropout}(\text{point\_dropout})
+  \end{aligned}
+  ```
+
+- **Masked symmetric pooling:** Over valid points $`M = \{p : \text{valid}_p > 0.5\}`$:
+  - Masked max pool along points (set to $`0`$ when $`|M| = 0`$).
+  - Masked mean pool along points (denominator clamped to $`\ge 1`$).
+  - Count feature $`c = \log(1 + n_{\text{points}}) / 5.0`$, where `forward(x, n_points=...)` accepts the pre-`point_drop` count during training.
+  - Concatenated vector $`\in \mathbb{R}^{2W + 1}`$.
 - **Classifier head:** `Linear(2W + 1 -> W/2) -> ReLU -> Dropout(dropout) -> Linear(W/2 -> n_classes)`.
 
 

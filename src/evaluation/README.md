@@ -20,17 +20,17 @@ Computes classification metrics against fixed class sets, defines the typed sche
 
 ### 1. Metrics (`metrics.py`)
 
-Every metric accepts an explicit, dataset-wide `classes` sequence so folds that lack a rare class are scored on the same class set as every other fold. For class $c$ with true positives $\text{TP}_c$, true support $n_c = \sum \mathbb{1}[y = c]$, and predicted count $\hat{n}_c = \sum \mathbb{1}[\hat{y} = c]$:
+Every metric accepts an explicit, dataset-wide `classes` sequence so folds that lack a rare class are scored on the same class set as every other fold. For class $`c`$ with true positives $`\text{TP}_c`$, true support $`n_c = \sum \mathbb{1}[y = c]`$, and predicted count $`\hat{n}_c = \sum \mathbb{1}[\hat{y} = c]`$:
 
-$$
+```math
 \text{Precision}_c = \frac{\text{TP}_c}{\hat{n}_c}\;(\hat{n}_c > 0), \qquad \text{Recall}_c = \frac{\text{TP}_c}{n_c}\;(n_c > 0), \qquad F_{1,c} = \frac{2\,\text{TP}_c}{n_c + \hat{n}_c}\;(n_c + \hat{n}_c > 0)
-$$
+```
 
-When a denominator is $0$, the function returns `None` (`fmt()` formats `None` as `"N/A"`). If a class has $n_c = 0$ and $\hat{n}_c > 0$, then $\text{TP}_c = 0$ and $F_{1,c} = 0$.
+When a denominator is $`0`$, the function returns `None` (`fmt()` formats `None` as `"N/A"`). If a class has $`n_c = 0`$ and $`\hat{n}_c > 0`$, then $`\text{TP}_c = 0`$ and $`F_{1,c} = 0`$.
 
-- **`macro_f1`:** Mean of $F_{1,c}$ over all classes where $F_{1,c}$ is not `None`.
+- **`macro_f1`:** Mean of $`F_{1,c}`$ over all classes where $`F_{1,c}`$ is not `None`.
 - **`accuracy`:** Fraction of exact label matches.
-- **Aggregation levels:** `CrossValidator` scores each fold individually (`FoldResult`), concatenates all held-out predictions across folds for the headline score (`Pooled`), and breaks down per-participant accuracy, macro-$F_1$, precision, recall, and support (`per_person`).
+- **Aggregation levels:** `CrossValidator` scores each fold individually (`FoldResult`), concatenates all held-out predictions across folds for the headline score (`Pooled`), and breaks down per-participant accuracy, macro-$`F_1`$, precision, recall, and support (`per_person`).
 
 
 
@@ -48,7 +48,7 @@ When a denominator is $0$, the function returns `None` (`fmt()` formats `None` a
 `write_report(results, out_dir)` runs automatically at the end of every `cv` or `tune` run and produces:
 
 - `loss_per_fold.png`: one subplot per fold showing per-step train loss, validation loss points, a dashed vertical line at `best_step`, and a dotted red line where early stopping fired.
-- `loss_mean.png`: epoch-aligned mean and $\pm 1\,\text{SD}$ band across folds (1-epoch rolling train mean interpolated onto 10 points per epoch; validation loss at exact evaluation epochs). Points are plotted only where at least two folds remain active.
+- `loss_mean.png`: epoch-aligned mean and $`\pm 1\,\text{SD}`$ band across folds (1-epoch rolling train mean interpolated onto 10 points per epoch; validation loss at exact evaluation epochs). Points are plotted only where at least two folds remain active.
 - `report.md`: run settings, window coverage funnel, pooled headline and per-class tables, nested tuning tables (when tuned), per-fold table, per-person table, embedded curves, and checkpoint paths.
 
 Non-iterative models (such as `baseline`) have `history=None`, so no curve PNGs are written. `report.py` also supports legacy `eval`/`train` config keys so archived `results.json` runs can still be rebuilt.
