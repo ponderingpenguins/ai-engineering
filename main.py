@@ -1,6 +1,6 @@
 """Run radar data preparation, training, annotation and reporting commands.
 
-Commands: cv, tune, train-final, bake, report, annotate, audit.
+Commands: cv, tune, train-final, bake, report, annotate, audit, record.
 Defaults: config/data.yaml, config/train.yaml and config/models/<name>.yaml.
 Command-line key=value overrides take precedence, see README.md for examples.
 """
@@ -21,6 +21,7 @@ TOOL_COMMANDS = {
     "report": "evaluation.report",
     "annotate": "annotation_tool.__main__",
     "audit": "evaluation.annotation_audit",
+    "record": "vt_radar.main",
 }
 
 

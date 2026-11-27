@@ -245,3 +245,4 @@ docs/report/*/*.log
 
 # Generated datasets and derived outputs (including identifiable camera frames)
 data/baked/
+recording/

@@ -79,6 +79,7 @@ def test_bake_refresh_rejects_rebuild_flags_before_doing_work(flags, monkeypatch
     ("report", ["results/a run"]),
     ("annotate", ["--port", "9000", "--csv", "marks.csv", "--lan", "--no-browser", "paths.baked_dir=temporary"]),
     ("audit", ["--csv", "marks.csv", "--out", "audit.md", "--port", "9000", "windowing.window_len=8"]),
+    ("record", ["--cfg-file", "config/radar/Config_4.cfg", "--camera-port", "0", "--out-dir", "tmp_rec"]),
 ])
 def test_tool_commands_forward_arguments_without_loading_training_config(command, arguments, monkeypatch):
     module = import_module(cli.TOOL_COMMANDS[command])
@@ -97,6 +98,7 @@ def test_tool_commands_forward_arguments_without_loading_training_config(command
     ("report", "run_dir"),
     ("annotate", "--no-browser"),
     ("audit", "--out"),
+    ("record", "--out-dir"),
 ])
 def test_each_tool_has_its_own_help(command, expected, monkeypatch, capsys):
     original = ["main.py", command, "--help"]
@@ -142,6 +144,7 @@ if sys.argv == ["main.py", "--help"]:
     ("report", ["one", "two"]),
     ("annotate", ["--port", "not-an-integer"]),
     ("audit", ["--port", "not-an-integer"]),
+    ("record", []),
 ])
 def test_tool_argument_errors_keep_the_child_exit_code(command, arguments, monkeypatch, capsys):
     original = ["main.py", command, *arguments]
