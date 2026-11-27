@@ -1,4 +1,8 @@
-"""Filter frames, slice labelled windows and build model inputs with coverage counts."""
+"""Build labelled model inputs from consecutive frames within each recording.
+
+Reject unlabelled or unusable frames, then skip windows crossing those gaps.
+Return heatmaps, point clouds or placeholders, with person groups and coverage counts.
+"""
 
 import logging
 from dataclasses import dataclass, field
@@ -8,34 +12,37 @@ import numpy as np
 import pandas as pd
 from datasets import Dataset
 
-from config import WindowConfig
+from config.data import WindowConfig
 from data.annotations import NO_PERSON, capture_positions
 
 logger = logging.getLogger(__name__)
 
-# Every labelled recording is Config_4: 256 range bins x 16 Doppler bins (see data/preprocess.py, which drops
-# the other sensor configs).
+# Config_4 is the default input shape. Recording selection can be overridden;
+# filter_valid_frames still checks the requested shape before building windows.
 HEATMAP_SHAPE = (256, 16)  # (range_bins, doppler_bins)
 
-# How a window gets its label from the labels of its frames: "last" or "any_lying".
-# See "How windows are labelled" in the README and `_window_label`.
+# Supported frame-to-window label rules; see _window_label for their behaviour.
 LABEL_RULES = ("last", "any_lying")
 
 # What a window's input array holds:
 #   "heatmap":    (N, window_len, 1, 256, 16) log-scaled range-Doppler heatmaps.
-#   "pointcloud": (N, max_points, 7) the radar points of all frames of the window, see _window_points.
-#   "none":       (N, window_len) zeros, for models that ignore the input (the labels are all they need).
+#   "pointcloud": (N, max_points, 7) points and validity; see _window_points.
+#   "none":       (N, window_len) zeros for models that use labels only.
 INPUT_TYPES = ("heatmap", "pointcloud", "none")
-POINT_FEATURES = ("x", "y", "z", "doppler", "snr")  # the first five of the radar's 7 point values
+POINT_FEATURES = ("x", "y", "z", "doppler", "snr")  # First five raw point features.
 
 
 def collapse_lying(y: np.ndarray) -> np.ndarray:
-    """Collapse labels to either 'lying' or 'not_lying'"""
+    """Map labels starting with lying to lying, and all other labels to not_lying."""
     return np.where(np.char.startswith(y, "lying"), "lying", "not_lying")
 
 
 def _window_label(frame_labels: np.ndarray, rule: str) -> str:
-    """The label of one window, given the labels of its frames in time order."""
+    """Choose a window label from its frame labels in time order.
+
+    With any_lying, use the last lying-prefixed label if one exists. Otherwise,
+    including for the last rule, use the final frame's label.
+    """
     if rule == "any_lying":
         lying = [label for label in frame_labels if str(label).startswith("lying")]
         if lying:
@@ -44,10 +51,10 @@ def _window_label(frame_labels: np.ndarray, rule: str) -> str:
 
 
 def window_timing(ds: Dataset, window_len: int, stride: int) -> dict[str, float]:
-    """How long windows are in seconds, from the capture timestamps of `ds`.
+    """Estimate frame, window and stride durations from capture timestamps.
 
-    The frame period is the median time between consecutive frames of a recording. Gaps longer than a
-    second (dropped frames, pauses) are ignored.
+    Use the median within-recording frame gap, ignoring gaps longer than one second.
+    Window duration is window_len times that estimated frame period.
     """
     meta = ds.select_columns(["recording", "timestamp"]).to_pandas()
     gaps = meta.sort_values(["recording", "timestamp"]).groupby("recording").timestamp.diff().dt.total_seconds()
@@ -56,11 +63,11 @@ def window_timing(ds: Dataset, window_len: int, stride: int) -> dict[str, float]
 
 
 def limit_per_group(y: np.ndarray, groups: np.ndarray, n: int, seed: int = 0) -> np.ndarray:
-    """Indices of at most `n` windows per group, for quick test runs.
+    """Return sorted indices for at most n windows per person.
 
-    Every group keeps its windows of the rarer classes first (they are what makes a run meaningful) and
-    fills up with random windows of the most common class. If the rarer classes alone exceed `n`, a random
-    `n` of all of the group's windows are kept. The result is sorted, so the window order is unchanged.
+    Keep non-majority classes first, then sample the largest class to fill the
+    remaining places. If non-majority windows already fill the cap, sample from
+    all of that person's windows instead.
     """
     rng = np.random.default_rng(seed)
     keep = []
@@ -79,12 +86,11 @@ def limit_per_group(y: np.ndarray, groups: np.ndarray, n: int, seed: int = 0) ->
 
 
 def _window_points(clouds: list[np.ndarray], frames: np.ndarray, max_points: int) -> np.ndarray:
-    """All radar points of one window as a fixed-size array of shape (max_points, 7).
+    """Combine one window's radar points into a float32 (max_points, 7) array.
 
-    Columns are the five point features (see POINT_FEATURES), the time of the point's frame inside the window
-    (0 for the first frame, 1 for the last) and a validity flag (1 for a real point, 0 for padding). The
-    radar returns 0 to 16 points per frame, so a window of 16 frames has about 40 on average (a few have
-    none). If a window has more than `max_points`, the strongest by SNR are kept.
+    Columns are x, y, z, Doppler, SNR, relative frame time (0 to 1) and validity
+    (1 for a real point, 0 for padding). Keep the strongest points by SNR if the
+    window exceeds max_points, preserving their original order.
     """
     span = max(len(frames) - 1, 1)
     rows = [
@@ -104,7 +110,14 @@ def _window_points(clouds: list[np.ndarray], frames: np.ndarray, max_points: int
 
 
 def _prep(h, shape: tuple[int, int]) -> np.ndarray:
-    """Make sure the shapes match"""
+    """Apply log1p to one heatmap and add its channel dimension.
+
+    Returns:
+        A float32 array of shape (1, *shape).
+
+    Raises:
+        ValueError: If the heatmap does not have the expected shape.
+    """
     a = np.log1p(np.asarray(h, dtype=np.float32))
     if a.shape != shape:
         raise ValueError(f"heatmap is {a.shape}, expected {shape}")
@@ -113,11 +126,11 @@ def _prep(h, shape: tuple[int, int]) -> np.ndarray:
 
 @dataclass
 class WindowCoverage:
-    """Coverage from selected frames to final windows.
+    """Counts and recording names from selected frames to final windows.
 
-    Frame drops are exclusive: missing labels first, then bad heatmaps, then
-    wrong sensor shapes. Recording lists describe target-label availability
-    before frame filtering; windows_kept includes any per-person cap.
+    Count frame drops once, in order: missing labels, bad heatmaps, wrong shapes.
+    Recording lists describe label availability before filtering. windows_kept
+    includes any per-person cap.
     """
 
     recordings_used: list[str] = field(default_factory=list)
@@ -153,8 +166,15 @@ def filter_valid_frames(
 ) -> tuple[Dataset, pd.DataFrame, WindowCoverage]:
     """Keep labelled frames with usable heatmaps of the expected sensor shape.
 
-    Capture positions are assigned before filtering, so windows can detect holes
-    left by rejected frames without changing annotation frame indices.
+    Assign capture positions before filtering so later windows can detect gaps.
+
+    Args:
+        ds: Dataset after recording selection, with person identities attached.
+        target: Name of the frame-label column.
+        shape: Expected (range_bins, doppler_bins).
+
+    Returns:
+        Filtered frames, metadata with matching row positions, and coverage counts.
     """
     meta_all = cast(pd.DataFrame, ds.select_columns([
         "recording", "person", "frame_idx", "timestamp", target,
@@ -181,7 +201,24 @@ def filter_valid_frames(
 def slice_window_indices(
     meta: pd.DataFrame, target: str, window_len: int, stride: int, label_rule: str, collapse: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
-    """Slice each recording in capture order, skipping windows over rejected frames."""
+    """Slice recordings into windows without crossing rejected capture positions.
+
+    Args:
+        meta: Filtered frame metadata with a contiguous row index, recording,
+            person, capture_idx and target columns.
+        target: Name of the frame-label column.
+        window_len: Number of consecutive capture positions per window.
+        stride: Number of rows between candidate window starts.
+        label_rule: any_lying or last; see _window_label.
+        collapse: Whether to merge labels into lying and not_lying.
+
+    Returns:
+        Frame-row indices (N, window_len), string labels (N,), person names (N,),
+        and the number of candidate windows skipped because they cross gaps.
+
+    Raises:
+        ValueError: If sizes or label rules are invalid, or a person is unknown.
+    """
     if window_len < 1 or stride < 1:
         raise ValueError("window_len and stride must be positive")
     if label_rule not in LABEL_RULES:
@@ -214,6 +251,7 @@ def slice_window_indices(
 
 
 def _build_heatmap_inputs(frames_ds: Dataset, window_frames: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
+    """Build float32 log1p heatmaps of shape (N, T, 1, *shape)."""
     if len(window_frames) == 0:
         return np.zeros((0, window_frames.shape[1], 1, *shape), dtype=np.float32)
     heatmap_batches = frames_ds.select_columns(["heatmap"]).iter(256)
@@ -224,6 +262,7 @@ def _build_heatmap_inputs(frames_ds: Dataset, window_frames: np.ndarray, shape: 
 
 
 def _build_pointcloud_inputs(frames_ds: Dataset, window_frames: np.ndarray, max_points: int) -> np.ndarray:
+    """Build padded float32 point-cloud windows of shape (N, max_points, 7)."""
     if len(window_frames) == 0:
         return np.zeros((0, max_points, 7), dtype=np.float32)
     clouds = [np.asarray(c, dtype=np.float32).reshape(-1, 7) for c in frames_ds["pointcloud"]]
@@ -231,6 +270,7 @@ def _build_pointcloud_inputs(frames_ds: Dataset, window_frames: np.ndarray, max_
 
 
 def _build_empty_inputs(window_frames: np.ndarray) -> np.ndarray:
+    """Return float32 zeros of shape (N, T) for models that ignore inputs."""
     return np.zeros(window_frames.shape, dtype=np.float32)
 
 
@@ -238,7 +278,15 @@ def build_window_inputs(
     frames_ds: Dataset, window_frames: np.ndarray, input_type: str,
     shape: tuple[int, int] = HEATMAP_SHAPE, max_points: int = 128,
 ) -> np.ndarray:
-    """Build heatmap, point-cloud or placeholder inputs for the same window indices."""
+    """Build model inputs for the supplied window frame indices.
+
+    Returns:
+        Float32 heatmaps (N, T, 1, *shape), point clouds (N, max_points, 7),
+        or placeholder zeros (N, T), according to input_type.
+
+    Raises:
+        ValueError: If input_type is unsupported or a heatmap shape is wrong.
+    """
     if input_type == "heatmap":
         return _build_heatmap_inputs(frames_ds, window_frames, shape)
     if input_type == "pointcloud":
@@ -253,7 +301,7 @@ def _build_windows(
     max_per_person: int | None = None, seed: int = 0, shape: tuple[int, int] = HEATMAP_SHAPE,
     relabel: Callable[[np.ndarray], np.ndarray] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, WindowCoverage]:
-    """Shared orchestration for configured runs and explicit make_windows calls."""
+    """Filter, label and optionally cap windows before constructing model inputs."""
     if input_type not in INPUT_TYPES:
         raise ValueError(f"inputs must be one of {INPUT_TYPES}, got {input_type!r}")
     frames_ds, meta, coverage = filter_valid_frames(ds, windowing.target, shape)
@@ -285,10 +333,24 @@ def make_windows(
     seed: int = 0,
     max_points: int = 128,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Build windows with explicit settings; return inputs, labels and person groups.
+    """Build windows from explicit arguments after recording selection.
 
-    Heatmaps have shape (N, window_len, 1, *shape), point clouds (N, max_points, 7),
-    and placeholder inputs (N, window_len). Run recording selection first.
+    Args:
+        ds: Selected dataset with person identities and frame labels.
+        target: Frame-label column; this helper defaults to label_pose.
+        window_len: Number of consecutive frames per window.
+        stride: Number of rows between candidate window starts.
+        shape: Expected (range_bins, doppler_bins).
+        inputs: heatmap, pointcloud or none.
+        relabel: Optional function applied to the completed window labels.
+        label_rule: last or any_lying; this helper defaults to last.
+        max_per_person: Optional window cap for quick checks.
+        seed: Seed for sampling when a cap is applied.
+        max_points: Maximum points retained per point-cloud window.
+
+    Returns:
+        Float32 model inputs, string labels (N,) and person names (N,).
+        See build_window_inputs for input shapes.
     """
     windowing = WindowConfig(target=target, collapse_lying=False, window_len=window_len,
                              stride=stride, label_rule=label_rule, max_points=max_points)
@@ -300,5 +362,17 @@ def make_windows(
 def build_windows(
     ds: Dataset, windowing: WindowConfig, input_type: str, *, max_per_person: int | None = None, seed: int = 0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, WindowCoverage]:
-    """Build windows from config and return their frame/window coverage summary."""
+    """Build configured windows and report how many frames and windows were kept.
+
+    Args:
+        ds: Selected dataset with person identities and frame labels.
+        windowing: Label rules, window sizes and point-cloud limit.
+        input_type: heatmap, pointcloud or none.
+        max_per_person: Optional window cap for quick checks.
+        seed: Seed for sampling when a cap is applied.
+
+    Returns:
+        Float32 model inputs, string labels (N,), person names (N,), and coverage.
+        See build_window_inputs for input shapes.
+    """
     return _build_windows(ds, windowing, input_type, max_per_person=max_per_person, seed=seed)

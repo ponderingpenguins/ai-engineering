@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from training.splits import GroupKFoldSplitter, inner_splits
+from training.splitting import GroupKFoldSplitter, inner_splits
 
 PEOPLE = {"Bob": 40, "Dave": 30, "Frank": 60, "Ian": 70}
 LYING = {"Bob": 1, "Dave": 1, "Frank": 3, "Ian": 2}

@@ -1,11 +1,8 @@
-"""The local server of the annotation tool: the page, the camera frames and the saving of the marks.
+"""Serve the annotation page, camera JPEGs and CSV editing API.
 
-It uses only the standard library and listens on the local machine only. The page is plain HTML and JS.
-
-    GET  /                           the page (and /logic.js)
-    GET  /api/recordings             every recording with its marks, as saved in the file
-    GET  /frame/<recording>/<n>.jpg  the original camera frame at capture position n
-    PUT  /api/recording/<recording>  {"intervals": [[first, last], ...], "reviewed": bool}: saves the marks
+GET / and /logic.js serve the UI; GET /api/recordings lists recordings and marks.
+GET /frame/<recording>/<n>.jpg reads a frame in capture order.
+PUT /api/recording/<recording> saves intervals and review status atomically.
 """
 
 import ipaddress
@@ -28,16 +25,17 @@ logger = logging.getLogger(__name__)
 
 STATIC = Path(__file__).parent / "static"
 PAGES = {"/": ("index.html", "text/html; charset=utf-8"), "/logic.js": ("logic.js", "text/javascript; charset=utf-8")}
-MAX_BODY = 1_000_000  # bytes; a recording has a few hundred intervals at most
+MAX_BODY = 1_000_000  # Maximum annotation request body size in bytes.
 
 
 class Catalogue:
-    """The recordings of a dataset and their frames in capture order. Reads the original JPEGs."""
+    """Index camera frames by recording and capture position without decoding JPEGs."""
 
     def __init__(self, ds: Dataset) -> None:
+        """Build capture-position lookups from the selected baked dataset."""
         meta = ds.select_columns(["recording", "person", "timestamp", "frame_idx"]).to_pandas()
         meta["position"] = capture_positions(meta)
-        self.rows: dict[str, np.ndarray] = {}  # recording -> the dataset row of every capture position
+        self.rows: dict[str, np.ndarray] = {}  # Recording -> dataset row at each capture position.
         for recording, frames in meta.groupby("recording"):
             rows = np.empty(len(frames), dtype=int)
             rows[frames.position.to_numpy()] = frames.index.to_numpy()
@@ -47,14 +45,18 @@ class Catalogue:
 
     @property
     def names(self) -> list[str]:
-        """The recordings in the order of their names, which is the order of recording time."""
+        """Recording names sorted alphabetically."""
         return sorted(self.rows)
 
     def frame(self, recording: str, position: int) -> bytes:
-        """The JPEG bytes of one frame.
+        """Return the original JPEG bytes for one capture position.
+
+        Args:
+            recording: Recording name from the catalogue.
+            position: Zero-based position in capture order.
 
         Raises:
-            KeyError: If the recording or the position does not exist.
+            KeyError: If the recording or position is unknown.
         """
         rows = self.rows[recording]
         if not 0 <= position < len(rows):
@@ -63,15 +65,16 @@ class Catalogue:
 
 
 class Annotator:
-    """The marks of the recordings in one file. Every save reads the file, changes one recording and writes it back."""
+    """Read and atomically update recording marks in one CSV, serialising local access."""
 
     def __init__(self, catalogue: Catalogue, path: Path) -> None:
+        """Store the catalogue and CSV path, with a lock for this server's requests."""
         self.catalogue = catalogue
         self.path = path
         self.lock = threading.Lock()
 
     def state(self) -> list[dict[str, Any]]:
-        """Every recording with its person, its number of frames and its saved marks."""
+        """Return each recording's person, frame count, intervals and review status."""
         with self.lock:
             saved = read_annotations(self.path)
         out = []
@@ -82,11 +85,21 @@ class Annotator:
         return out
 
     def save(self, recording: str, intervals: Any, reviewed: Any) -> dict[str, Any]:
-        """Replaces the marks of one recording.
+        """Check and save one recording's intervals and review status.
+
+        Re-read the CSV under the lock to preserve marks for other recordings.
+
+        Args:
+            recording: Recording name offered by the catalogue.
+            intervals: List of inclusive [first, last] integer capture positions.
+            reviewed: Boolean indicating that the whole recording has been checked.
+
+        Returns:
+            Saved recording name, merged intervals and review status.
 
         Raises:
-            KeyError: If the recording is not offered by the tool.
-            ValueError: If the input is not valid, or an interval reaches past the end of the recording.
+            KeyError: If the recording is not in the catalogue.
+            ValueError: If values are malformed or an interval extends past the recording.
         """
         if recording not in self.catalogue.rows:
             raise KeyError(recording)
@@ -109,8 +122,11 @@ class Annotator:
 
 
 def host_allowed(header: str | None, port: int, lan: bool) -> bool:
-    """Is `Host` a name for this machine? On the LAN only an IP address of a private network is accepted, not a
-    domain name, so a web page cannot rebind its own domain name to us and read the frames in the browser."""
+    """Check whether the HTTP Host header is permitted for this server's port.
+
+    Allow loopback names and addresses. In LAN mode, also allow private IP
+    addresses and .local names. Reject other domain names and mismatched ports.
+    """
     if not header:
         return False
     try:
@@ -127,19 +143,33 @@ def host_allowed(header: str | None, port: int, lan: bool) -> bool:
     try:
         return ipaddress.ip_address(name).is_private
     except ValueError:
-        return name.endswith(".local")  # mDNS name of the machine, e.g. my-mac.local
+        return name.endswith(".local")  # Permit local mDNS names, e.g. my-mac.local.
 
 
 def make_server(annotator: Annotator, port: int = 8765, host: str = "127.0.0.1") -> ThreadingHTTPServer:
-    """A server on the local machine, or on every network interface when `host` is `0.0.0.0`.
-    Use `port=0` to let the system pick a free port."""
+    """Create the threaded annotation server without starting its request loop.
+
+    Args:
+        annotator: Catalogue and CSV editing service.
+        port: Listening port; zero lets the operating system choose a free port.
+        host: Bind address; 127.0.0.1 is local only, 0.0.0.0 exposes all IPv4 interfaces.
+
+    Returns:
+        A server ready for serve_forever; the caller must close it when finished.
+    """
     lan = host not in ("127.0.0.1", "localhost", "::1")
 
     class Handler(BaseHTTPRequestHandler):
-        def log_message(self, *args: Any) -> None:  # the frames would flood the terminal
+        """Handle annotation page, frame and recording API requests."""
+
+        server: ThreadingHTTPServer
+
+        def log_message(self, *args: Any) -> None:
+            """Suppress per-request HTTP logs so frame playback does not flood the terminal."""
             pass
 
         def reply(self, status: int, body: bytes, content_type: str, cache: str = "no-store") -> None:
+            """Send a byte response with its content type, length and cache policy."""
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(body)))
@@ -148,16 +178,18 @@ def make_server(annotator: Annotator, port: int = 8765, host: str = "127.0.0.1")
             self.wfile.write(body)
 
         def reply_json(self, status: int, value: Any) -> None:
+            """Encode a value as JSON and send it with the given HTTP status."""
             self.reply(status, json.dumps(value).encode(), "application/json")
 
         def allowed(self) -> bool:
-            """Only requests addressed to this machine: it blocks other sites from using the browser to reach us."""
+            """Reject requests whose Host header is outside the configured allowlist."""
             if host_allowed(self.headers.get("Host"), self.server.server_port, lan):
                 return True
             self.reply_json(HTTPStatus.FORBIDDEN, {"error": "wrong Host header"})
             return False
 
         def do_GET(self) -> None:
+            """Serve the UI, recording catalogue or a camera JPEG after checking the host."""
             if not self.allowed():
                 return
             path = self.path.split("?")[0]
@@ -167,7 +199,7 @@ def make_server(annotator: Annotator, port: int = 8765, host: str = "127.0.0.1")
             elif path == "/api/recordings":
                 try:
                     self.reply_json(HTTPStatus.OK, annotator.state())
-                except ValueError as error:  # the file is damaged: say so instead of hiding it
+                except ValueError as error:  # Report malformed CSV data instead of hiding it.
                     self.reply_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(error)})
             elif path.startswith("/frame/") and path.endswith(".jpg"):
                 try:
@@ -176,11 +208,12 @@ def make_server(annotator: Annotator, port: int = 8765, host: str = "127.0.0.1")
                 except (KeyError, ValueError):
                     self.reply_json(HTTPStatus.NOT_FOUND, {"error": "no such frame"})
                 else:
-                    self.reply(HTTPStatus.OK, jpeg, "image/jpeg", cache="max-age=86400")  # a frame never changes
+                    self.reply(HTTPStatus.OK, jpeg, "image/jpeg", cache="max-age=86400")  # Frames are immutable.
             else:
                 self.reply_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
         def do_PUT(self) -> None:
+            """Validate and save one recording's marks, returning a JSON result or error."""
             if not self.allowed():
                 return
             prefix = "/api/recording/"
@@ -196,7 +229,7 @@ def make_server(annotator: Annotator, port: int = 8765, host: str = "127.0.0.1")
                 result = annotator.save(unquote(self.path[len(prefix):]), body.get("intervals"), body.get("reviewed"))
             except KeyError:
                 self.reply_json(HTTPStatus.NOT_FOUND, {"error": "no such recording"})
-            except (ValueError, AttributeError) as error:  # bad JSON, a body that is not an object, or invalid marks
+            except (ValueError, AttributeError) as error:  # Invalid JSON, object shape or marks.
                 self.reply_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
             else:
                 self.reply_json(HTTPStatus.OK, result)

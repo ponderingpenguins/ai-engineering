@@ -1,4 +1,7 @@
-"""Loss-curve figures for a cross-validation run, drawn from the histories saved in `results.json`."""
+"""Draw fold and mean loss curves from saved training histories.
+
+Use a non-interactive plotting backend so figures can be saved without a display.
+"""
 
 import warnings
 from pathlib import Path
@@ -10,29 +13,31 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from models.model import History
+from training.fitting import History
 from evaluation.records import FoldResult
 
-GRID_PER_EPOCH = 10  # points per epoch on the common axis of the train curve in the mean figure
+GRID_PER_EPOCH = 10  # Training-curve samples per epoch on the shared plotting grid.
 
 
 def fold_histories(folds: list[FoldResult]) -> list[tuple[FoldResult, History]]:
-    """The `(fold, history)` pairs of the folds that have a loss history (iterative models only)."""
+    """Return (fold, history) pairs only for folds with iterative training histories."""
     return [(fold, fold.history) for fold in folds if fold.history]
 
 
 def _title(fold: FoldResult) -> str:
+    """Format the fold number and held-out people for a plot title."""
     val = f", val {'+'.join(fold.val_groups)}" if fold.val_groups else ""
     return f"Fold {fold.fold}: test {'+'.join(fold.test_groups)}{val}"
 
 
 def plot_fold_curves(folds: list[FoldResult], path: Path) -> Path | None:
-    """One panel per fold: train loss at every step, val loss at every evaluation.
+    """Save one panel per fold, showing training and validation loss by step.
 
-    A dashed line marks the step whose weights were kept (the lowest val loss).
+    Mark the selected weights with a dashed line and early stopping with a
+    dotted line when those steps are recorded.
 
     Returns:
-        The path of the figure, or None if no fold has a loss history.
+        Figure path, or None when no fold has a training history.
     """
     pairs = fold_histories(folds)
     if not pairs:
@@ -60,23 +65,20 @@ def plot_fold_curves(folds: list[FoldResult], path: Path) -> Path | None:
 
 
 def _on_grid(x: np.ndarray, values: np.ndarray, grid: np.ndarray) -> np.ndarray:
-    """Values interpolated onto `grid`; NaN where the curve does not reach (a fold that stopped earlier)."""
+    """Interpolate a curve onto grid, using NaN outside its recorded range."""
     return np.interp(grid, x, values, left=np.nan, right=np.nan)
 
 
 def mean_curves(folds: list[FoldResult]) -> dict[str, np.ndarray] | None:
-    """Mean and standard deviation over folds of the train and val loss, on an epoch axis.
+    """Compute loss means and standard deviations across folds on an epoch axis.
 
-    Folds have different numbers of steps per epoch and stop at different times, so every curve is put on
-    an epoch axis first. A point is only used where at least two folds have a value.
-
-    - Train loss: averaged over one epoch of steps (a single step is too noisy), then put on a grid with
-      `GRID_PER_EPOCH` points per epoch.
-    - Val loss: only the epochs where it was really computed, so no value is interpolated.
+    Smooth training loss over one epoch of steps, then interpolate it onto a
+    common grid. Keep validation loss only at recorded evaluation epochs.
+    Each point needs values from at least two folds; others remain NaN.
 
     Returns:
-        Arrays `epoch`, `train_mean`, `train_std` and `val_epoch`, `val_mean`, `val_std`, or None if no
-        fold has a loss history.
+        Arrays named epoch, train_mean, train_std, val_epoch, val_mean and val_std,
+        or None when no fold has a training history.
     """
     pairs = fold_histories(folds)
     if not pairs:
@@ -86,10 +88,11 @@ def mean_curves(folds: list[FoldResult]) -> dict[str, np.ndarray] | None:
     val_epochs = np.unique(np.round([step / h.steps_per_epoch for _, h in pairs for step in h.val_steps], 2))
 
     def reduce(curves: list[np.ndarray], width: int) -> tuple[np.ndarray, np.ndarray]:
+        """Compute column means and deviations only where at least two folds contribute."""
         stack = np.vstack(curves) if curves else np.full((1, width), np.nan)
         n = np.sum(~np.isnan(stack), axis=0)
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)  # columns where no fold has a value stay NaN
+            warnings.simplefilter("ignore", RuntimeWarning)  # Empty columns remain NaN.
             mean, std = np.nanmean(stack, axis=0), np.nanstd(stack, axis=0)
         mean[n < 2], std[n < 2] = np.nan, np.nan
         return mean, std
@@ -109,10 +112,10 @@ def mean_curves(folds: list[FoldResult]) -> dict[str, np.ndarray] | None:
 
 
 def plot_mean_curves(folds: list[FoldResult], path: Path) -> Path | None:
-    """Train and val loss against epochs, as the mean over folds with a shaded band of ±1 standard deviation.
+    """Save mean training and validation losses with a one-standard-deviation band.
 
     Returns:
-        The path of the figure, or None if no fold has a loss history.
+        Figure path, or None when no fold has a training history.
     """
     curves = mean_curves(folds)
     if curves is None:
@@ -132,7 +135,8 @@ def plot_mean_curves(folds: list[FoldResult], path: Path) -> Path | None:
            title=f"Loss over {n_total} folds (mean, shaded band = ±1 std across folds)")
     ax.text(0.99, 0.97, "a point needs at least 2 folds still training", transform=ax.transAxes, ha="right", va="top",
             fontsize=7, color="gray")
-    ax.legend()
+    if ax.get_legend_handles_labels()[0]:
+        ax.legend()
     fig.tight_layout()
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)

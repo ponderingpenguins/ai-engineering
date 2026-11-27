@@ -1,18 +1,21 @@
 from dataclasses import replace
 import json
+import warnings
 
 import numpy as np
 import pytest
 
 from models.baseline import MajorityClass
-from models.model import BaseModel, History
+from models.model import BaseModel
+from training.fitting import History, fit_torch
 from models.rnn import RNN
 from evaluation.plots import mean_curves, plot_fold_curves, plot_mean_curves
 from evaluation.records import FoldResult, Pooled, RunResults
 from evaluation.report import write_report
-from training.splits import GroupKFoldSplitter, validation_split
-from config import WindowConfig
-from training.cv import Trainer
+from training.splitting import GroupKFoldSplitter, validation_split
+from config.training import TrainingConfig
+from config.data import WindowConfig
+from training.cross_validation import CrossValidator
 
 WINDOWING = WindowConfig(target="label_pose", collapse_lying=True, window_len=16, label_rule="any_lying", max_points=128).signature()
 
@@ -57,7 +60,7 @@ def tiny_data():
 
 def test_without_validation_data_it_trains_all_epochs(tiny_data):
     x, y, _, _ = tiny_data
-    history = RNN(epochs=3, batch_size=8, hidden=8, feat_dim=8).fit(x, y)
+    history = fit_torch(RNN(hidden=8, feat_dim=8), x, y, training=TrainingConfig(epochs=3, batch_size=8))
     assert history.steps_per_epoch == 2
     assert history.train_steps == list(range(1, 7))
     assert history.val_loss == [] and history.best_step is None and not history.stopped_early
@@ -65,8 +68,9 @@ def test_without_validation_data_it_trains_all_epochs(tiny_data):
 
 def test_early_stopping_stops_and_keeps_the_best_weights(tiny_data):
     x, y, xv, yv = tiny_data
-    model = RNN(epochs=40, batch_size=8, hidden=8, feat_dim=8, patience=3, lr=1e-2)
-    history = model.fit(x, y, val=(xv, yv))
+    model = RNN(hidden=8, feat_dim=8)
+    training = TrainingConfig(epochs=40, batch_size=8, patience=3, lr=1e-2)
+    history = fit_torch(model, x, y, training=training, val=(xv, yv))
     assert history.stopped_early and history.train_steps[-1] < 40 * history.steps_per_epoch
     assert history.best_step in history.val_steps
     best = history.val_steps.index(history.best_step)
@@ -77,7 +81,8 @@ def test_early_stopping_stops_and_keeps_the_best_weights(tiny_data):
 
 def test_validation_loss_is_computed_per_evaluation_not_per_step(tiny_data):
     x, y, xv, yv = tiny_data
-    history = RNN(epochs=2, batch_size=4, hidden=8, feat_dim=8, patience=99, evals_per_epoch=2).fit(x, y, val=(xv, yv))
+    history = fit_torch(RNN(hidden=8, feat_dim=8), x, y,
+                        training=TrainingConfig(epochs=2, batch_size=4, patience=99, evals_per_epoch=2), val=(xv, yv))
     assert history.steps_per_epoch == 4
     assert history.val_steps == [2, 4, 6, 8]  # every 2 steps
     assert len(history.train_loss) == 8  # every step
@@ -85,8 +90,8 @@ def test_validation_loss_is_computed_per_evaluation_not_per_step(tiny_data):
 
 def test_kept_weights_are_restored_so_predict_uses_the_best_epoch(tiny_data):
     x, y, xv, yv = tiny_data
-    model = RNN(epochs=5, batch_size=8, hidden=8, feat_dim=8, patience=1, seed=1)
-    model.fit(x, y, val=(xv, yv))
+    model = RNN(hidden=8, feat_dim=8)
+    fit_torch(model, x, y, training=TrainingConfig(epochs=5, batch_size=8, patience=1), seed=1, val=(xv, yv))
     assert set(model.predict(xv)) <= {"lying", "not_lying"}
 
 
@@ -101,7 +106,7 @@ def make_cv_data():
 def test_trainer_writes_checkpoints_results_and_report(tmp_path):
     x, y, groups = make_cv_data()
     out = tmp_path / "run"
-    trainer = Trainer(MajorityClass, splitter=GroupKFoldSplitter(), out_dir=out, windowing=WINDOWING,
+    trainer = CrossValidator(MajorityClass, splitter=GroupKFoldSplitter(), out_dir=out, windowing=WINDOWING,
                       config={"model": {"name": "baseline"}, "eval": {"folds": None, "seed": 0}})
     results = trainer.cross_validate(x, y, groups)
 
@@ -121,7 +126,7 @@ def test_trainer_writes_checkpoints_results_and_report(tmp_path):
 
 def test_trainer_without_out_dir_saves_nothing(tmp_path):
     x, y, groups = make_cv_data()
-    results = Trainer(MajorityClass).cross_validate(x, y, groups)
+    results = CrossValidator(MajorityClass).cross_validate(x, y, groups)
     assert all(fold.checkpoint is None for fold in results.folds)
     assert not list(tmp_path.iterdir())
 
@@ -167,6 +172,13 @@ def test_figures_are_written(tmp_path):
     assert plot_fold_curves([FoldResult(1, ["Bob"])], tmp_path / "c.png") is None
 
 
+def test_a_single_fold_mean_figure_does_not_warn_about_an_empty_legend(tmp_path):
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="No artists with labels found")
+        path = plot_mean_curves(fake_folds()[:1], tmp_path / "single.png")
+    assert path.stat().st_size > 0
+
+
 def test_report_embeds_both_figures_when_there_are_histories(tmp_path):
     folds = [replace(f, n_test=5, metrics={"accuracy": 0.9, "macro_f1": 0.5}, checkpoint=f"checkpoints/f{f.fold}.pt",
                      per_class={"lying": {"recall": 0.5, "support": 2}, "not_lying": {"recall": 1.0, "support": 3}})
@@ -199,7 +211,7 @@ def test_without_validation_every_fold_trains_on_all_its_training_people():
             seen.append(val)
             return super().fit(x, y, val, **kwargs)
 
-    results = Trainer(Recorder, splitter=GroupKFoldSplitter(), validate=False).cross_validate(x, y, groups)
+    results = CrossValidator(Recorder, splitter=GroupKFoldSplitter(), validate=False).cross_validate(x, y, groups)
     assert all(val is None for val in seen)
     assert all(fold.val_groups == [] and fold.n_val == 0 for fold in results.folds)
     assert all(fold.n_train == 18 for fold in results.folds)  # 3 of 4 people, 6 windows each

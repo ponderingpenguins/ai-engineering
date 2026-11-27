@@ -1,4 +1,8 @@
-"""Shared optimiser/loop settings and evaluation/tuning controls."""
+"""Settings for model fitting, cross-validation and hyperparameter tuning.
+
+RunConfig combines data settings, the selected model and shared training controls.
+"""
+
 from dataclasses import dataclass, field
 from typing import Any
 from .data import DataConfig
@@ -7,6 +11,8 @@ from .models import ModelConfig
 
 @dataclass
 class TrainingConfig:
+    """Optimiser, batching, early-stopping and training class-balance settings."""
+
     epochs: int = 30
     batch_size: int = 32
     lr: float = 0.001
@@ -20,18 +26,24 @@ class TrainingConfig:
 
 @dataclass
 class CVConfig:
+    """Outer fold count and an optional per-person window cap for quick checks."""
+
     folds: int | None = None
     max_windows_per_person: int | None = None
 
 
 @dataclass
 class TuneConfig:
+    """Candidate overrides and the file used to pass the winner to final training."""
+
     grid: list[dict[str, Any]] = field(default_factory=list)
     best_path: str = "results/tuned.yaml"
 
 
 @dataclass
 class RunConfig(DataConfig):
+    """Complete data, model, training and evaluation settings for one run."""
+
     model: ModelConfig = field(default_factory=ModelConfig)
     seed: int = 0
     out_dir: str = "results"

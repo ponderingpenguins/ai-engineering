@@ -1,4 +1,5 @@
 <!doctype html>
+<!-- Static camera viewer. config4_viewer.py supplies labels in data.js and JPEGs in frames/. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -30,7 +31,7 @@
 <script>
 "use strict";
 // VIEWER = {period, classes: [{key, name, colour}], recordings: [{name, person, labels, runs}]}
-// `labels` has one character per frame; each character is the `key` of a class. `runs` are [first, last] frames.
+// labels contains one class key per frame; runs contains inclusive [first, last] positions.
 const V = VIEWER, REC = V.recordings;
 const $ = id => document.getElementById(id);
 const KIND = Object.fromEntries(V.classes.map(c => [c.key, c]));
@@ -41,7 +42,7 @@ let rec = 0, pos = 0, playing = false, timer = 0, speed = 1;
 
 const url = (r, i) => "frames/" + REC[r].name + "/" + String(i).padStart(4, "0") + ".jpg";
 
-// ---- preload the next frames so playback does not wait for the disk
+// Preload upcoming frames to reduce playback delays.
 const cache = new Map();
 function image(r, i) {
   const k = r + ":" + i;
@@ -54,7 +55,7 @@ function preload() {
   if (cache.size > 400) for (const k of [...cache.keys()].slice(0, cache.size - 300)) cache.delete(k);
 }
 
-// ---- drawing
+// Draw the pose timeline and update frame details.
 function drawStrip() {
   const labels = REC[rec].labels, n = labels.length, w = STRIP_W / n;
   ctx.clearRect(0, 0, STRIP_W, STRIP_H);
@@ -74,7 +75,7 @@ function show() {
   history.replaceState(null, "", "#rec=" + encodeURIComponent(r.name) + "&f=" + pos);
 }
 
-// ---- navigation
+// Navigate between frames, recordings and lying intervals.
 function go(p) { pos = Math.max(0, Math.min(REC[rec].labels.length - 1, p)); show(); }
 function setRecording(i) { stop(); rec = (i + REC.length) % REC.length; $("recSelect").value = rec; go(0); }
 function jumpRun(dir) {
@@ -84,7 +85,7 @@ function jumpRun(dir) {
   go(dir > 0 ? (later.length ? later[0] : starts[0]) : (earlier.length ? earlier.at(-1) : starts.at(-1)));
 }
 
-// ---- playback: the frame is chosen from the elapsed time, and waits for its image if the disk is slow
+// Choose playback frames from elapsed time, displaying them once their images are loaded.
 function stop() { playing = false; clearTimeout(timer); $("play").textContent = "play"; }
 function start() {
   const last = REC[rec].labels.length - 1;
@@ -101,7 +102,7 @@ function start() {
   tick();
 }
 
-// ---- wiring
+// Connect buttons, timeline dragging and keyboard shortcuts.
 REC.forEach((r, i) => {
   const lying = [...r.labels].filter(isLying).length;
   const none = [...r.labels].every(c => KIND[c].name === "not labelled");
@@ -132,7 +133,7 @@ document.onkeydown = e => {
   else if (k.toLowerCase() === "l") { stop(); jumpRun(e.shiftKey ? -1 : +1); }
 };
 
-// a link can name the start: index.html#rec=<recording>&f=<frame>, and &play=1 starts playing
+// Links select a frame: index.html#rec=<recording>&f=<frame>; &play=1 starts playback.
 const hash = new URLSearchParams(location.hash.slice(1));
 const named = REC.findIndex(r => r.name === hash.get("rec"));
 rec = named >= 0 ? named : 0;

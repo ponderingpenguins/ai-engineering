@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# Copies the code to the PC. Leaves out .git, notebooks, docs, results, virtualenvs and the big data folders
-# (use push-data.sh for the baked dataset). Extra arguments go to rsync, e.g. -n for a dry run.
-#   scripts/remote_pc/push-code.sh [-n]
+# Copy the checkout and local recorder dependency to the remote PC.
+# Usage: scripts/remote_pc/push-code.sh [-n]
+# Exclude Git metadata, environments, notebooks, docs, outputs and raw recordings.
+# Use push-data.sh for baked data; extra arguments go to rsync (-n previews changes).
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 require_pc
 pc_bash <<< "mkdir -p '$PC_DIR'"
-# The recorder package is a local dependency of pyproject.toml, so it must go along.
+# Include the local recorder dependency even though the rest of the raw-data tree is excluded.
 pc_rsync -az --itemize-changes "$@" \
   --include='data/raw/floor_posture_dataset/recorder/***' \
   --exclude='/.git' --exclude='.venv' --exclude='__pycache__' --exclude='*.egg-info' \

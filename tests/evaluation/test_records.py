@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from models.model import History
+from training.fitting import History
 from evaluation.records import BestSetting, Candidate, FoldResult, InnerFold, Pooled, RunResults, Tuning
 from evaluation.report import write_report
 
@@ -42,3 +42,51 @@ def test_the_report_can_be_rebuilt_from_a_stored_run(tmp_path):
     stored = json.loads(json.dumps(full_results().to_dict()))
     report = write_report(RunResults.from_dict(stored), tmp_path).read_text()
     assert "## Tuning" in report and "**Chosen for the final model:**" in report and "Fold 1" in report
+
+
+def test_report_shows_saved_frame_and_window_coverage(tmp_path):
+    results = full_results()
+    results.config["window_coverage"] = {
+        "frames_total": 100, "frames_unlabelled": 10, "frames_bad_heatmap": 3,
+        "frames_wrong_shape": 2, "frames_kept": 85, "windows_gap_skipped": 4, "windows_kept": 5,
+    }
+    text = write_report(results, tmp_path).read_text(encoding="utf-8")
+    assert "## Window coverage" in text and "counted once, in order" in text
+    for label, count in [("Selected frames", 100), ("Dropped: missing target label", 10),
+                         ("Dropped: bad heatmap", 3), ("Dropped: wrong sensor shape", 2),
+                         ("Frames kept", 85), ("Windows skipped across frame gaps", 4),
+                         ("Windows kept after any per-person cap", 5)]:
+        assert f"| {label} | {count} |" in text
+
+
+def test_report_omits_coverage_when_an_older_run_did_not_record_it(tmp_path):
+    text = write_report(full_results(), tmp_path).read_text(encoding="utf-8")
+    assert "## Window coverage" not in text
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_report_retains_current_and_legacy_config_layouts(tmp_path, legacy):
+    results = full_results()
+    results.tuned = None
+    training = {"epochs": 3, "batch_size": 8, "lr": 0.001, "validation": False, "seed": 5}
+    windows = {"window_len": 16, "stride": 8, "label_rule": "any_lying", "target": "label_pose", "folds": 2}
+    results.config = (
+        {"model": {"name": "rnn", "rnn": training}, "train": {"validation": False}, "eval": windows}
+        if legacy else
+        {"model": {"name": "rnn", "arch": {"hidden": 8}}, "training": training,
+         "windowing": windows, "cv": {"folds": 2}, "seed": 5}
+    )
+    text = write_report(results, tmp_path).read_text(encoding="utf-8")
+    assert "exactly 3 epochs, batch 8, lr 0.001, seed 5" in text
+    assert "Windows: 16 frames" in text and "Every fold trains on all its training people" in text
+
+
+def test_report_module_entry_point_still_rebuilds_saved_results(tmp_path, monkeypatch, capsys):
+    import sys
+    from evaluation.report import main
+
+    (tmp_path / "results.json").write_text(json.dumps(full_results().to_dict()), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["python -m evaluation.report", str(tmp_path)])
+    main()
+    assert (tmp_path / "report.md").is_file()
+    assert str(tmp_path / "report.md") in capsys.readouterr().out

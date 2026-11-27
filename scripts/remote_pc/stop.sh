@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Stops the background jobs started with job.sh / train.sh (and any stray main.py). Asks first.
-#   scripts/remote_pc/stop.sh
+# List remote background jobs and main.py processes, then ask before stopping them.
+# Usage: scripts/remote_pc/stop.sh
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 require_pc

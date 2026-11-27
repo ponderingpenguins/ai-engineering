@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Copies the baked dataset (about 3 GB) to the PC. Resumable: rerun it if it is interrupted.
-# Pass a different folder name to copy another one.
-#   scripts/remote_pc/push-data.sh [dataset-folder-name]
+# Copy one dataset from local data/baked/ to the remote PC.
+# Usage: scripts/remote_pc/push-data.sh [dataset-folder-name]
+# Default: floor_posture. Re-run after an interruption to resume the transfer.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 name="${1:-floor_posture}"

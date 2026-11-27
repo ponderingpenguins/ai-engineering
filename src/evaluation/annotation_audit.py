@@ -1,16 +1,7 @@
-"""Compares the hand-made lying annotation with the lying labels of `label_pose`.
+"""Compare reviewed lying annotations with the original label_pose track.
 
-    python -m evaluation.annotation_audit [--csv PATH] [--out results/annotation_agreement.md] [--port 8765] [key=value ...]
-
-Only reviewed recordings that also have pose labels are compared. The comparison is at three levels:
-
-- intervals (the headline): a run of lying frames counts as *found* if the other track has a lying run that
-  overlaps it by at least one frame. Lying is labelled as short runs, so this is how a person compares them.
-- frames: how many frames are lying in both tracks, only in one, or in neither.
-- windows: both tracks go through the `any_lying` window rule (`windowing.window_len`, `windowing.stride`), the units
-  a classifier predicts.
-
-Every disagreement is listed with a link into the annotation tool, so it can be looked at.
+    python main.py audit [--csv PATH] [--out PATH] [--port 8765] [key=value ...]
+Write interval, frame and window agreement, with links into the annotation tool.
 """
 
 import argparse
@@ -26,48 +17,54 @@ from omegaconf.errors import OmegaConfBaseException
 
 from data.annotations import LYING_INTERVALS, REPO, Annotations, Interval, capture_positions, read_annotations
 from data.preprocess import select_recordings
-from config import load_data_config
+from config.loader import load_data_config
 
 logger = logging.getLogger(__name__)
 
 
 def runs(flags: np.ndarray) -> list[Interval]:
-    """[first, last] of every run of True values."""
+    """Return inclusive (first, last) indices for each consecutive run of True values."""
     edges = np.diff(np.r_[0, flags.astype(int), 0])
     return [(int(a), int(b) - 1) for a, b in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1))]
 
 
 def overlaps(a: Interval, b: Interval) -> bool:
+    """Return whether two inclusive intervals share at least one frame."""
     return a[0] <= b[1] and b[0] <= a[1]
 
 
 def window_flags(flags: np.ndarray, window_len: int, stride: int) -> np.ndarray:
-    """For every window, whether it holds a lying frame (the `any_lying` rule)."""
+    """Return whether each complete window contains any lying frame."""
     starts = range(0, len(flags) - window_len + 1, stride)
     return np.array([flags[s : s + window_len].any() for s in starts], dtype=bool)
 
 
 @dataclass
 class Agreement:
-    """How the two tracks compare in one recording."""
+    """Interval, frame and window agreement between two tracks for one recording."""
 
     recording: str
     frames: int
     pose_runs: list[Interval]
     annotation_runs: list[Interval]
-    frame_counts: dict[str, int] = field(default_factory=dict)   # both, only_pose, only_annotation, neither
-    window_counts: dict[str, int] = field(default_factory=dict)  # the same, for windows
-    pose_runs_found: list[bool] = field(default_factory=list)    # per pose run: does the annotator have a run on it?
-    annotation_runs_found: list[bool] = field(default_factory=list)  # per annotation run: does the pose label?
+    frame_counts: dict[str, int] = field(default_factory=dict)  # both, only_pose, only_annotation, neither.
+    window_counts: dict[str, int] = field(default_factory=dict)  # Same categories, counted over windows.
+    pose_runs_found: list[bool] = field(default_factory=list)  # Whether each pose run overlaps an annotation.
+    annotation_runs_found: list[bool] = field(default_factory=list)  # Whether each annotation overlaps a pose run.
 
 
 def counts(pose: np.ndarray, annotation: np.ndarray) -> dict[str, int]:
+    """Count positions marked lying by both tracks, either track alone, or neither."""
     return {"both": int((pose & annotation).sum()), "only_pose": int((pose & ~annotation).sum()),
             "only_annotation": int((~pose & annotation).sum()), "neither": int((~pose & ~annotation).sum())}
 
 
 def compare(recording: str, pose: np.ndarray, annotation: np.ndarray, window_len: int, stride: int) -> Agreement:
-    """Compares two boolean lying tracks of one recording, both in capture order and of the same length."""
+    """Compare two aligned boolean lying tracks at interval, frame and window levels.
+
+    Both arrays must have the same length and follow the recording's capture order.
+    Intervals match when they overlap by at least one frame.
+    """
     pose_runs, annotation_runs = runs(pose), runs(annotation)
     return Agreement(
         recording=recording, frames=len(pose), pose_runs=pose_runs, annotation_runs=annotation_runs,
@@ -79,11 +76,17 @@ def compare(recording: str, pose: np.ndarray, annotation: np.ndarray, window_len
 
 
 def tracks(meta: pd.DataFrame, annotations: Annotations) -> dict[str, tuple[np.ndarray, np.ndarray]]:
-    """The pose-label and the annotation lying flags in capture order, of the reviewed recordings with pose labels.
+    """Build aligned pose and manual lying flags for reviewed recordings.
 
     Args:
-        meta: A frame table with `recording`, `timestamp`, `frame_idx` and `label_pose`, with a unique index.
-        annotations: The marks of the recordings.
+        meta: Frame table with recording, timestamp, frame_idx and label_pose
+            columns and a unique index.
+        annotations: Recording names mapped to intervals and review status.
+
+    Returns:
+        Pose and manual boolean arrays in capture order, keyed by recording.
+        Skip recordings without review or any pose labels. Missing pose values
+        within a compared recording count as not lying.
     """
     meta = meta.assign(position=capture_positions(meta))
     out = {}
@@ -101,18 +104,22 @@ def tracks(meta: pd.DataFrame, annotations: Annotations) -> dict[str, tuple[np.n
 
 
 def short(recording: str) -> str:
+    """Return the timestamp suffix of a recording name for display."""
     return recording.split("__")[-1]
 
 
 def report(meta: pd.DataFrame, annotations: Annotations, window_len: int, stride: int, tool: str) -> str:
-    """The Markdown report.
+    """Build a Markdown agreement report with links to unmatched lying intervals.
 
     Args:
-        meta: See `tracks`.
-        annotations: The marks of the recordings.
-        window_len: Frames per window.
+        meta: Frame metadata required by tracks.
+        annotations: Recording names mapped to intervals and review status.
+        window_len: Frames per comparison window.
         stride: Frames between window starts.
-        tool: The address of the annotation tool, for the links.
+        tool: Annotation tool base URL used for frame links.
+
+    Returns:
+        Markdown text with interval, frame and window counts and review coverage.
     """
     results = [compare(name, pose, annotation, window_len, stride)
                for name, (pose, annotation) in tracks(meta, annotations).items()]
@@ -130,6 +137,7 @@ def report(meta: pd.DataFrame, annotations: Annotations, window_len: int, stride
         return "\n".join(lines + ["Nothing to compare yet."]) + "\n"
 
     def total(values: list[int]) -> int:
+        """Sum counts across recordings and return a plain Python integer."""
         return int(sum(values))
 
     lines += ["## Intervals (headline)", "",
@@ -153,6 +161,7 @@ def report(meta: pd.DataFrame, annotations: Annotations, window_len: int, stride
         lines.append(f"| **all** | **{c['both']}** | **{c['only_pose']}** | **{c['only_annotation']}** | **{c['neither']}** |")
 
     def link(recording: str, position: int) -> str:
+        """Build an annotation-tool link to the requested capture position."""
         return f"[{short(recording)} @ {position}]({tool}#rec={recording}&f={position})"
 
     lines += ["", "## Disagreements", "", "Each link opens the annotation tool at the first frame of the run.", ""]
@@ -167,6 +176,7 @@ def report(meta: pd.DataFrame, annotations: Annotations, window_len: int, stride
 
 
 def main() -> None:
+    """Load selected recordings and annotations, then write the agreement report."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--csv", default=None)
     parser.add_argument("--out", default="results/annotation_agreement.md")

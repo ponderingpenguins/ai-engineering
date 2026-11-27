@@ -1,12 +1,11 @@
-"""A short Markdown report of a cross-validation run: settings, result tables and loss curves.
+"""Rebuild a cross-validation report and loss plots from results.json.
 
-Written automatically at the end of a run. To rebuild it from a saved run:
-
-    python -m evaluation.report results/<timestamp>_<model>
+    python main.py report results/<timestamp>_<model>
+Cross-validation and tuning also write these outputs automatically.
 """
 
+import argparse
 import json
-import sys
 from pathlib import Path
 
 from evaluation.plots import plot_fold_curves, plot_mean_curves
@@ -15,12 +14,15 @@ from evaluation.records import RunResults
 
 
 def _table(header: list[str], rows: list[list[str]]) -> list[str]:
+    """Build Markdown table lines, followed by a blank line."""
     return ["| " + " | ".join(header) + " |", "|" + "---|" * len(header),
             *("| " + " | ".join(row) + " |" for row in rows), ""]
 
 
 def _settings(results: RunResults) -> list[str]:
+    """Describe saved model, training and window settings, including legacy config keys."""
     config = results.config or {}
+    # Accept legacy config keys when rebuilding reports from older result files.
     model, evaluation = config.get("model", {}), config.get("eval", {})
     windowing = config.get("windowing", evaluation)
     evaluation = config.get("cv", evaluation)
@@ -34,7 +36,8 @@ def _settings(results: RunResults) -> list[str]:
         lines.append(f"- Target: `{windowing.get('target')}`. {len(used)} recordings used: {short(used)}.")
         if config.get("recordings_unlabelled"):
             lines.append(f"- Not used, because they have no labels for this target: {short(config['recordings_unlabelled'])}.")
-    rnn = config.get("training") if "arch" in model and model.get("name") != "baseline" else model.get(model.get("name"))  # the chosen model's own hyperparameters; the baseline has none
+    # Read shared training settings for current models, or model-specific legacy settings.
+    rnn = config.get("training") if "arch" in model and model.get("name") != "baseline" else model.get(model.get("name"))
     if isinstance(rnn, dict):
         if config.get("input_type") == "pointcloud":
             lines.append(f"- Input: the radar point cloud of each window, up to {windowing.get('max_points')} "
@@ -67,8 +70,29 @@ def _settings(results: RunResults) -> list[str]:
     return lines
 
 
+def _coverage(results: RunResults) -> list[str]:
+    """Describe saved frame and window counts; return no lines for older runs without them."""
+    coverage = (results.config or {}).get("window_coverage")
+    if not isinstance(coverage, dict):
+        return []
+    rows = [
+        ("Selected frames", "frames_total"),
+        ("Dropped: missing target label", "frames_unlabelled"),
+        ("Dropped: bad heatmap", "frames_bad_heatmap"),
+        ("Dropped: wrong sensor shape", "frames_wrong_shape"),
+        ("Frames kept", "frames_kept"),
+        ("Windows skipped across frame gaps", "windows_gap_skipped"),
+        ("Windows kept after any per-person cap", "windows_kept"),
+    ]
+    return ["## Window coverage", "",
+            "Counts start after recording selection. Frame drops are counted once, in order: "
+            "missing target label, bad heatmap, then wrong sensor shape. "
+            "The windows kept include any per-person cap.", "",
+            *_table(["Stage", "Count"], [[label, str(coverage.get(key, "N/A"))] for label, key in rows])]
+
+
 def _tuning(results: RunResults) -> list[str]:
-    """The Tuning section: the chosen setting, then every setting's inner scores for each outer fold."""
+    """Build the tuning section with the overall winner and each outer fold's candidates."""
     best = results.tuned
     assert best is not None
     lines = ["## Tuning", "",
@@ -97,13 +121,21 @@ def _tuning(results: RunResults) -> list[str]:
 
 
 def write_report(results: RunResults, out_dir: Path) -> Path:
-    """Writes `report.md` and the loss-curve figures into `out_dir` and returns the report path."""
+    """Write report.md and available loss plots into an existing output directory.
+
+    Args:
+        results: Completed cross-validation results, including any tuning records.
+        out_dir: Directory for the report and figures.
+
+    Returns:
+        Path to the written report.
+    """
     folds = results.folds
     classes = list(results.pooled.per_class)
     figures = [("Loss per fold", plot_fold_curves(folds, out_dir / "loss_per_fold.png")),
                ("Loss across folds", plot_mean_curves(folds, out_dir / "loss_mean.png"))]
 
-    lines = ["# Training report", "", *_settings(results), "", "## Pooled results", "",
+    lines = ["# Training report", "", *_settings(results), "", *_coverage(results), "## Pooled results", "",
              "Scored once over the held-out predictions of all folds together. This is the headline number.", ""]
     pooled = results.pooled
     lines += _table(["Accuracy", "Macro F1", "Windows"],
@@ -153,11 +185,19 @@ def write_report(results: RunResults, out_dir: Path) -> Path:
 
 
 def main() -> None:
-    """Rebuilds the report of a saved run from its `results.json`."""
-    if len(sys.argv) != 2:
-        raise SystemExit("usage: python -m evaluation.report <run folder>")
-    run = Path(sys.argv[1])
-    print(write_report(RunResults.from_dict(json.loads((run / "results.json").read_text())), run))
+    """Load a saved run's results.json and rebuild its report and loss plots."""
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("run_dir", type=Path, help="saved run folder containing results.json")
+    args = parser.parse_args()
+    try:
+        results = RunResults.from_dict(json.loads((args.run_dir / "results.json").read_text(encoding="utf-8")))
+        report = write_report(results, args.run_dir)
+    except KeyError as error:
+        parser.error(f"Unsupported or incomplete results.json: missing field {error}; "
+                     "expected the current run-results schema.")
+    except (OSError, ValueError, TypeError) as error:
+        parser.error(str(error))
+    print(report)
 
 
 if __name__ == "__main__":

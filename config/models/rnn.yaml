@@ -1,12 +1,12 @@
-# RNN-only settings. Shared optimiser and loop settings live in train.yaml.
+# CNN and GRU architecture and heatmap augmentation, shared fitting settings are in train.yaml.
 arch:
-  hidden: 128
-  feat_dim: 64
-  dropout: 0.5
-  feature_dropout: 0.3
-# Training-only heatmap augmentation; each setting below describes its units.
+  hidden: 128  # GRU hidden units.
+  feat_dim: 64  # CNN output features per frame.
+  dropout: 0.5  # Dropout before the classification layer.
+  feature_dropout: 0.3  # Dropout on per-frame CNN features.
+# Training batches only. Zero or false disables each transform.
 augment:
-  noise: 0.05  # active Gaussian noise in standardised units
-  range_shift_bins: 0.0  # optional; calibrated for Config_4
-  floor_jitter: 0.0  # optional smooth baseline std in raw units
-  time_reverse: false  # requires windowing.label_rule=any_lying
+  noise: 0.05  # Gaussian standard deviation relative to the training input scale.
+  range_shift_bins: 0.0  # Maximum absolute range shift in Config_4 bins.
+  floor_jitter: 0.0  # Smooth baseline standard deviation in raw heatmap units.
+  time_reverse: false  # Reverse with probability 0.5, which requires label_rule=any_lying.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Shows the newest log on the PC (progress bars cleaned up). With -f it follows the log until Ctrl-C.
-# Give a log file name (as in logs/) to look at an older one.
-#   scripts/remote_pc/logs.sh [-f] [train_20261118-153000.log]
+# Show filtered log lines from the newest remote job, omitting progress-bar noise.
+# Usage: scripts/remote_pc/logs.sh [-f] [train_20261118-153000.log]
+# Pass a filename from remote logs/ to select an older log; -f follows until Ctrl+C.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 follow=0; [ "${1:-}" = "-f" ] && { follow=1; shift; }

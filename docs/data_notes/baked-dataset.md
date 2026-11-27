@@ -19,7 +19,7 @@ source .venv/bin/activate
 
 Recording names passed through `--recording` are literal strings; repeat the flag to select several. It takes about 20 s with `--num-proc 6`, and the result is about 4.4 GB.
 
-To use the processed dataset:
+To use the baked dataset:
 
 ```python
 from datasets import load_from_disk
@@ -51,8 +51,8 @@ Refresh requires an existing baked dataset and cannot be combined with `--record
 | ------ | ----------- | --------- | ------- |
 | `person` | `data/annotations/person_map.csv` (`recording, person`) | `notebooks/labelling/label_persons.ipynb` | Pseudonym of the participant in the recording (for example `Bob`), so evaluation can be split by person. Recordings that are not labelled get `"NA"`. |
 | `person_present` | `data/annotations/presence_events.csv` (`recording, frame_idx, event`) | `notebooks/labelling/label_presence.ipynb` | `True` while someone is in view of the camera, `False` for an empty scene. |
-| `lying_annotation` | `data/annotations/lying_intervals.csv` (`recording, first_capture_idx, last_capture_idx, reviewed`) | `python -m annotation_tool` | `lying` or `not_lying` per frame, made from the camera video. `None` for recordings that are not reviewed yet. Training uses it as the target by default. |
+| `lying_annotation` | `data/annotations/lying_intervals.csv` (`recording, first_capture_idx, last_capture_idx, reviewed`) | `python main.py annotate` | `lying` or `not_lying` per frame, made from the camera video. `None` for recordings that are not reviewed yet. Training uses it as the target by default. |
 
-- **`person`** is one value per recording. The notebook shows the best face crops of each recording and you pick a name from a fixed list of pseudonyms. Unlabelled recordings are dropped by the `known_person` preprocessor.
+- **`person`** is one value per recording. The notebook shows the best face crops of each recording and you pick a name from a fixed list of pseudonyms. Unlabelled recordings are dropped by the built-in unknown-person recording selection rule.
 - **`person_present`** is stored as `enter` and `leave` events on frame indices. A person is present from each `enter` until the next `leave` (or the end of the recording), so a recording that starts with someone already in view needs an `enter` on frame 0. Recordings without any events get `None`, not `False`, so filter on `person_present.notna()` before training on it. This is separate from the raw `label_presence` track, which is not reliable (it is `False` wherever it exists).
 - **`lying_annotation`** is stored as lying intervals on capture positions (the time order of a recording, not always `frame_idx`). In a reviewed recording every frame outside the intervals is `not_lying`. Recordings that are not reviewed get `None`, which is not the same as `not_lying`. Refresh it with `python main.py bake --refresh-annotations`, or call `attach_lying_annotation` from `data.annotations` on an in-memory dataset.

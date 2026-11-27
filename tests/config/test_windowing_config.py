@@ -2,7 +2,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 import torch
-from config import WindowConfig
+from config.data import WindowConfig
 from models.baseline import MajorityClass
 from models.model import BaseModel
 

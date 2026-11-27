@@ -1,7 +1,7 @@
-"""Frame-level preprocessing, run once on the loaded dataset before it is cut into windows.
+"""Select recordings and optionally clean heatmaps before building windows.
 
-A preprocessor filters or cleans the data identically for training and testing. Steps that create
-extra training examples (augmentation) are a separate stage and do not belong here.
+Apply the same rules to training and held-out recordings.
+Each denoising step estimates its statistics within one recording.
 """
 
 import logging
@@ -16,72 +16,78 @@ from datasets import Dataset, Features, Value, concatenate_datasets
 from datasets import Sequence as ListOf
 from scipy.signal import lfilter
 
-from config import PreprocessConfig, SelectionConfig
+from config.data import PreprocessConfig, SelectionConfig
 from data.annotations import NO_PERSON
 
 logger = logging.getLogger(__name__)
 
-CONFIG_4 = "Config_4.cfg"  # 256 range bins x 16 Doppler bins; the only sensor config with pose labels
+CONFIG_4 = "Config_4.cfg"  # Default sensor config: 256 range bins by 16 Doppler bins.
 
 
 class Preprocessor(ABC):
-    """One preprocessing step: takes a dataset, returns a dataset."""
+    """A named dataset-to-dataset preprocessing step."""
 
     name: str
 
     @abstractmethod
     def __call__(self, ds: Dataset) -> Dataset:
-        """Returns the preprocessed dataset."""
+        """Return the dataset after applying this step."""
 
 
 class RowFilter(Preprocessor):
-    """A preprocessor that keeps the rows where a condition on some metadata columns holds."""
+    """Keep rows selected by a boolean condition on metadata columns."""
 
     columns: tuple[str, ...]
 
     @abstractmethod
     def keep(self, meta) -> np.ndarray:
-        """Boolean mask over the rows of `meta`, a DataFrame with `columns`."""
+        """Return one boolean per row of the metadata table containing self.columns."""
 
     def __call__(self, ds: Dataset) -> Dataset:
+        """Read the required metadata and select rows where keep returns True."""
         meta = ds.select_columns(list(self.columns)).to_pandas()
         mask = np.asarray(self.keep(meta), dtype=bool)
         return ds if mask.all() else ds.select(np.flatnonzero(mask))
 
 
 class KeepSensorConfig(RowFilter):
-    """Keeps only recordings made with the requested sensor configuration."""
+    """Keep recordings made with the requested sensor configuration."""
 
     name = "sensor_config"
     columns = ("cfg_file",)
 
     def __init__(self, sensor_config: str = CONFIG_4) -> None:
+        """Store the sensor configuration filename to retain."""
         self.sensor_config = sensor_config
 
     def keep(self, meta):
+        """Match each frame's sensor configuration filename."""
         return meta.cfg_file == self.sensor_config
 
 
 class DropUnknownPerson(RowFilter):
-    """Drops recordings without a known participant, which could hide a test participant in training."""
+    """Remove unknown participants so they cannot cross person-wise split boundaries."""
 
     name = "known_person"
     columns = ("person",)
 
     def keep(self, meta):
+        """Keep rows whose person value differs from the unknown-person marker."""
         return meta.person != NO_PERSON
 
 
 class DropRecordings(RowFilter):
-    """Drops the named recordings, for example ones that do not have the usual top-down camera view."""
+    """Exclude named recordings, such as recordings with an unsuitable camera view."""
 
     name = "exclude_recordings"
     columns = ("recording",)
 
     def __init__(self, recordings: Sequence[str]) -> None:
+        """Store the recording names to exclude."""
         self.recordings = set(recordings)
 
     def keep(self, meta):
+        """Reject excluded recordings and warn about names absent from the dataset."""
         missing = self.recordings - set(meta.recording)
         if missing:
             logger.warning("selection.exclude_recordings names recordings that are not in the dataset: %s", sorted(missing))
@@ -89,36 +95,35 @@ class DropRecordings(RowFilter):
 
 
 def _as_2d(heatmap) -> np.ndarray:
-    """A heatmap as a float32 2-D array; the empty heatmap (`[]`) of a bad frame becomes shape (0, 0)."""
+    """Convert a heatmap to float32, representing an empty heatmap with shape (0, 0)."""
     a = np.asarray(heatmap, dtype=np.float32)
     return a if a.ndim == 2 else a.reshape(0, 0)
 
 
 class HeatmapTransform(Preprocessor):
-    """A preprocessor that rewrites the heatmaps, one recording at a time.
+    """Rewrite usable heatmaps one recording at a time.
 
-    Subclasses only compute `transform`. Every statistic must come from the frames of the one recording
-    being transformed, never from other recordings: the pipeline runs separately on each split, so a
-    statistic pooled across recordings would differ between training and testing.
-
-    The transformed heatmaps are float32 and clipped at 0 (the windowing step takes log1p of them).
-    Rows without a usable heatmap (`heatmap_ok` False, or an unexpected shape) are left as they are.
+    Subclasses implement transform and estimate statistics only within that
+    recording. Heatmaps are clipped to zero and stored as float32 for log1p
+    window inputs. Invalid frames and recordings with mismatched shapes are skipped.
     """
 
     columns = ("recording", "timestamp", "heatmap_ok", "num_range_bins", "num_doppler_bins")
 
     @abstractmethod
     def transform(self, frames: np.ndarray) -> np.ndarray:
-        """Transforms the heatmaps of one recording.
+        """Transform the usable heatmaps of one recording.
 
         Args:
-            frames: Float32 array (n, range_bins, doppler_bins), in capture order.
+            frames: Float32 array of shape (N, range_bins, doppler_bins), sorted by
+                timestamp with ties kept in their stored order.
 
         Returns:
-            An array of the same shape.
+            Transformed heatmaps with the same shape.
         """
 
     def __call__(self, ds: Dataset) -> Dataset:
+        """Transform each recording and replace only the dataset's heatmap column."""
         meta = cast(pd.DataFrame, ds.select_columns(list(self.columns)).to_pandas())
         new: dict[int, np.ndarray] = {}
         for _, rec in meta.groupby("recording", sort=False):
@@ -140,31 +145,34 @@ class HeatmapTransform(Preprocessor):
             lambda example, i: {"heatmap": new[i] if i in new else _as_2d(example["heatmap"])},
             with_indices=True,
             features=feature,
-            keep_in_memory=True,  # no cache files next to the baked dataset
-            new_fingerprint=uuid.uuid4().hex,  # hashing the closure would hash every heatmap
+            keep_in_memory=True,  # Avoid writing cache files beside the baked dataset.
+            new_fingerprint=uuid.uuid4().hex,  # Avoid hashing every heatmap in the closure.
         )
         return concatenate_datasets([ds.remove_columns("heatmap"), heatmaps], axis=1).select_columns(ds.column_names)
 
 
 class RangeNormalise(HeatmapTransform):
-    """Subtracts each range bin's noise floor, so a pixel means "above the floor at this range".
+    """Subtract a smoothed noise-floor estimate for each range bin.
 
-    The floor of an empty room changes with range by about as much as a person adds (roughly 100-180
-    against 40-120 heatmap units). It is a low percentile over the recording's time and Doppler axes, then
-    smoothed along range with a running median wider than a person, so a person who is in the room for
-    most of the recording does not pull the floor up under themselves.
-
-    Not causal: the floor comes from the whole recording, later frames included. Fine for recorded data, but it
-    could not run online. A recording whose heatmaps have an unexpected shape is left unchanged.
+    Estimate a low percentile over time and Doppler, then smooth along range
+    with a running median. This uses the whole recording, including future
+    frames, so it is suitable for offline processing rather than live prediction.
     """
 
     name = "range_normalise"
 
     def __init__(self, percentile: float = 10.0, smooth_bins: int = 41) -> None:
+        """Store the noise-floor percentile and range smoothing width.
+
+        Args:
+            percentile: Percentile over the recording's time and Doppler axes.
+            smooth_bins: Positive odd width of the running median, in range bins.
+        """
         self.percentile = percentile
-        self.smooth_bins = smooth_bins  # odd; wider than twice a lying person (about 17 bins of 0.0237 m)
+        self.smooth_bins = smooth_bins  # Odd running-median width along range.
 
     def transform(self, frames: np.ndarray) -> np.ndarray:
+        """Subtract the recording's smoothed range profile from every frame."""
         floor = np.percentile(frames, self.percentile, axis=(0, 2))
         half = self.smooth_bins // 2
         padded = np.pad(floor, half, mode="edge")
@@ -173,23 +181,25 @@ class RangeNormalise(HeatmapTransform):
 
 
 class TemporalBackground(HeatmapTransform):
-    """Subtracts a slow exponential moving average of each cell, so only recent change is left.
+    """Subtract each heatmap cell's previous exponential moving average.
 
-    Causal: the background of a frame uses earlier frames only, so it also works online. Anything that stays
-    put for much longer than `tau_frames` fades into the background, and that includes a person lying still,
-    so this trades static clutter against a still person. It is not on by default.
+    After initialising from the first frame, use only earlier frames for each
+    background estimate. Persistent signals fade, including a person lying still.
+    The transform is disabled by default.
     """
 
     name = "temporal_background"
 
     def __init__(self, tau_frames: float = 300.0) -> None:
-        self.tau_frames = tau_frames  # frames are 0.2 s apart, so 300 is a minute
+        """Store the moving-average time constant in frames."""
+        self.tau_frames = tau_frames  # At Config_4's 0.2 s frame period, 300 frames is 60 s.
 
     def transform(self, frames: np.ndarray) -> np.ndarray:
+        """Subtract the previous background estimate from each frame."""
         alpha = 1.0 / self.tau_frames
         first = frames[0]
         ema, _ = lfilter([alpha], [1.0, -(1.0 - alpha)], frames, axis=0, zi=((1.0 - alpha) * first)[None])
-        background = np.concatenate([first[None], ema[:-1]])  # the background before each frame
+        background = np.concatenate([first[None], ema[:-1]])  # Shift EMA to the previous frame.
         return frames - background
 
 

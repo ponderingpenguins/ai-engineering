@@ -15,7 +15,7 @@ from data.preprocess import (
     preprocess_dataset,
     select_recordings,
 )
-from config import DataConfig, PreprocessConfig, SelectionConfig
+from config.data import DataConfig, PreprocessConfig, SelectionConfig
 
 
 @pytest.fixture

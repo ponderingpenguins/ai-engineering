@@ -6,19 +6,24 @@ import pytest
 from datasets import Dataset
 
 from data.preprocess import CONFIG_4
-from config import ModelConfig, RunConfig, WindowConfig, check_run_config
-from training.pipelines import run, tuned_model_config
+from config.models import ModelConfig
+from config.training import RunConfig
+from config.data import WindowConfig
+from config.loader import check_run_config
+from training.pipelines import run_cv, run_train_final, run_tune, tuned_model_config
 from evaluation.records import BestSetting
-from training.tuner import save_tuned
+from training.tuning import save_tuned
 
 PERIOD = 0.2
 
 
-def tiny_dataset(path: Path, people=("Bob", "Dave", "Frank", "Ian"), frames=48) -> None:
+def tiny_dataset(path: Path, people=("Bob", "Dave", "Frank", "Ian"), frames=48, pointcloud=False) -> None:
     """One recording per person with a short lying run, saved like the baked dataset (no heatmaps needed)."""
     rows: dict[str, list] = {k: [] for k in ("recording", "person", "frame_idx", "timestamp", "label_pose", "lying_annotation",
                                               "heatmap_ok", "num_range_bins", "num_doppler_bins", "cfg_file")}
     start = datetime(2026, 1, 1)
+    if pointcloud:
+        rows["pointcloud"] = []
     for person in people:
         for i in range(frames):
             rows["recording"].append(f"rec_{person}")
@@ -32,6 +37,8 @@ def tiny_dataset(path: Path, people=("Bob", "Dave", "Frank", "Ian"), frames=48) 
             rows["num_range_bins"].append(256)
             rows["num_doppler_bins"].append(16)
             rows["cfg_file"].append(CONFIG_4)
+            if pointcloud:
+                rows["pointcloud"].append([[0.1, 2.0, 0.2 if lying else 1.2, 0.0, 20.0, 40.0, 255.0]])
     Dataset.from_dict(rows).save_to_disk(str(path))
 
 
@@ -119,7 +126,7 @@ def test_the_baseline_has_no_tuned_setting(tmp_path):
 
 def test_run_cross_validates_and_writes_the_results(tmp_path):
     tiny_dataset(tmp_path / "baked")
-    results = run(make_cfg(tmp_path), tmp_path)
+    results = run_cv(make_cfg(tmp_path), tmp_path)
     assert len(results.folds) == 4 and results.pooled.n > 0
     out = next((tmp_path / "results").iterdir())
     config = json.loads((out / "results.json").read_text())["config"]
@@ -132,27 +139,27 @@ def test_run_cross_validates_and_writes_the_results(tmp_path):
 
 def test_run_reports_a_missing_dataset(tmp_path):
     with pytest.raises(ValueError, match="No baked dataset"):
-        run(make_cfg(tmp_path), tmp_path)
+        run_cv(make_cfg(tmp_path), tmp_path)
 
 
 def test_run_reports_too_many_folds(tmp_path):
     tiny_dataset(tmp_path / "baked")
     with pytest.raises(ValueError):
-        run(make_cfg(tmp_path, folds=9), tmp_path)
+        run_cv(make_cfg(tmp_path, folds=9), tmp_path)
 
 
 def test_run_limits_the_windows_per_person(tmp_path):
     tiny_dataset(tmp_path / "baked")
-    results = run(make_cfg(tmp_path, max_windows_per_person=2), tmp_path)
-    assert results.pooled.n == 4 * 2
-    assert results.config["window_coverage"]["windows_kept"] == 4 * 2
+    results = run_cv(make_cfg(tmp_path, max_windows_per_person=3), tmp_path)
+    assert results.pooled.n == 4 * 3
+    assert results.config["window_coverage"]["windows_kept"] == 4 * 3
 
 
 def test_run_leaves_out_the_excluded_recordings(tmp_path):
     tiny_dataset(tmp_path / "baked")
     cfg = make_cfg(tmp_path)
     cfg.selection.exclude_recordings = ["rec_Bob"]
-    results = run(cfg, tmp_path)
+    results = run_cv(cfg, tmp_path)
     assert len(results.folds) == 3  # one fold per remaining person
     assert all("Bob" not in fold.test_groups for fold in results.folds)
 
@@ -167,7 +174,7 @@ def test_the_report_names_the_target_and_the_recordings_it_used(tmp_path, caplog
     cfg.paths.baked_dir = str(tmp_path / "with_annotation")
     cfg.windowing.target = "lying_annotation"
     with caplog.at_level("WARNING"):
-        results = run(cfg, tmp_path)
+        results = run_cv(cfg, tmp_path)
     assert results.config["recordings_used"] == ["rec_Bob", "rec_Dave", "rec_Frank"]
     assert results.config["recordings_unlabelled"] == ["rec_Ian"]
     coverage = results.config["window_coverage"]
@@ -179,3 +186,114 @@ def test_the_report_names_the_target_and_the_recordings_it_used(tmp_path, caplog
     report = (next((tmp_path / "results").iterdir()) / "report.md").read_text()
     assert "Target: `lying_annotation`. 3 recordings used" in report
     assert "no labels for this target: rec_Ian" in report
+
+
+@pytest.mark.parametrize("grid,match", [
+    ([], "non-empty"),
+    ([{"training.unknown": 1}], "unknown hyperparameter"),
+    ([{"training.epochs": 0}], "epochs"),
+    ([{"model.augment.jitter": -0.1}], "non-negative"),
+])
+def test_tuning_rejects_invalid_candidates_before_loading_data(tmp_path, monkeypatch, grid, match):
+    import training.pipelines as pipelines
+
+    cfg = make_cfg(tmp_path)
+    cfg.model = ModelConfig(name="pointnet")
+    cfg.tune.grid = grid
+    monkeypatch.setattr(pipelines, "load_from_disk", lambda *a: pytest.fail("must validate before loading data"))
+    with pytest.raises(ValueError, match=match):
+        run_tune(cfg, tmp_path)
+
+
+@pytest.mark.parametrize("mismatch", [False, True])
+def test_final_validates_tuned_settings_before_loading_data(tmp_path, monkeypatch, mismatch):
+    import training.pipelines as pipelines
+
+    cfg = make_cfg(tmp_path)
+    cfg.model = ModelConfig(name="rnn")
+    cfg.tune.best_path = "tuned.yaml"
+    if mismatch:
+        save_tuned(tmp_path / "tuned.yaml", BEST, "pointnet", cfg.windowing.signature())
+    monkeypatch.setattr(pipelines, "load_from_disk", lambda *a: pytest.fail("must validate before loading data"))
+    with pytest.raises(ValueError, match="tune again" if mismatch else "run tuning first"):
+        run_train_final(cfg, tmp_path)
+
+
+def pointnet_cfg(tmp_path):
+    cfg = make_cfg(tmp_path, folds=2)
+    cfg.model = ModelConfig(name="pointnet")
+    cfg.model.arch.width = 8
+    cfg.model.augment.point_drop = cfg.model.augment.jitter = 0
+    cfg.training.epochs = 1
+    cfg.seed = 7
+    cfg.tune.best_path = "tuned.yaml"
+    return cfg
+
+
+def test_tuning_applies_all_candidate_settings_to_inner_fits_and_outer_refits(tmp_path, monkeypatch):
+    import training.fitting as fitting
+    from models.model import BaseModel
+    from training.tuning import load_tuned
+
+    tiny_dataset(tmp_path / "baked", pointcloud=True)
+    cfg = pointnet_cfg(tmp_path)
+    cfg.tune.grid = [
+        {"model.arch.width": 8, "model.augment.jitter": 0.02, "training.lr": 0.002, "training.class_weights": False},
+        {"model.arch.width": 16, "model.augment.jitter": 0.04, "training.lr": 0.004, "training.class_weights": True},
+    ]
+    seen = []
+    fit_torch = fitting.fit_torch
+
+    def record(model, x, y, **kwargs):
+        training, augment = kwargs["training"], kwargs["augment"]
+        seen.append((model.width, augment.jitter, training.lr, training.class_weights,
+                     training.epochs, kwargs["seed"], kwargs["val"], kwargs["val_weight_labels"]))
+        return fit_torch(model, x, y, **kwargs)
+
+    monkeypatch.setattr(fitting, "fit_torch", record)
+    results = run_tune(cfg, tmp_path)
+    assert len(results.folds) == 2 and results.tuned is not None and len(seen) == 10
+    inner = [row for row in seen if row[6] is not None]
+    refits = [row for row in seen if row[6] is None]
+    assert {row[:6] for row in inner} == {(8, 0.02, 0.002, False, 1, 7), (16, 0.04, 0.004, True, 1, 7)}
+    assert all(len(row[7]) == 2 * len(row[6][1]) for row in inner)  # pooled training-person labels
+    assert len(refits) == 2
+    out = next((tmp_path / "results").iterdir())
+    assert load_tuned(tmp_path / "tuned.yaml") == load_tuned(out / "tuned.yaml")
+    for row, fold in zip(refits, results.folds):
+        setting = fold.tuning.setting
+        assert row[:6] == (setting["model.arch.width"], setting["model.augment.jitter"],
+                           setting["training.lr"], setting["training.class_weights"], fold.tuning.epochs, 7)
+        restored, _ = BaseModel.load(out / fold.checkpoint)
+        assert restored.width == setting["model.arch.width"]
+
+
+def test_final_fits_all_windows_saves_tuned_metadata_and_bypasses_cv(tmp_path, monkeypatch):
+    import training.cross_validation as cv
+    import training.splitting as splitting
+    from models.model import BaseModel
+
+    tiny_dataset(tmp_path / "baked", pointcloud=True)
+    cfg = pointnet_cfg(tmp_path)
+    cfg.cv.folds = 99  # irrelevant to final training
+    cfg.training.oversample_ratio = 1.0
+    best = BestSetting({"model.arch.width": 16, "training.lr": 0.002}, 2, 1, 1, 0.5)
+    save_tuned(tmp_path / "tuned.yaml", best, "pointnet", cfg.windowing.signature())
+    monkeypatch.setattr(cv.CrossValidator, "cross_validate", lambda *a: pytest.fail("final training must bypass CV"))
+    monkeypatch.setattr(splitting.GroupKFoldSplitter, "split", lambda *a: pytest.fail("must not split people"))
+    monkeypatch.setattr(splitting.GroupKFoldSplitter, "n_splits", lambda *a: pytest.fail("must not validate folds"))
+    final = run_train_final(cfg, tmp_path)
+    out = next((tmp_path / "results").iterdir())
+    assert out.name.endswith("_final") and final.checkpoint == "final.pt"
+    assert final.n_windows == 20 and final.n_train_after_resampling > final.n_windows
+    assert set(final.train_classes) == {"lying", "not_lying"}
+    assert len(set(final.train_classes.values())) == 1
+    assert final.history.val_steps == [] and len(final.history.train_steps) == 2
+    stored = json.loads((out / "final.json").read_text())
+    assert stored["config"]["training"]["epochs"] == 2
+    assert stored["config"]["model"]["arch"]["width"] == 16
+    assert stored["config"]["tuned"]["epochs"] == 2
+    restored, windowing = BaseModel.load(out / "final.pt")
+    assert restored.width == 16 and windowing == cfg.windowing.signature()
+    assert not (out / "results.json").exists()
+    assert cfg.model.arch.width == 8 and cfg.training.epochs == 1

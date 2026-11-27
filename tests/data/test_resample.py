@@ -5,8 +5,10 @@ import torch
 from data.resample import RandomOversampler
 from models.baseline import MajorityClass
 from models.rnn import RNN
-from training.splits import GroupKFoldSplitter
-from training.cv import Trainer
+from config.training import TrainingConfig
+from training.fitting import _balanced_weights, _to_int, fit_torch
+from training.splitting import GroupKFoldSplitter
+from training.cross_validation import CrossValidator
 
 
 def counts(y):
@@ -55,7 +57,7 @@ def test_trainer_oversamples_training_windows_only():
     y = np.array((["lying"] + ["not_lying"] * 5) * 6)
     x = np.zeros((len(y), 4), dtype=np.float32)
     Recorder.seen = []
-    results = Trainer(Recorder, splitter=GroupKFoldSplitter(), resampler=RandomOversampler(1.0)).cross_validate(x, y, groups)
+    results = CrossValidator(Recorder, splitter=GroupKFoldSplitter(), resampler=RandomOversampler(1.0)).cross_validate(x, y, groups)
     for (train_y, val_y), fold in zip(Recorder.seen, results.folds):
         assert counts(train_y)["lying"] == counts(train_y)["not_lying"]  # balanced
         assert counts(val_y) == {"lying": 2, "not_lying": 10}  # validation untouched
@@ -67,7 +69,7 @@ def test_trainer_oversamples_training_windows_only():
 
 def test_balanced_weights_come_from_the_validation_labels():
     model = RNN()
-    weights = model._balanced_weights(torch.tensor([0, 0, 0, 1]), 3)
+    weights = _balanced_weights(torch.tensor([0, 0, 0, 1]), 3, model.device)
     assert weights.tolist() == pytest.approx([4 / (2 * 3), 4 / (2 * 1), 0.0])  # class 2 absent: weight 0
 
 
@@ -77,8 +79,8 @@ def test_validation_loss_is_the_mean_of_per_class_losses():
     y = np.array(["lying", "not_lying"] * 6)
     xv = rng.normal(size=(9, 2, 1, 256, 16)).astype(np.float32)
     yv = np.array(["lying"] * 2 + ["not_lying"] * 7)  # imbalanced validation set
-    model = RNN(epochs=1, batch_size=6, hidden=8, feat_dim=8)
-    history = model.fit(x, y, val=(xv, yv))
+    model = RNN(hidden=8, feat_dim=8)
+    history = fit_torch(model, x, y, training=TrainingConfig(epochs=1, batch_size=6), val=(xv, yv))
 
     model.net.eval()
     with torch.no_grad():
@@ -97,11 +99,11 @@ def test_validation_weights_can_be_pooled_over_people():
     xv = rng.normal(size=(5, 2, 1, 256, 16)).astype(np.float32)
     yv = np.array(["not_lying"] * 5)  # a validation person with one class only
     pooled = np.array(["lying"] * 2 + ["not_lying"] * 8)
-    own = RNN(epochs=1, batch_size=6, hidden=8, feat_dim=8).fit(x, y, val=(xv, yv)).val_loss[-1]
-    shared = RNN(epochs=1, batch_size=6, hidden=8, feat_dim=8).fit(x, y, val=(xv, yv), val_weight_labels=pooled).val_loss[-1]
+    own = fit_torch(RNN(hidden=8, feat_dim=8), x, y, training=TrainingConfig(epochs=1, batch_size=6), val=(xv, yv)).val_loss[-1]
+    shared = fit_torch(RNN(hidden=8, feat_dim=8), x, y, training=TrainingConfig(epochs=1, batch_size=6), val=(xv, yv), val_weight_labels=pooled).val_loss[-1]
     # one class: any positive weight gives the same weighted mean, so the loss is the plain cross-entropy either way
     assert shared == pytest.approx(own, rel=1e-4)
     model = RNN()
     model.classes_ = np.array(["lying", "not_lying"])
-    weights = model._balanced_weights(model._to_int(pooled), 2)
+    weights = _balanced_weights(_to_int(model, pooled), 2, model.device)
     assert weights.tolist() == pytest.approx([10 / (2 * 2), 10 / (2 * 8)])

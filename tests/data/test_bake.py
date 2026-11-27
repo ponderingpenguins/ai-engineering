@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from datasets import Dataset, load_from_disk
 
-from config import DataConfig
+from config.data import DataConfig
 from data import bake
 from data.annotations import Marks, attach_annotations, write_annotations
 

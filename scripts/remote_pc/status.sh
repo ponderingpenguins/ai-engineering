@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Is the PC reachable? Shows GPU, disk, running training jobs and the newest log and result folder.
-#   scripts/remote_pc/status.sh
+# Check connectivity, GPU and disk use, jobs, recent outputs, dataset and environment.
+# Usage: scripts/remote_pc/status.sh
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 require_pc

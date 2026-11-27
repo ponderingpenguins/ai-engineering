@@ -1,134 +1,221 @@
-# AI Engineering Practical - Valtes
+# AI Engineering Practical — Valtes
 
-Radar-based floor posture recognition. The default task: does a 3.2 s window of radar frames contain lying? Models are evaluated person by person, because a person must never be in both training and test data.
+Contactless floor-posture recognition from mmWave radar data. The default task predicts whether lying occurred within a 3.2-second sliding window of radar frames (16 frames at ~0.2 s per frame). Every evaluation split is grouped strictly by participant so no person ever appears in both training and test sets.
 
 ## Setup
 
-```
+Requires Python 3.12+, `uv`, and `git-lfs` (`apt install git-lfs` or `brew install git-lfs`).
+
+```bash
+git lfs install && git lfs pull
 uv sync
 source .venv/bin/activate
-git lfs install && git lfs pull        # install git-lfs first: apt install git-lfs / brew install git-lfs
 uv pip install -e ./data/raw/floor_posture_dataset/recorder
 ```
 
-For the notebooks: `uv pip install -e ".[jupyter]"` and `python -m ipykernel install --user --name floor-posture`.
+Optional Jupyter kernel for notebooks under `notebooks/`:
 
-Type check: `uv run mypy main.py --ignore-missing-imports` (the flag is needed because `vt_radar` has no type stubs). Tests: `uv run pytest`.
-
-## Data
-
-The repository uses 2 initial stages for raw data and annotations, then a final baked dataset for use in modeling tasks. `data/raw/` holds the raw recordings in Git LFS which were received from Valtes. `data/annotations/` holds the source annotation CSVs as normal Git text files. `data/baked/` holds generated datasets, gitignored to be created on individual machines. 
-
-When running the bake, it automatically joins `person_map.csv`, `presence_events.csv`, and `lying_intervals.csv` from `data/annotations/`. Any annotation tools or labelling notebooks save their source CSVs there. After editing annotations, run `python main.py bake --refresh-annotations` to replace these columns in the existing dataset without parsing raw recordings again. Use `--overwrite` for a full rebuild.
-
-`python main.py bake` reads every recording once and writes one Hugging Face dataset (one row per frame) to `data/baked/floor_posture` (gitignored, about 4.4 GB, about 20 s with `--num-proc 6`). Run it before anything else. Columns, the hand-made `person` and `person_present` labels and the pitfalls (centring the heatmap, empty heatmaps) are in [docs/data_notes/baked-dataset.md](docs/data_notes/baked-dataset.md). The baked data contains identifiable camera feeds.
-
-## Running
-
-```
-python main.py cv [key=value ...]
+```bash
+uv pip install -e ".[jupyter]"
+python -m ipykernel install --user --name floor-posture
 ```
 
-Configuration is split by purpose:
+Verify the environment with the test suite and type checker (the flag is required because `vt_radar` ships without type stubs):
 
-- `config/data.yaml`: paths, recording selection, optional denoising and labelled windows. Bake and annotation tools load only this file.
-- `config/train.yaml`: model selection, seed, output directory, shared training loop, class weighting/oversampling, cross-validation and tuning.
-- `config/models/<name>.yaml`: only the selected model's architecture (`model.arch.*`) and training-only augmentation (`model.augment.*`). Wrong-model keys are rejected.
-
-Typed settings and validation live in `src/config/` (`data.py`, `models.py`, `training.py`); `load_data_config` and `load_run_config` merge defaults, YAML and CLI overrides in that order. Unknown keys and invalid values are rejected. Unknown participants are always filtered by the built-in selection rule.
-
+```bash
+uv run pytest
+uv run mypy main.py --ignore-missing-imports
 ```
-python main.py cv model=baseline cv.folds=2
-python main.py cv model=pointnet training.epochs=5 model.augment.shift_m=0.3
-python main.py tune 'tune.grid=[{model.arch.hidden: 64}, {model.arch.hidden: 128, training.lr: 0.0003}]'
-python main.py train-final
-python main.py bake --num-proc 4 --overwrite
+
+## Data and Annotation Workflow
+
+```mermaid
+flowchart LR
+    RAW["data/raw/"] --> BAKE("python main.py bake")
+    ANN["data/annotations/"] --> BAKE
+    BAKE --> BAKED["data/baked/floor_posture"]
+    BAKED -.->|"annotate / audit"| ANN
+```
+
+Data is separated into three directories:
+
+- `data/raw/` — raw radar and camera recordings tracked in Git LFS.
+- `data/annotations/` — hand-made CSV labels tracked as normal Git text files (`person_map.csv`, `presence_events.csv`, `lying_intervals.csv`).
+- `data/baked/` — generated Hugging Face Arrow dataset (`data/baked/floor_posture`, gitignored, ~4.4 GB).
+
+**Build the baked dataset before running any other command:**
+
+```bash
+# Full build from raw recordings (~20 s with 6 workers)
+python main.py bake --num-proc 6 --overwrite
+
+# Re-join updated CSVs in data/annotations/ without re-reading raw .h5 files
 python main.py bake --refresh-annotations
 ```
 
-| Key | Default | Meaning |
-| --- | --- | --- |
-| `model` | `rnn` | Model to run: `rnn`, `pointnet` or `baseline`. Architecture and augmentation settings are under `model.arch.*` and `model.augment.*`. |
-| `paths.baked_dir` | `data/baked/floor_posture` | Baked dataset folder. Relative paths start at the repository root. |
-| `selection.sensor_config` | `Config_4.cfg` | Sensor config to keep; `null` keeps all sensor configs. Window shape checks still apply. |
-| `selection.exclude_recordings` | two recordings | Exclude `2311__20231124_152926` and `2311__20231124_153817`, whose cameras are not top-down. |
-| `windowing.target` | `lying_annotation` | Per-frame label column; `label_pose` selects the original pose track. |
-| `windowing.window_len` / `windowing.stride` | `16` / `8` | Frames per window and between window starts, about 3.2 s and 1.6 s. |
-| `windowing.label_rule` | `any_lying` | `any_lying`: lying occurred in any frame. `last`: use the final frame's label. |
-| `windowing.collapse_lying` | `true` | Merge `lying_*` labels into `lying`; other labelled poses become `not_lying`. |
-| `windowing.max_points` | `128` | Strongest radar points retained per point-cloud window. |
-| `training.validation` | `true` | Hold out one training person for early stopping; `false` trains for fixed epochs. |
-| `training.class_weights` | `true` | Use inverse-frequency weights for the training loss. Validation loss remains class-balanced. |
-| `training.oversample_ratio` | `null` | Repeat rare training windows up to this fraction of the largest class; `null` disables oversampling. |
-| `cv.folds` | `null` | `null`: leave one person out. An integer selects grouped k-fold cross-validation. |
-| `cv.max_windows_per_person` | `null` | Cap windows per person for quick checks; `null` keeps all windows. |
-| `tune.grid` | `[]` | Candidate overrides for `tune`, using dotted keys such as `model.arch.hidden` and `training.lr`. |
+Unreviewed recordings remain on disk with `lying_annotation = None` and are only skipped in memory when building windows. Note that the baked dataset contains identifiable camera feeds; keep `data/baked/` and any exported viewers local.
 
-The YAML files show every active default and disabled option.
+To review camera video in capture order, mark lying intervals, and compare them against the original `label_pose` track:
 
-Bake execution flags (`--num-proc`, `--overwrite`, repeated `--recording`) are not saved in YAML. Annotation tools keep their existing commands: `python -m annotation_tool` and `python -m evaluation.annotation_audit`; their data overrides use the same keys in `config/data.yaml`.
+```bash
+# Open the local annotation UI (edits save directly to data/annotations/lying_intervals.csv)
+python main.py annotate --port 8765
 
-Each run writes `results/<timestamp>_<model>/` with `report.md` (settings, pooled, per-fold and per-person tables), the loss figures, `results.json` and `checkpoints/`. Rebuild a report with `python -m evaluation.report results/<run>`.
+# Push edited annotations into the baked dataset
+python main.py bake --refresh-annotations
 
-## Evaluation workflow
-
-There are four known people, so evaluation is nested leave-one-person-out. Tune first, then do the full run. The full run reads the setting that tuning saved.
-
+# Write an interval, frame, and window agreement report with deep links back into the UI
+python main.py audit --out results/annotation_agreement.md
 ```
-# 1. Tuning: writes results/tuned.yaml and a report with every setting's scores.
+
+For baking schema details and radar pitfalls, see [docs/data_notes/baked-dataset.md](docs/data_notes/baked-dataset.md) and [src/data/README.md](src/data/README.md). For keyboard controls and `--lan` usage, see [src/annotation_tool/README.md](src/annotation_tool/README.md).
+
+## CLI Commands
+
+Every workflow runs through `main.py`. Pass `--help` after any subcommand for its flags.
+
+| Command                             | Purpose                                                                                                                                                           |
+| ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `python main.py bake`             | Build `data/baked/floor_posture` from raw recordings (`--num-proc`, `--overwrite`, `--recording`) or update annotations only (`--refresh-annotations`). |
+| `python main.py annotate`         | Launch the local camera-video lying annotation server (`--port`, `--csv`, `--lan`, `--no-browser`).                                                       |
+| `python main.py audit`            | Compare reviewed lying annotations against raw `label_pose` (`--csv`, `--out`, `--port`).                                                                 |
+| `python main.py cv`               | Run person-grouped cross-validation and write metrics, loss curves, checkpoints, and `report.md`.                                                               |
+| `python main.py tune`             | Run nested leave-one-person-out hyperparameter search over `tune.grid` and save the overall winner to `results/tuned.yaml`.                                   |
+| `python main.py train-final`      | Train one deployment model on all available participants using `results/tuned.yaml` and save `final.pt`.                                                      |
+| `python main.py report <run_dir>` | Rebuild `report.md` and loss-curve figures from an existing `results.json`.                                                                                   |
+
+## Configuration and Label Rules
+
+Defaults live in three YAML files under `config/` and can be overridden on the command line using dotted `key=value` syntax. Unknown keys and invalid combinations are rejected immediately.
+
+- `config/data.yaml` — paths, recording selection (`Config_4.cfg`, excluded non-top-down recordings; unknown participants are always dropped), optional heatmap denoising, and windowing rules. Loaded by `bake`, `annotate`, `audit`, and all training commands.
+- `config/train.yaml` — active `model`, `seed`, `out_dir`, optimiser/loop hyperparameters (`training.*`), `cv.*`, and `tune.*`.
+- `config/models/<name>.yaml` — architecture (`model.arch.*`) and training-only batch augmentation (`model.augment.*`) for the active model only. Switch models with `model=<name>` (not `model.name=<name>`).
+
+### Windowing and Label Rules
+
+Frames are filtered to valid labelled Config 4 frames, ordered by capture timestamp, and sliced into windows of `windowing.window_len` frames (default `16`, ~3.2 s) stepped by `windowing.stride` (default `8`, ~1.6 s). Windows spanning dropped frames are skipped.
+
+- `windowing.target` (default `lying_annotation`): selects the per-frame ground-truth column (`lying_annotation` = hand-reviewed binary labels; `label_pose` = original pose track).
+- `windowing.label_rule` (default `any_lying`): determines how 16 frame labels collapse to 1 window label.
+  - `any_lying` marks a window lying if **at least one** frame in the window is lying (designed so brief lying episodes are not missed).
+  - `last` uses only the label of the final frame in the window.
+- `windowing.collapse_lying` (default `true`): merges all `lying*` labels into `lying` and all other labelled poses into `not_lying`.
+
+### Optional Controls (Off by Default)
+
+- **Heatmap denoising** (`denoising.range_normalise.enabled`, `denoising.temporal_background.enabled`): per-recording signal filters applied identically to all splits before windowing.
+- **Training-only batch augmentation** (`model.augment.*`): light input noise (`RNN`) and `point_drop`/`jitter` (`PointNet`) are active by default; geometric transforms (`range_shift_bins`, `floor_jitter`, `time_reverse`, `shift_m`, `height_m`, `yaw_deg`, `tilt_deg`, `mirror`, `ghost_points`, `snr_jitter_db`) default to off.
+- **Class imbalance** (`training.class_weights=true`, `training.oversample_ratio=null`): training loss uses inverse-frequency class weights by default; oversampling minority training windows is off by default. Validation loss is always class-balanced.
+
+See [config/README.md](config/README.md) for the complete parameter reference and cross-field validation rules.
+
+## Models and Checkpoints
+
+| `model`         | Input per Window                                                          | Architecture                                                      |
+| ----------------- | ------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `rnn` (default) | `log1p` range-Doppler heatmaps `(T, 1, 256, 16)`                      | 3-block per-frame 2D CNN + GRU (~131k params)                     |
+| `pointnet`      | Pooled radar points `(128, 7)` (`x, y, z, doppler, snr, time, valid`) | Shared per-point MLP + masked max/mean pool + count (~27k params) |
+| `baseline`      | None                                                                      | Predicts the most frequent training class                         |
+
+Every fold checkpoint and `final.pt` stores weights, input standardisation statistics, class names, architecture kwargs, and the windowing signature (`{target, collapse_lying, window_len, label_rule, max_points}`). Load any saved model with:
+
+```python
+from models.model import BaseModel
+
+model, windowing = BaseModel.load("results/<run>/checkpoints/fold1_Bob.pt")
+predictions = model.predict(x_test)
+```
+
+For layer details and steps to add a new model, see [src/models/README.md](src/models/README.md).
+
+## Running Experiments, Tuning, and Final Training
+
+```mermaid
+flowchart LR
+    BAKED["data/baked/"] --> WIN["Select & Window"]
+    WIN --> CV("cv")
+    WIN --> TUNE("tune")
+    WIN --> FINAL("train-final")
+    CV --> RES["report.md, plots, checkpoints"]
+    TUNE --> RES
+    TUNE -->|"tuned.yaml"| FINAL
+    FINAL --> OUT["final.pt, final.json"]
+```
+
+### 1. Cross-Validation (`cv`)
+
+By default (`cv.folds=null`), each outer fold holds out one participant for testing and one training participant (`training.validation=true`) for early stopping on class-balanced validation loss:
+
+```bash
+python main.py cv model=baseline cv.folds=2
+python main.py cv model=pointnet training.epochs=15 model.augment.shift_m=0.3
+python main.py cv training.validation=false training.epochs=5
+```
+
+### 2. Nested Tuning and Final Model (`tune` then `train-final`)
+
+To select hyperparameters without touching the test participant, run nested leave-one-person-out tuning first, then train the final deployment model on all participants:
+
+```bash
+# 1. Nested LOPO tuning (write a space after each colon inside tune.grid)
 python main.py tune 'tune.grid=[{model.arch.hidden: 64}, {model.arch.hidden: 128, training.lr: 0.0003}]'
 
-# 2. Full run: trains one model on all people. Writes results/<run>_final/final.pt.
+# 2. Train one final model on all people using results/tuned.yaml -> results/<run>_final/final.pt
 python main.py train-final
 ```
 
-1. The outer loop holds out one person for testing.
-2. The inner loop runs leave-one-person-out on the other people for every setting in `tune.grid`. The setting with the lowest mean class-balanced validation loss wins. The validation classes are weighted the same way for every person, so the losses are comparable and the winner is the best setting overall, not the best for the easiest person.
-3. The winner is refit on all the training people for its median best epoch, and scored on the test person.
-4. The setting that won the most outer folds goes to `tune.best_path` together with its model and windowing. The full run stops with an error if they do not match the current run.
+1. Each outer fold holds out one participant for testing.
+2. Inside the outer training fold, every candidate in `tune.grid` is evaluated by inner leave-one-person-out using pooled outer-training class weights so validation losses across inner people stay on one scale.
+3. The lowest mean validation-loss candidate is refit on all outer training participants for its median best epoch count and scored on the untouched test participant.
+4. Across outer folds, the candidate with the most outer wins (tie-break: lowest mean winning validation loss) is written to `results/tuned.yaml` along with its model name and windowing signature. `train-final` refuses to run if the current model or windowing settings do not match.
 
-The test person never chooses a setting. Write a space after each colon in the grid (`model.arch.hidden: 64`). Tuning costs (people - 1) trainings per setting and per outer fold, so run it on the PC. More detail, and the caveats of tuning with four people, are in [docs/modeling.md](docs/modeling.md).
+### Run Outputs
 
-## Running on the PC
+Each `cv` or `tune` run writes `results/<YYYYMMDD-HHMMSS>_<model>/`:
 
-Training runs on `haukurs_pc` (Windows, RTX 3070, over Tailscale, inside WSL). The scripts in `scripts/remote_pc/` wrap the SSH details. They need Tailscale on this machine and the PC switched on.
+- `report.md` — settings, frame/window coverage funnel, pooled headline metrics, tuning tables (if tuned), per-fold and per-person tables, curves, and checkpoint paths.
+- `results.json` — full typed run record including per-step loss histories.
+- `loss_per_fold.png` and `loss_mean.png` — per-fold and cross-fold loss curves (iterative models only).
+- `checkpoints/fold<k>_<person>.pt` — best weights for each outer fold (plus `tuned.yaml` on `tune` runs).
 
-| Script | What it does |
-| --- | --- |
-| `status.sh` | Reachability, GPU, disk, running jobs, newest log, and whether the dataset and torch are ready. |
-| `setup.sh` | One time: installs `uv` and runs `uv sync` on the PC (run `push-code.sh` first). |
-| `push-code.sh [-n]` | Copies the code to the PC. `-n` is a dry run. |
-| `push-data.sh [folder]` | Copies the baked dataset (about 3 GB, resumable). |
-| `train.sh <cv\|tune\|train-final> <overrides>` | Starts `python main.py <mode> <args>` as a background job. |
-| `job.sh '<command>'` | Starts any command as a background job. `JOB_NAME=name` names the log. |
-| `logs.sh [-f]` | Shows the newest log (`-f` follows it). |
-| `run.sh <command>` | Runs one command on the PC and streams the output. |
-| `stop.sh` | Stops the background jobs (asks first). |
-| `fetch-results.sh [-n]` | Copies result folders back to `./results`. Never deletes locally. |
+Rebuild any run's report and plots with `python main.py report results/<run>`. For equations, splitting mechanics, and small-cohort caveats, see [src/training/README.md](src/training/README.md), [src/evaluation/README.md](src/evaluation/README.md), and [docs/modeling.md](docs/modeling.md).
 
-Typical run: `push-code.sh`, `train.sh cv ...`, `logs.sh -f`, `fetch-results.sh`.
+## Running on the Remote GPU PC
 
-WSL stops every process about 15 seconds after the last SSH session closes. So `job.sh` keeps one SSH session open on this machine for as long as the job runs. **Keep this machine awake and connected until the job ends**, or the job dies. `PC_HOST` and `PC_DIR` can be set in the environment.
+GPU training runs on `haukurs_pc` (Windows + WSL2 + RTX 3070 over Tailscale) via wrapper scripts in `scripts/remote_pc/`. Override target host or path with `PC_HOST` and `PC_DIR`.
 
-## Code layout
+```bash
+# One-time setup
+scripts/remote_pc/push-code.sh
+scripts/remote_pc/setup.sh
+scripts/remote_pc/push-data.sh
 
-```
-config/                   data.yaml, train.yaml, models/<name>.yaml
-data/                     raw recordings (git-lfs), source annotations, generated baked datasets
-docs/                     notes (modeling.md, data_notes/), report, slides
-notebooks/                exploration/, labelling/, archive/
-scripts/                  remote_pc/, viewer/, archive/
-results/                  one folder per run (gitignored)
-src/data/                 bake, annotations, preprocess, windowing, augment, resample
-src/config/               typed data/model/training settings, loaders and validation
-src/models/               RNN, PointNet, baseline, shared training loop, factory
-src/training/             fit, splits, tuner, cv, pipelines
-src/evaluation/           metrics, records, plots, report, annotation_audit
-tests/
+# Typical run cycle
+scripts/remote_pc/push-code.sh
+scripts/remote_pc/train.sh tune 'tune.grid=[{model.arch.hidden: 64}, {model.arch.hidden: 128, training.lr: 0.0003}]'
+scripts/remote_pc/logs.sh -f
+scripts/remote_pc/fetch-results.sh
 ```
 
-- `main.py` reads the command line and turns errors into exit codes. `src/config/` loads and validates the config, and `training/pipelines.py` runs one experiment.
-- `src/config/data.py` defines `WindowConfig`. Its `signature()` returns the five prediction settings saved under `windowing` in checkpoints and tuned settings. Stride is omitted because it only changes sampling density.
-- `training/fit.py` fits one model on one fold, for both the outer and the tuning loop.
-- `evaluation/records.py` holds the result records. The report and the loss curves read them. `results.json` is only read and written there.
-- A model class declares its hyperparameter names (`parameter_names`) and its input type, and `models/factory.py` builds any model from the config.
+Use `status.sh` to check GPU/job state and `stop.sh` to terminate running jobs. Because WSL shuts down ~15 seconds after the last SSH session closes, `train.sh` and `job.sh` hold a local SSH keeper open for the duration of the job — **keep your local machine awake and Tailscale connected until the job finishes**. Full script reference: [scripts/remote_pc/README.md](scripts/remote_pc/README.md).
+
+## Repository Layout
+
+```text
+main.py                 CLI entry point (bake, annotate, audit, cv, tune, train-final, report)
+config/                 YAML defaults (data.yaml, train.yaml, models/<name>.yaml) -> config/README.md
+data/                   raw/ (Git LFS), annotations/ (tracked CSVs), baked/ (gitignored)
+src/
+  config/               Typed config dataclasses, YAML/CLI loaders, and cross-field validation
+  data/                 Baking, annotations, preprocessing, windowing, augmentation, resampling
+  models/               RNN, PointNet, baseline, checkpoints, and factory
+  training/             Fitting engine, person-grouped splitting, CV, nested tuning, and pipelines
+  evaluation/           Metrics, results.json schema, loss plots, report builder, annotation audit
+  annotation_tool/      Local web UI for marking lying intervals from camera frames
+scripts/                remote_pc/ (GPU runner scripts), viewer/ (Config 4 HTML viewer), archive/
+notebooks/              exploration/, labelling/, archive/
+docs/                   modeling.md, data_notes/, dev_notes/, report/, slides/
+results/                Per-run outputs (gitignored)
+tests/                  Pytest suite mirroring src/
+```
