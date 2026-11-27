@@ -1,4 +1,8 @@
-"""Fits one model on the windows of one fold. The outer loop and the tuning loop both use it."""
+"""Fit individual models for cross-validation, tuning and final training.
+
+Build batch augmentations, apply training-only resampling and run the PyTorch loop.
+Record losses and restore the best validation weights when validation is available.
+"""
 
 from __future__ import annotations
 
@@ -27,10 +31,11 @@ BatchAugment = HeatmapAugment | PointAugment
 
 @dataclass
 class History:
-    """Losses recorded while training one model.
+    """Training losses, validation evaluations and the selected stopping point.
 
-    The train loss is recorded at every optimiser step, the validation loss only every few steps.
-    Validation loss is class-balanced; training weighting follows TrainingConfig.
+    Record training loss at every optimiser step and validation loss at the
+    configured step interval. Validation uses class weights independently of
+    the training class_weights setting.
     """
 
     steps_per_epoch: int
@@ -38,20 +43,20 @@ class History:
     train_loss: list[float] = field(default_factory=list)
     val_steps: list[int] = field(default_factory=list)
     val_loss: list[float] = field(default_factory=list)
-    best_step: int | None = None  # step of the lowest validation loss; its weights are the ones kept
-    stopped_early: bool = False  # True if patience ran out before the last epoch
+    best_step: int | None = None  # Step with the lowest validation loss; keep these weights.
+    stopped_early: bool = False  # True when patience triggers, including in the final epoch.
 
     def to_dict(self) -> dict[str, Any]:
-        """Plain lists and numbers, ready for JSON."""
+        """Return plain lists, numbers and flags ready for JSON serialisation."""
         return asdict(self)
 
 
 @dataclass
 class FoldFit:
-    """What `fit_fold` did."""
+    """Training history, sampled training indices and elapsed fitting time."""
 
     history: History | None  # None for models that do not train iteratively
-    train_idx: np.ndarray  # the windows the model was trained on, after resampling
+    train_idx: np.ndarray  # Actual training indices, including any oversampling repeats.
     seconds: float
 
 
@@ -69,11 +74,23 @@ def fit_fold(
     val_weight_labels: np.ndarray | None = None,
     log_as: str | None = None,
 ) -> FoldFit:
-    """Trains `model` on the windows `fit_idx`, with `val_idx` as validation data if given.
+    """Fit one model on the supplied training indices, optionally with validation.
 
-    Only the training windows are resampled. Validation windows keep their real class balance, and test
-    windows are never passed in. `val_weight_labels` sets the validation class weights (see `fit_torch`).
-    `log_as` names the log line about oversampling (for example "fold 2/4"); None logs nothing.
+    Args:
+        model: Model to fit in place.
+        x: All model inputs, indexed by window.
+        y: All string labels, aligned with x.
+        fit_idx: Training-window indices; must exclude validation and test data.
+        val_idx: Optional validation-window indices; must exclude test data.
+        training: Loop settings, or default TrainingConfig values for neural models.
+        augment: Optional transform applied to training batches only.
+        seed: Seed used for neural-network fitting.
+        resampler: Optional oversampler applied only to fit_idx.
+        val_weight_labels: Label pool used to compute validation class weights.
+        log_as: Optional prefix for the oversampling log message.
+
+    Returns:
+        History, actual training indices after resampling, and fitting time.
     """
     train_idx = fit_idx
     if resampler is not None:
@@ -90,7 +107,7 @@ def fit_fold(
 
 @dataclass
 class FitConfig:
-    """A fresh model and the settings needed to fit one tuning candidate."""
+    """A fresh model, fitting settings, training augmentation and random seed."""
 
     model: BaseModel
     training: TrainingConfig | None = None
@@ -99,7 +116,10 @@ class FitConfig:
 
 
 def build_augment(cfg: ModelConfig) -> BatchAugment | None:
-    """Build batch augmentation separately from the model architecture."""
+    """Build training augmentation from the selected model's settings.
+
+    Return None for the baseline or when all transforms are disabled.
+    """
     if cfg.name == "baseline":
         return None
     augment_classes: dict[str, type[HeatmapAugment] | type[PointAugment]] = {
@@ -121,7 +141,14 @@ def fit_model(
     val: tuple[np.ndarray, np.ndarray] | None = None,
     val_weight_labels: np.ndarray | None = None,
 ) -> History | None:
-    """Fit a neural model, or delegate to a model's own simple fitting method."""
+    """Fit a neural model or call a simpler model's own fit method.
+
+    Forward fitting settings to fit_torch for neural models. Other models
+    receive inputs, labels and optional validation data directly.
+
+    Returns:
+        Training history for neural models, or the simple model's fit result.
+    """
     if isinstance(model, TorchModel):
         return fit_torch(model, x, y, training=training, augment=augment, seed=seed,
                          val=val, val_weight_labels=val_weight_labels)
@@ -129,7 +156,11 @@ def fit_model(
 
 
 def _forward_train(model: TorchModel, xb: torch.Tensor, augment: BatchAugment | None) -> torch.Tensor:
-    """Keep the pre-drop point count when augmenting PointNet training batches."""
+    """Augment a training batch and return its class scores.
+
+    For PointNet, pass the count before random point dropping so its count
+    feature does not change merely because augmentation removed points.
+    """
     if isinstance(augment, PointAugment):
         xb, n_points = augment.apply_with_count(xb)
         return model.net(xb, n_points=n_points)
@@ -147,39 +178,43 @@ def fit_torch(
     val: tuple[np.ndarray, np.ndarray] | None = None,
     val_weight_labels: np.ndarray | None = None,
 ) -> History:
-    """Train a fresh neural network on heatmap or point-cloud windows.
+    """Build and train a fresh neural network, recording its loss history.
 
-    Classes are weighted by inverse frequency of the training windows (a balanced training set gets weight 1
-    each). The validation loss is class-balanced, with weights from `val_weight_labels` (default: the labels of
-    `val`). If `val` is given, the validation loss is computed
-    `evals_per_epoch` times per epoch. Training stops when it has not improved for `patience`
-    evaluations in a row, and the weights with the lowest validation loss are kept. Without `val`
-    the network trains for all epochs and the last weights are kept.
+    With usable validation data, keep the weights with the lowest weighted
+    validation loss and stop after patience evaluations without improvement.
+    Otherwise, train for all epochs and keep the final weights.
 
     Args:
-        x: Heatmaps (N, T, 1, R, D) or point clouds (N, P, 7).
-        y: String labels of shape (N,).
-        val: Optional (x, y) validation data. Must not contain test data.
-        val_weight_labels: Labels whose class frequencies give the validation class weights. Tuning passes the
-            pooled labels of all people in the training fold, so every validation person and every setting is
-            scored with the same weights.
+        model: Neural model to initialise and fit in place.
+        x: Training heatmaps (N, T, 1, R, D) or point clouds (N, P, 7).
+        y: Training string labels of shape (N,).
+        training: Optimiser and loop settings; None uses TrainingConfig defaults.
+            class_weights controls inverse-frequency training loss only.
+        augment: Optional transform for training batches before standardisation.
+        seed: PyTorch random seed for initialisation and training.
+        val: Optional (inputs, labels) validation pair, excluding test data.
+            Labels absent from training are dropped from loss evaluation.
+        val_weight_labels: Labels used to compute inverse-frequency validation
+            weights; None uses validation labels. Tuning passes all outer-training
+            labels to use the same weight source for people and candidates.
 
     Returns:
-        The train loss per step and the validation loss per evaluation.
+        Training loss per step, validation loss per evaluation, best step and
+        early-stopping status. Input statistics use training windows only.
     """
     training = training if training is not None else TrainingConfig()
     torch.manual_seed(seed)
 
-    # labels -> integers 0..K-1, classes_ remembers which name is which
+    # Encode labels as integers 0..K-1 and retain their names for prediction.
     model.classes_, y_int = np.unique(y, return_inverse=True)
     n_classes = len(model.classes_)
 
     model.net = model._build_net(n_classes).to(model.device)
-    std = model._set_input_stats(x)  # training data only
+    std = model._set_input_stats(x)  # Estimate input statistics from training data only.
     if augment is not None and std is not None:
         augment.set_input_std(std)
 
-    # rare classes get a bigger weight, otherwise "always predict the common class" wins
+    # Optional inverse-frequency weights give rare training classes more influence.
     counts = np.bincount(y_int, minlength=n_classes)
     weights = torch.as_tensor(len(y_int) / (n_classes * counts), dtype=torch.float32).to(model.device)
     loss_fn = nn.CrossEntropyLoss(weight=weights if training.class_weights else None)
@@ -215,8 +250,8 @@ def fit_torch(
             val_loss = _val_loss(model, val_data[0], val_data[1], val_weights, training.batch_size)
             history.val_steps.append(step)
             history.val_loss.append(val_loss)
-            model.net.train()  # _val_loss switched to eval mode
-            if val_loss < best_loss:  # remember the best weights on validation data
+            model.net.train()  # Resume training mode after validation.
+            if val_loss < best_loss:  # Keep the weights with the lowest validation loss.
                 best_loss, best_state, stale_evals = val_loss, copy.deepcopy(model.net.state_dict()), 0
                 history.best_step = step
             else:
@@ -238,7 +273,10 @@ def fit_torch(
 
 
 def _val_tensors(model: TorchModel, val: tuple[np.ndarray, np.ndarray] | None) -> tuple[torch.Tensor, torch.Tensor] | None:
-    """Validation data as tensors; windows of a class the training data never had are dropped."""
+    """Convert validation windows to tensors, dropping labels unknown to the model.
+
+    Return None when no validation windows remain.
+    """
     if val is None or len(val[1]) == 0:
         return None
     xv, yv = val
@@ -252,13 +290,13 @@ def _val_tensors(model: TorchModel, val: tuple[np.ndarray, np.ndarray] | None) -
 
 
 def _to_int(model: TorchModel, y: np.ndarray) -> torch.Tensor:
-    """Integer class ids of the labels the network knows; other labels are ignored."""
+    """Encode known labels as integer class IDs, ignoring labels absent from training."""
     y = np.asarray(y)
     return torch.as_tensor(np.searchsorted(model.classes_, y[np.isin(y, model.classes_)]), dtype=torch.long)
 
 
 def _balanced_weights(y_int: torch.Tensor, n_classes: int, device: torch.device) -> torch.Tensor:
-    """Inverse-frequency class weights from `y_int`; classes that do not occur get weight 0."""
+    """Compute inverse-frequency class weights, using zero for absent classes."""
     counts = torch.bincount(y_int, minlength=n_classes).float()
     present = counts > 0
     weights = torch.zeros(n_classes)
@@ -269,12 +307,11 @@ def _balanced_weights(y_int: torch.Tensor, n_classes: int, device: torch.device)
 @torch.no_grad()
 def _val_loss(model: TorchModel, xv: torch.Tensor, yv: torch.Tensor, weights: torch.Tensor,
               batch_size: int) -> float:
-    """Class-balanced cross-entropy over all validation windows.
+    """Compute weighted cross-entropy over all validation batches.
 
-    With weights that are the inverse class frequencies of the validation set itself, this is the mean of the
-    per-class mean losses: a model that predicts 50/50 scores ln 2 whatever the class sizes. With weights
-    pooled over many people, every person's loss is on one scale. Either way it does not depend on how the
-    training data was weighted or resampled.
+    Divide summed weighted loss by the total weight of the observed labels,
+    rather than averaging batch means. With weights from validation itself,
+    this equals the mean of the observed classes' mean losses.
     """
     model.net.eval()
     total, weight_sum = 0.0, 0.0

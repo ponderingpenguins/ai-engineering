@@ -1,10 +1,10 @@
 "use strict";
-// The editing logic of the annotation page, without any screen code, so that it can be tested with node.
-// A recording's marks are `flags`: a Uint8Array with one entry per frame in capture order, 1 = lying.
-// What is saved is the list of lying intervals [first, last] (both frames included) made from them.
+// Annotation editing rules shared by the browser UI and Node.js tests.
+// Flags contain one byte per frame in capture order: 1 means lying, 0 means not lying.
+// CSV saves use inclusive [first, last] intervals rather than individual frame flags.
 
 const Annotation = (() => {
-  // [[first, last], ...] of every run of lying frames
+  /** Convert frame flags into inclusive [first, last] lying intervals. */
   function toIntervals(flags) {
     const out = [];
     for (let i = 0; i < flags.length; i++) {
@@ -17,13 +17,14 @@ const Annotation = (() => {
     return out;
   }
 
+  /** Build frame flags from inclusive intervals for a recording of the given length. */
   function fromIntervals(length, intervals) {
     const flags = new Uint8Array(length);
     for (const [first, last] of intervals) flags.fill(1, first, last + 1);
     return flags;
   }
 
-  // the interval that contains frame `i`, or null
+  /** Return the inclusive lying interval containing frame i, or null. */
   function intervalAt(flags, i) {
     if (!flags[i]) return null;
     let a = i, b = i;
@@ -32,7 +33,7 @@ const Annotation = (() => {
     return [a, b];
   }
 
-  // every edit returns a new array, so a snapshot of the old one stays valid for undo
+  /** Return a copy with both endpoints included, preserving the original for undo. */
   function setRange(flags, a, b, value) {
     const out = flags.slice();
     out.fill(value ? 1 : 0, Math.min(a, b), Math.max(a, b) + 1);
@@ -46,10 +47,10 @@ const Annotation = (() => {
 
   const same = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
 
-  // undo and redo over snapshots {flags, reviewed}
+  // Undo and redo store snapshots shaped as {flags, reviewed}.
   class History {
     constructor(limit = 50) { this.limit = limit; this.past = []; this.future = []; }
-    // call with the state *before* a change
+    // Record the state before applying a change; a new edit clears redo history.
     record(state) {
       this.past.push(state);
       if (this.past.length > this.limit) this.past.shift();
@@ -67,24 +68,24 @@ const Annotation = (() => {
     }
   }
 
-  // The editing commands. `state` is {flags, reviewed, pending}; each command returns
-  // {state, changed, message}. `changed` is true when the saved marks change.
-  function mark(state, pos) {  // key i: the first lying frame
+  // Commands accept {flags, reviewed, pending} and return {state, changed, message}.
+  // changed indicates whether saved marks changed; pending is an unsaved interval start.
+  function mark(state, pos) {  // Key i: set the first lying frame.
     return {state: {...state, pending: pos}, changed: false, message: "start at " + pos + ", press o at the last lying frame"};
   }
-  function finish(state, pos) {  // key o: the last lying frame
+  function finish(state, pos) {  // Key o: include the final lying frame and finish the interval.
     if (state.pending === null) return {state, changed: false, message: "press i first, at the first lying frame"};
     const flags = setRange(state.flags, state.pending, pos, true);
     return {state: {...state, flags, pending: null}, changed: !same(flags, state.flags), message: ""};
   }
-  function toggleFrame(state, pos) {  // key x
+  function toggleFrame(state, pos) {  // Key x: toggle the current frame's lying flag.
     return {state: {...state, flags: toggle(state.flags, pos)}, changed: true, message: ""};
   }
-  function removeInterval(state, pos) {  // key Delete
+  function removeInterval(state, pos) {  // Key Delete: remove the interval containing this frame.
     const flags = clearIntervalAt(state.flags, pos);
     return {state: {...state, flags}, changed: flags !== state.flags, message: flags === state.flags ? "no lying interval here" : ""};
   }
-  function toggleReviewed(state) {  // key r
+  function toggleReviewed(state) {  // Key r: toggle whether the whole recording is reviewed.
     return {state: {...state, reviewed: !state.reviewed}, changed: true, message: ""};
   }
 

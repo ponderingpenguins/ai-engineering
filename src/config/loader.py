@@ -1,4 +1,8 @@
-"""Typed data/run loaders; data tools never load training or model files."""
+"""Load and validate YAML settings with command-line key=value overrides.
+
+Data tools use data.yaml only. Training also loads train.yaml and the chosen model file.
+"""
+
 from collections.abc import Sequence
 from dataclasses import asdict
 from pathlib import Path
@@ -12,6 +16,15 @@ from .training import RunConfig
 
 
 def load_data_config(root: Path, overrides: Sequence[str] = ()) -> DataConfig:
+    """Load data defaults and apply command-line overrides.
+
+    Args:
+        root: Repository directory containing config/data.yaml.
+        overrides: Dotted key=value strings, such as windowing.stride=4.
+
+    Returns:
+        Validated data settings. Training and model files are not loaded.
+    """
     merged = OmegaConf.merge(OmegaConf.structured(DataConfig), OmegaConf.load(root / "config/data.yaml"),
                              OmegaConf.from_dotlist(list(overrides)))
     cfg = cast(DataConfig, OmegaConf.to_object(merged))
@@ -20,6 +33,18 @@ def load_data_config(root: Path, overrides: Sequence[str] = ()) -> DataConfig:
 
 
 def load_run_config(root: Path, overrides: Sequence[str] = ()) -> RunConfig:
+    """Load data, training and selected-model settings, then apply overrides.
+
+    Args:
+        root: Repository directory containing config/.
+        overrides: Dotted key=value strings; model=<name> selects the model file.
+
+    Returns:
+        Validated settings for cv, tune or train-final.
+
+    Raises:
+        ValueError: If the model choice or a setting combination is invalid.
+    """
     training = OmegaConf.to_container(OmegaConf.load(root / "config/train.yaml"), resolve=True)
     assert isinstance(training, dict)
     name = training.pop("model", "rnn")
@@ -46,6 +71,11 @@ def load_run_config(root: Path, overrides: Sequence[str] = ()) -> RunConfig:
 
 
 def check_data_config(cfg: DataConfig) -> None:
+    """Check window sizes, label rules and denoising parameters.
+
+    Raises:
+        ValueError: If a supported rule or numeric bound is violated.
+    """
     if cfg.windowing.label_rule not in ("any_lying", "last"):
         raise ValueError("windowing.label_rule must be any_lying or last")
     for name in ("window_len", "stride", "max_points"):
@@ -59,6 +89,12 @@ def check_data_config(cfg: DataConfig) -> None:
 
 
 def check_run_config(cfg: RunConfig) -> None:
+    """Check data settings, training limits and augmentation compatibility.
+
+    Raises:
+        ValueError: If a value is out of range or an augmentation would conflict
+            with the selected sensor, labels or denoising.
+    """
     check_data_config(cfg)
     if cfg.model.name not in MODEL_SCHEMAS:
         raise ValueError(f"model must be one of {tuple(MODEL_SCHEMAS)}, got {cfg.model.name!r}")

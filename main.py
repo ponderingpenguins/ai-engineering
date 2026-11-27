@@ -1,23 +1,10 @@
-"""Load the baked radar dataset, cut labelled windows and run person-wise experiments.
+"""Run radar data preparation, training, annotation and reporting commands.
 
-cv holds out people for cross-validation. tune selects hyperparameters inside the
-training folds. train-final fits one model on all available people using the saved
-tuned setting. bake builds the dataset from raw recordings and source annotations.
-report rebuilds a saved run's report. annotate opens the annotation tool, and audit
-compares reviewed annotations with the original pose labels.
-Settings come from config/data.yaml, config/train.yaml and config/models/<name>.yaml;
-command-line key=value overrides take precedence.
-
-Examples:
-    python main.py cv model=baseline cv.folds=2
-    python main.py tune 'tune.grid=[{model.arch.hidden: 64}, {model.arch.hidden: 128, training.lr: 0.0003}]'
-    python main.py train-final
-    python main.py bake --num-proc 4 --overwrite
-    python main.py bake --refresh-annotations
-    python main.py report results/<run>
-    python main.py annotate --no-browser
-    python main.py audit --out results/annotation_agreement.md
+Commands: cv, tune, train-final, bake, report, annotate, audit.
+Defaults: config/data.yaml, config/train.yaml and config/models/<name>.yaml.
+Command-line key=value overrides take precedence, see README.md for examples.
 """
+
 import argparse
 import logging
 import sys

@@ -1,17 +1,7 @@
-"""Hand annotations: person identities, presence events and lying intervals.
+"""Read, save and attach manual person, presence and lying annotations.
 
-An annotator watches the camera video and marks the stretches where the person is lying. A stretch is an
-interval of capture positions (first and last frame included), see `capture_positions`. The marks are stored in
-`data/annotations/lying_intervals.csv`:
-
-    recording,first_capture_idx,last_capture_idx,reviewed
-    2311__20231120_144541,340,341,true
-    2311__20231115_140642,,,true
-    2311__20231124_152926,10,10,false
-
-A *reviewed* recording is finished: every frame outside its intervals is not lying. A reviewed recording with
-no lying has one row with empty positions. The marks of a recording that is not reviewed yet are saved too, so
-no work is lost, but they do not count: that recording has no annotation, which is different from having no lying.
+Capture positions follow timestamp order within each recording.
+Reviewed lying intervals become frame labels; unreviewed recordings stay unlabelled.
 """
 
 import logging
@@ -34,40 +24,41 @@ PRESENCE_EVENTS = REPO / "data" / "annotations" / "presence_events.csv"
 LYING_INTERVALS = REPO / "data" / "annotations" / "lying_intervals.csv"
 NO_PERSON = "NA"
 COLUMNS = ["recording", "first_capture_idx", "last_capture_idx", "reviewed"]
-LYING, NOT_LYING = "lying", "not_lying"  # the labels of the `lying_annotation` column
+LYING, NOT_LYING = "lying", "not_lying"  # Values of the lying_annotation column.
 
 Interval = tuple[int, int]
 
 
 @dataclass(frozen=True)
 class Marks:
-    """The lying intervals of one recording, and whether the annotator has finished it."""
+    """Inclusive lying intervals and the review status of one recording."""
 
     intervals: tuple[Interval, ...] = ()
     reviewed: bool = False
 
 
-Annotations = dict[str, Marks]  # recording -> its marks; recordings that were never marked are not in it
+Annotations = dict[str, Marks]  # Recording name -> saved marks; untouched recordings are absent.
 
 
 def capture_positions(meta: pd.DataFrame) -> pd.Series:
-    """The place of every frame in the time order of its recording, counting from 0.
+    """Return each frame's zero-based position in its recording's capture order.
 
-    Frames are ordered by timestamp, and by `frame_idx` when timestamps are equal. This is not always the order
-    of `frame_idx`: in two recordings a block of frames was stored out of time order.
+    Sort by timestamp, using frame_idx to break ties. Stored frame indices can
+    differ from capture order, so annotation intervals use these positions.
 
     Args:
-        meta: A frame table with `recording`, `timestamp` and `frame_idx`, with a unique index.
+        meta: Frame table with recording, timestamp and frame_idx columns and
+            a unique index.
 
     Returns:
-        The positions, aligned to the index of `meta`.
+        Capture positions aligned with the original index of meta.
     """
     ordered = meta.sort_values(["recording", "timestamp", "frame_idx"], kind="stable")
     return ordered.groupby("recording", sort=False).cumcount().reindex(meta.index)
 
 
 def merge(intervals: Sequence[Interval]) -> tuple[Interval, ...]:
-    """Sorted intervals in which overlapping or touching intervals are joined."""
+    """Return sorted intervals, joining overlapping or adjacent inclusive ranges."""
     merged: list[list[int]] = []
     for first, last in sorted(intervals):
         if merged and first <= merged[-1][1] + 1:
@@ -78,10 +69,10 @@ def merge(intervals: Sequence[Interval]) -> tuple[Interval, ...]:
 
 
 def check_interval(first: int, last: int) -> Interval:
-    """The interval as ints.
+    """Convert interval endpoints to integers and check their order.
 
     Raises:
-        ValueError: If a position is negative or the interval ends before it starts.
+        ValueError: If either endpoint is negative or last is less than first.
     """
     first, last = int(first), int(last)
     if first < 0 or last < first:
@@ -90,20 +81,23 @@ def check_interval(first: int, last: int) -> Interval:
 
 
 def make_marks(intervals: Sequence[Sequence[int]], reviewed: bool) -> Marks:
-    """Marks from raw intervals, checked and merged.
+    """Build recording marks from checked and merged inclusive intervals.
 
     Raises:
-        ValueError: If an interval is not valid.
+        ValueError: If an interval is invalid.
     """
     return Marks(merge([check_interval(first, last) for first, last in intervals]), bool(reviewed))
 
 
 def read_annotations(path: Path = LYING_INTERVALS) -> Annotations:
-    """The marks of every recording in the file. A missing file means nothing was marked.
+    """Read intervals and review status from the annotation CSV.
+
+    A missing file returns an empty mapping. Empty interval endpoints record
+    review status without marking any lying frames.
 
     Raises:
-        ValueError: If the columns are wrong, a row has only one of its two positions, an interval is not valid,
-            or the rows of one recording disagree on whether it is reviewed.
+        ValueError: If columns, interval endpoints or review flags are invalid,
+            or rows for one recording disagree on review status.
     """
     if not path.exists():
         return {}
@@ -120,7 +114,7 @@ def read_annotations(path: Path = LYING_INTERVALS) -> Annotations:
             raise ValueError(f"{path.name}: the rows of {recording} disagree on reviewed")
         intervals.setdefault(recording, [])
         if pd.isna(first) and pd.isna(last):
-            continue  # the marker row of a recording without lying
+            continue  # Preserve review status for a recording with no lying intervals.
         if pd.isna(first) or pd.isna(last):
             raise ValueError(f"{path.name}: {recording} has a row with only one position")
         intervals[recording].append(check_interval(first, last))
@@ -128,9 +122,14 @@ def read_annotations(path: Path = LYING_INTERVALS) -> Annotations:
 
 
 def write_annotations(annotations: Mapping[str, Marks], path: Path = LYING_INTERVALS) -> None:
-    """Writes the file. The old file is replaced in one step, so a crash never leaves half a file.
+    """Save marks to a temporary CSV, then atomically replace the destination.
 
-    A recording that is not reviewed and has no intervals has nothing to save and gets no row.
+    Reviewed recordings without lying get one row with empty endpoints.
+    Unreviewed recordings without intervals are omitted.
+
+    Args:
+        annotations: Recording names mapped to inclusive intervals and review status.
+        path: Destination CSV; missing parent directories are created.
     """
     rows: list[tuple] = []
     for recording in sorted(annotations):
@@ -151,17 +150,18 @@ def write_annotations(annotations: Mapping[str, Marks], path: Path = LYING_INTER
 
 
 def lying_labels(meta: pd.DataFrame, annotations: Mapping[str, Marks]) -> list[str | None]:
-    """The `lying_annotation` label of every frame: `lying`, `not_lying`, or None if not reviewed.
+    """Expand reviewed intervals into lying, not_lying or missing frame labels.
 
-    Only reviewed recordings get labels. An interval that reaches past the end of its recording is skipped with
-    a warning, because the data it was made for has changed.
+    Unreviewed recordings get None. Intervals beyond the recording's final
+    capture position are skipped with a warning.
 
     Args:
-        meta: A frame table with `recording`, `timestamp` and `frame_idx`, with a unique index.
-        annotations: The marks of the recordings, see `read_annotations`.
+        meta: Frame table with recording, timestamp and frame_idx columns and
+            a unique index.
+        annotations: Recording names mapped to intervals and review status.
 
     Returns:
-        One label per row of `meta`, in the order of `meta`.
+        One label per row, in the original order of meta.
     """
     positions = capture_positions(meta).to_numpy()
     recordings = meta.recording.to_numpy()
@@ -194,8 +194,9 @@ def _replace_column(ds: Dataset, name: str, values: list[Any], dtype: str) -> Da
 
 
 def attach_person(ds: Dataset, annotations_dir: Path | None = None) -> Dataset:
-    """Add a `person` column from person_map.csv; unlabelled recordings get "NA"."""
-    df = pd.read_csv(PERSON_MAP if annotations_dir is None else annotations_dir / "person_map.csv", keep_default_na=False)  # keep_default_na: don't turn a name into NaN
+    """Attach person_map.csv identities; recordings without an identity get "NA"."""
+    # Preserve literal names such as "NA" rather than treating them as missing values.
+    df = pd.read_csv(PERSON_MAP if annotations_dir is None else annotations_dir / "person_map.csv", keep_default_na=False)
     mapping = {r: p.strip() or NO_PERSON for r, p in zip(df.recording, df.person)}
     recs = ds.select_columns(["recording"]).to_pandas().recording
     unlisted = sorted(set(recs) - set(mapping))
@@ -205,11 +206,10 @@ def attach_person(ds: Dataset, annotations_dir: Path | None = None) -> Dataset:
 
 
 def attach_presence(ds: Dataset, annotations_dir: Path | None = None) -> Dataset:
-    """Add a `person_present` column from presence_events.csv.
+    """Attach person_present flags from presence_events.csv.
 
-    A person is present from each "enter" event until the next "leave" event (or the end of
-    the recording). Recordings without any events are unannotated and get None, so they are
-    not mistaken for empty rooms.
+    Frames before the first enter event are absent. Presence lasts from enter
+    until leave or the recording ends. Recordings with no events get None.
     """
     path = PRESENCE_EVENTS if annotations_dir is None else annotations_dir / "presence_events.csv"
     events = pd.read_csv(path) if path.exists() else pd.DataFrame(columns=["recording", "frame_idx", "event"])
@@ -228,7 +228,7 @@ def attach_presence(ds: Dataset, annotations_dir: Path | None = None) -> Dataset
             flags[last:frame] = state
             state, last = event == "enter", int(frame)
         flags[last:] = state
-        present[rows[np.argsort(meta.frame_idx.values[rows])]] = flags  # rows ordered by frame_idx
+        present[rows[np.argsort(meta.frame_idx.values[rows])]] = flags  # Events use frame_idx order.
     unannotated = sorted(set(meta.recording) - set(events.recording))
     if unannotated:
         logger.warning("not in %s, person_present set to None: %s", PRESENCE_EVENTS.name, unannotated)
@@ -236,10 +236,10 @@ def attach_presence(ds: Dataset, annotations_dir: Path | None = None) -> Dataset
 
 
 def attach_lying_annotation(ds: Dataset, annotations_dir: Path | None = None) -> Dataset:
-    """Add a `lying_annotation` column from lying_intervals.csv: "lying", "not_lying", or None if not reviewed.
+    """Attach reviewed lying labels from lying_intervals.csv.
 
-    See `data.annotations`. Recordings that are not reviewed get None, so they are not mistaken for
-    recordings without lying.
+    Labels are lying or not_lying; unreviewed recordings get None so that
+    incomplete annotation is distinct from a reviewed recording with no lying.
     """
     annotations = read_annotations(LYING_INTERVALS if annotations_dir is None else annotations_dir / "lying_intervals.csv")
     meta = ds.select_columns(["recording", "frame_idx", "timestamp"]).to_pandas()
@@ -253,7 +253,7 @@ def attach_lying_annotation(ds: Dataset, annotations_dir: Path | None = None) ->
 
 
 def attach_annotations(ds: Dataset, annotations_dir: Path | None = None) -> Dataset:
-    """Attach or refresh all hand annotations from their source CSVs."""
+    """Attach or refresh person, presence and lying labels from their source CSVs."""
     ds = attach_person(ds, annotations_dir)
     ds = attach_presence(ds, annotations_dir)
     return attach_lying_annotation(ds, annotations_dir)

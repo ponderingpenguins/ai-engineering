@@ -1,4 +1,7 @@
-"""Build a model from the config, so the model can be picked from the command line."""
+"""Construct the classifier selected by the configuration.
+
+MODEL_CLASSES is also used to choose input types and restore checkpoints.
+"""
 
 from dataclasses import asdict
 

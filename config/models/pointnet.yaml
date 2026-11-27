@@ -1,16 +1,16 @@
-# PointNet-only settings. Shared optimiser and loop settings live in train.yaml.
+# PointNet architecture and point augmentation, shared fitting settings are in train.yaml.
 arch:
-  width: 128
-  dropout: 0.5
-  point_dropout: 0.2  # feature dropout, distinct from dropping input points
-# Training only. Geometric transforms are sized for Config_4.
+  width: 128  # Features per point before pooling.
+  dropout: 0.5  # Dropout in the classification head.
+  point_dropout: 0.2  # Drop point features before pooling, rather than input points.
+# Training batches only. Geometry uses Config_4 units. Zero or false disables each transform.
 augment:
-  point_drop: 0.3  # active input-point drop probability
-  jitter: 0.05  # active Gaussian std in standardised feature units
-  shift_m: 0.0
-  height_m: 0.0
-  yaw_deg: 0.0  # requires windowing.collapse_lying=true
-  tilt_deg: 0.0
-  mirror: false  # requires windowing.collapse_lying=true
-  ghost_points: 0.0  # mean synthetic points per window
-  snr_jitter_db: 0.0  # one offset per window
+  point_drop: 0.3  # Probability of removing each input point.
+  jitter: 0.05  # Gaussian standard deviation relative to each training feature scale.
+  shift_m: 0.0  # Maximum absolute translation along floor axes x and z, in metres.
+  height_m: 0.0  # Maximum absolute translation along the sensor's forward axis y, in metres.
+  yaw_deg: 0.0  # Maximum absolute rotation about y, which requires collapse_lying=true.
+  tilt_deg: 0.0  # Maximum absolute rotation about each of x and z, in degrees.
+  mirror: false  # Flip x with probability 0.5, which requires collapse_lying=true.
+  ghost_points: 0.0  # Mean Poisson count of false alarms added to empty slots.
+  snr_jitter_db: 0.0  # Standard deviation in dB of one Gaussian SNR offset per window.

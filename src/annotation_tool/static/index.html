@@ -1,4 +1,5 @@
 <!doctype html>
+<!-- Camera annotation UI. Editing rules live in logic.js; the server saves marks to CSV. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -77,13 +78,13 @@ const A = Annotation, $ = id => document.getElementById(id);
 const PERIOD = 0.2, STRIP_W = 900, STRIP_H = 56;
 const ctx = $("strip").getContext("2d");
 let recs = [], rec = 0, pos = 0, playing = false, timer = 0, speed = 1;
-const stores = {};          // recording name -> {flags, reviewed, pending, history}
-let saving = 0, failed = "";  // saves in flight, and the last error
+const stores = {};          // Recording name -> {flags, reviewed, pending, history}.
+let saving = 0, failed = "";  // Pending save count and the latest save error.
 
 const url = (name, i) => "/frame/" + encodeURIComponent(name) + "/" + i + ".jpg";
 const store = () => stores[recs[rec].name];
 
-// ---- frames: keep the next ones loaded so playback does not wait
+// Frame cache: preload upcoming images to reduce playback delays.
 const cache = new Map();
 function image(name, i) {
   const k = name + ":" + i;
@@ -96,7 +97,7 @@ function preload() {
   if (cache.size > 400) for (const k of [...cache.keys()].slice(0, cache.size - 300)) cache.delete(k);
 }
 
-// ---- saving: one request after the other, so the file always ends with the last state
+// Queue saves in edit order so a later successful save contains the latest marks.
 let chain = Promise.resolve();
 function save() {
   const r = recs[rec], s = store();
@@ -116,7 +117,7 @@ function showSave() {
 }
 addEventListener("beforeunload", e => { if (saving || failed) { e.preventDefault(); e.returnValue = ""; } });
 
-// ---- drawing
+// Draw the timeline and update recording labels and controls.
 function label(r, i) {
   const s = stores[r.name], intervals = s ? A.toIntervals(s.flags).length : r.intervals.length;
   const reviewed = s ? s.reviewed : r.reviewed;
@@ -130,7 +131,8 @@ function drawStrip() {
   ctx.clearRect(0, 0, STRIP_W, STRIP_H);
   ctx.fillStyle = "#e8e8e8"; ctx.fillRect(0, 12, STRIP_W, 44);
   ctx.fillStyle = "red";
-  for (const [a, b] of A.toIntervals(s.flags)) ctx.fillRect(a * w, 12, Math.max(3, (b - a + 1) * w), 44);   // at least 3 px, so one frame can be seen
+  // Keep single-frame intervals visible with a minimum width of three pixels.
+  for (const [a, b] of A.toIntervals(s.flags)) ctx.fillRect(a * w, 12, Math.max(3, (b - a + 1) * w), 44);
   if (s.pending !== null) { ctx.fillStyle = "blue"; ctx.fillRect(s.pending * w - 1, 0, 4, STRIP_H); }
   ctx.fillStyle = "black"; ctx.fillRect(pos * w - 1, 12, 4, 44);
 }
@@ -147,9 +149,9 @@ function show() {
   history.replaceState(null, "", "#rec=" + encodeURIComponent(r.name) + "&f=" + pos);
 }
 
-// ---- editing
+// Apply editing commands, save changed marks and preserve undo snapshots.
 function snapshot(s) { return {flags: s.flags, reviewed: s.reviewed}; }
-function run(command) {   // command: state -> {state, changed, message}
+function run(command) {   // Command signature: state -> {state, changed, message}.
   const s = store(), result = command(s);
   $("message").textContent = result.message;
   if (result.changed) { s.history.record(snapshot(s)); }
@@ -164,7 +166,7 @@ function undoRedo(redo) {
   save(); show();
 }
 
-// ---- navigation
+// Navigate within a recording or move between recordings.
 function go(p) { pos = Math.max(0, Math.min(recs[rec].frames - 1, p)); show(); }
 function setRecording(i) {
   stop(); rec = (i + recs.length) % recs.length; $("recSelect").value = rec; $("message").textContent = "";
@@ -178,7 +180,7 @@ function nextOpen() {
   $("message").textContent = "every recording is reviewed";
 }
 
-// ---- playback: the frame follows the clock, and waits for its image if the server is slow
+// Choose playback frames from elapsed time, displaying them once their images are loaded.
 function stop() { playing = false; clearTimeout(timer); $("play").textContent = "play"; }
 function start() {
   const last = recs[rec].frames - 1;
@@ -195,7 +197,7 @@ function start() {
   tick();
 }
 
-// ---- wiring
+// Connect buttons, timeline dragging and keyboard shortcuts.
 function press(button, action) { button.onclick = () => { action(); button.blur(); }; }
 press($("prevRec"), () => setRecording(rec - 1));
 press($("nextRec"), () => setRecording(rec + 1));
@@ -221,7 +223,7 @@ document.onkeydown = e => {
   const k = e.key, modifier = e.ctrlKey || e.metaKey;
   if (modifier && (k === "z" || k === "Z")) { e.preventDefault(); undoRedo(e.shiftKey); return; }
   if (modifier && (k === "y" || k === "Y")) { e.preventDefault(); undoRedo(true); return; }
-  if (modifier || e.altKey) return;      // leave the browser's own shortcuts alone
+  if (modifier || e.altKey) return;      // Preserve the browser's own modified shortcuts.
   if (k === " ") { e.preventDefault(); playing ? stop() : start(); }
   else if (k === "ArrowRight") { stop(); go(pos + (e.shiftKey ? 10 : 1)); }
   else if (k === "ArrowLeft") { stop(); go(pos - (e.shiftKey ? 10 : 1)); }
@@ -244,7 +246,7 @@ async function init() {
     stores[r.name] = {flags: A.fromIntervals(r.frames, r.intervals), reviewed: r.reviewed, pending: null, history: new A.History(50)};
     $("recSelect").add(new Option(label(r, i), i));
   });
-  // a link can name the start: /#rec=<recording>&f=<position>, and &play=1 starts playing
+  // Links select a capture position: /#rec=<recording>&f=<position>; &play=1 starts playback.
   const hash = new URLSearchParams(location.hash.slice(1));
   const named = recs.findIndex(r => r.name === hash.get("rec"));
   rec = named >= 0 ? named : Math.max(0, recs.findIndex(r => !r.reviewed));

@@ -1,11 +1,7 @@
-"""Starts the annotation tool.
+"""Start the camera annotation tool and save lying intervals to CSV.
 
-    python main.py annotate [--port 8765] [--csv data/annotations/lying_intervals.csv] [--no-browser] [--lan] [key=value ...]
-
-The module command `python -m annotation_tool` also remains available.
-
-The recordings offered are the ones the pipeline keeps for the config (`selection`). `key=value` pairs override the config like in `main.py`. The marks are saved in the CSV file at once.
-Stop the tool with Ctrl+C.
+    python main.py annotate [--port 8765] [--csv PATH] [--no-browser] [--lan]
+Data configuration overrides use key=value. Press Ctrl+C to stop the server.
 """
 
 import argparse
@@ -28,7 +24,7 @@ logger = logging.getLogger("annotation_tool")
 
 
 def lan_address() -> str:
-    """The IP address of this machine on the local network (no packet is sent)."""
+    """Find this machine's local IPv4 address without sending a probe packet."""
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
         try:
             probe.connect(("10.255.255.255", 1))
@@ -38,6 +34,7 @@ def lan_address() -> str:
 
 
 def main() -> None:
+    """Load selected recordings and serve the annotation UI until Ctrl+C."""
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--csv", default=None, help="where the marks are saved")
@@ -57,7 +54,7 @@ def main() -> None:
     ds = select_recordings(cast(Dataset, load_from_disk(str(REPO / cfg.paths.baked_dir))), cfg.selection)
     csv_path = REPO / args.csv if args.csv is not None else REPO / cfg.paths.annotations_dir / LYING_INTERVALS.name
     catalogue = Catalogue(ds)
-    server = make_server(Annotator(catalogue, csv_path), args.port,  # an absolute path stays as it is
+    server = make_server(Annotator(catalogue, csv_path), args.port,
                          "0.0.0.0" if args.lan else "127.0.0.1")
     address = f"http://127.0.0.1:{server.server_port}/"
     if args.lan:

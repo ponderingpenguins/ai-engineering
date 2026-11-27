@@ -1,11 +1,7 @@
-"""Classification metrics.
+"""Score classification predictions against a consistent set of labels.
 
-Every metric that depends on the set of classes takes it explicitly, so a fold that happens to hold no
-example of a rare class is scored against the same classes as every other fold.
-
-For one class, F1 = 2 * TP / (n_true + n_pred). It is undefined (None) when the class is neither in the
-truth nor in the predictions. A class that is predicted but absent from the truth scores 0, because every
-prediction of it is a false positive. Macro F1 is the mean over the classes where F1 is defined.
+Compute accuracy, macro F1 and per-class precision, recall, F1 and support.
+Undefined precision, recall or F1 values are None; support is always a count.
 """
 
 from collections.abc import Sequence
@@ -16,14 +12,25 @@ Labels = Sequence[str] | np.ndarray
 
 
 def _classes(true: np.ndarray, pred: np.ndarray, classes: Labels | None) -> list[str]:
-    """The fixed class set, or every class seen in `true` or `pred` if none is given."""
+    """Return the supplied class list, or the union of true and predicted labels."""
     if classes is None:
         classes = np.unique(np.concatenate([true, pred]))
     return [str(c) for c in classes]
 
 
 def per_class(y_true: Labels, y_pred: Labels, classes: Labels | None = None) -> dict[str, dict[str, float | int | None]]:
-    """Precision, recall, F1 and support for each class; None where the ratio is undefined."""
+    """Compute precision, recall, F1 and support for each requested class.
+
+    Args:
+        y_true: True labels of shape (N,).
+        y_pred: Predicted labels aligned with y_true.
+        classes: Fixed class list, or None to use all labels in truth and predictions.
+
+    Returns:
+        Metrics by class. Support counts true examples. Precision is None with
+        no predictions; recall is None with no true examples. F1 is None only
+        when the class is absent from both truth and predictions.
+    """
     true, pred = np.asarray(y_true), np.asarray(y_pred)
     report: dict[str, dict[str, float | int | None]] = {}
     for c in _classes(true, pred, classes):
@@ -39,28 +46,34 @@ def per_class(y_true: Labels, y_pred: Labels, classes: Labels | None = None) -> 
 
 
 def macro_f1(y_true: Labels, y_pred: Labels, classes: Labels | None = None) -> float | None:
-    """Mean F1 over the classes where it is defined.
+    """Average the class F1 scores that are defined.
 
     Args:
-        y_true: True labels.
-        y_pred: Predicted labels.
-        classes: The fixed class set. Defaults to every class seen in `y_true` or `y_pred`.
+        y_true: True labels of shape (N,).
+        y_pred: Predicted labels aligned with y_true.
+        classes: Fixed class list, or None to use all labels in truth and predictions.
 
     Returns:
-        The macro F1, or None if no class has a defined F1.
+        The unweighted mean of defined F1 scores, or None if none are defined.
     """
     f1s = [row["f1"] for row in per_class(y_true, y_pred, classes).values() if row["f1"] is not None]
     return float(np.mean(f1s)) if f1s else None
 
 
 def accuracy(y_true: Labels, y_pred: Labels, classes: Labels | None = None) -> float:
-    """Computes the fraction of correct predictions. `classes` is accepted for a uniform signature."""
+    """Return the fraction of matching labels for aligned, non-empty input arrays.
+
+    classes is accepted for the shared metric interface but does not affect accuracy.
+    """
     del classes  # accuracy does not depend on the class set
     return float(np.mean(np.asarray(y_true) == np.asarray(y_pred)))
 
 
 def scores(y_true: Labels, y_pred: Labels, classes: Labels) -> dict[str, float | int | None]:
-    """Accuracy, macro F1 and per-class precision, recall and support, flattened into one dict."""
+    """Return accuracy, macro F1 and flattened per-class precision, recall and support.
+
+    Per-class F1 is available through per_class; it is not included in this mapping.
+    """
     result: dict[str, float | int | None] = {
         "accuracy": accuracy(y_true, y_pred),
         "macro_f1": macro_f1(y_true, y_pred, classes),
@@ -73,5 +86,5 @@ def scores(y_true: Labels, y_pred: Labels, classes: Labels) -> dict[str, float |
 
 
 def fmt(value: float | None, digits: int = 3) -> str:
-    """A metric for logs and reports: fixed decimals, or N/A when the metric is undefined."""
+    """Format a metric with fixed decimal places, or N/A when its value is None."""
     return "N/A" if value is None else f"{value:.{digits}f}"

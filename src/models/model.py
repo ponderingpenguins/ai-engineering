@@ -1,3 +1,9 @@
+"""Shared prediction interfaces and checkpoint storage for posture models.
+
+BaseModel saves learned state with the window settings needed for prediction.
+TorchModel adds network construction, batched prediction and input statistics.
+"""
+
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Self, cast
@@ -10,16 +16,22 @@ from config.data import WindowConfig
 
 
 class BaseModel(ABC):
-    # What the windows must hold for this model: "heatmap" (N, T, 1, R, D), "pointcloud" (N, P, 7), or "none"
-    # for models that ignore x, so nothing needs to be loaded. See data.windowing.INPUT_TYPES.
+    # Input layouts: heatmap (N, T, 1, R, D), pointcloud (N, P, 7), or none (N, T).
+    # The baseline uses zero placeholders; see data.windowing.INPUT_TYPES.
+    """Shared label-prediction interface and portable checkpoint format."""
+
     input_type: str = "heatmap"
     model_name: str  # Key used to register this model in models.factory.MODEL_CLASSES.
 
     def save(self, path: str | Path, windowing: dict[str, Any]) -> None:
-        """Save model state with its input and label specification.
+        """Save learned state with the input and label settings used for prediction.
 
-        Subclasses supply tensors and plain values through _checkpoint_state.
-        Whole Python model objects are not pickled into the checkpoint.
+        Subclasses provide tensors and plain values through _checkpoint_state;
+        the checkpoint does not store a pickled model instance.
+
+        Args:
+            path: Checkpoint destination; missing parent directories are created.
+            windowing: WindowConfig.signature() values for the training inputs.
         """
         checkpoint = {
             **self._checkpoint_state(),
@@ -33,10 +45,21 @@ class BaseModel(ABC):
 
     @classmethod
     def load(cls, path: str | Path) -> tuple[Self, dict[str, Any]]:
-        """Restore a model and its window specification without training.
+        """Restore a model and its saved window settings without training.
 
-        BaseModel.load selects the registered subclass automatically. Calling
-        a subclass directly, such as RNN.load, checks that the type matches.
+        BaseModel.load chooses the registered model class. Calling a subclass,
+        such as RNN.load, also checks that the saved model type matches.
+
+        Args:
+            path: Checkpoint file written by save.
+
+        Returns:
+            The prediction-ready model and its window settings. Callers must compare
+            those values with the settings used to build new inputs.
+
+        Raises:
+            ValueError: If the format, window-setting keys, model type or saved
+                preprocessing identifier is unsupported.
         """
         checkpoint = torch.load(path, map_location="cpu", weights_only=True)
         if not isinstance(checkpoint, dict) or checkpoint.get("format_version") not in (1, 2, 3):
@@ -63,7 +86,7 @@ class BaseModel(ABC):
 
     @abstractmethod
     def _checkpoint_state(self) -> dict[str, Any]:
-        """Return learned state and constructor settings as tensors/plain values."""
+        """Return learned state and constructor settings as tensors and plain values."""
         raise NotImplementedError
 
     @classmethod
@@ -74,23 +97,19 @@ class BaseModel(ABC):
 
     @abstractmethod
     def predict(self, x: np.ndarray) -> np.ndarray:
-        """Predicts a label for each window.
+        """Predict one label per input window.
 
         Args:
-            x: Windows to classify.
+            x: Model inputs with one window per row; shape depends on input_type.
 
         Returns:
-            Array of shape (len(x),) with the predicted labels.
+            String labels of shape (N,).
         """
         pass
 
 
 def pick_device() -> torch.device:
-    """Picks the fastest available device.
-
-    Returns:
-        CUDA if available, else MPS, else CPU.
-    """
+    """Choose CUDA if available, otherwise MPS, otherwise CPU."""
     if torch.cuda.is_available():
         return torch.device("cuda")
     if torch.backends.mps.is_available():
@@ -99,7 +118,7 @@ def pick_device() -> torch.device:
 
 
 class TorchModel(BaseModel):
-    """Neural architecture, batched inference and checkpoints; fitting lives in training."""
+    """Neural network construction, batched prediction and checkpoint restoration."""
 
     net: nn.Module
     classes_: np.ndarray
@@ -107,6 +126,7 @@ class TorchModel(BaseModel):
     parameter_names: tuple[str, ...] = ()
 
     def __init__(self) -> None:
+        """Select the device used when the network is built or restored."""
         self.device = pick_device()
 
     @abstractmethod
@@ -114,11 +134,15 @@ class TorchModel(BaseModel):
         """Build a fresh network with one output per class."""
 
     def _set_input_stats(self, x: np.ndarray) -> torch.Tensor | None:
-        """Set training-input statistics and return their scale, if applicable."""
+        """Set training-only input statistics and return their scale when needed."""
         return None
 
     def _checkpoint_state(self) -> dict[str, Any]:
-        """The hyperparameters, class names and weights. A subclass only lists its `parameter_names`."""
+        """Return architecture parameters, class names, weights and preprocessing ID.
+
+        Subclasses list constructor settings in parameter_names. Learned input
+        statistics are already included in the network's state_dict buffers.
+        """
         if not hasattr(self, "net"):
             raise ValueError("Train the model before saving it.")
         parameters = {name: getattr(self, name) for name in self.parameter_names}
@@ -131,7 +155,7 @@ class TorchModel(BaseModel):
 
     @classmethod
     def _from_checkpoint(cls, checkpoint: dict[str, Any]) -> Self:
-        """Rebuilds the model from a checkpoint made by `_checkpoint_state`."""
+        """Rebuild the network, load its saved buffers and weights, and enable evaluation mode."""
         if checkpoint.get("preprocessing") != cls.preprocessing:
             raise ValueError("Checkpoint preprocessing does not match the current pipeline.")
         # Legacy checkpoints also stored optimiser and augmentation settings.
@@ -149,7 +173,7 @@ class TorchModel(BaseModel):
 
     @torch.no_grad()
     def predict(self, x: np.ndarray, batch_size: int = 32) -> np.ndarray:
-        """Predicts a label for each window.
+        """Predict one label per window in batches without tracking gradients.
 
         Args:
             x: Heatmaps (N, T, 1, R, D) or point clouds (N, P, 7).
@@ -160,7 +184,7 @@ class TorchModel(BaseModel):
         """
         self.net.eval()
         predictions = []
-        for start in range(0, len(x), batch_size):  # in batches, so a big test set fits in memory
+        for start in range(0, len(x), batch_size):  # Bound device memory use during prediction.
             xb = torch.as_tensor(x[start : start + batch_size], dtype=torch.float32).to(self.device)
             predictions.append(self.net(xb).argmax(dim=1).cpu().numpy())
         if not predictions:

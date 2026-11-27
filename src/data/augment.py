@@ -1,38 +1,31 @@
-"""Training-time augmentation of heatmap windows and point clouds.
+"""Apply random training augmentations to heatmap or point-cloud batches.
 
-Runs on a batch of windows inside the training loop and never on validation or test data, so it adds variety
-without touching the evaluation. Every transform is off by default.
-
-The sizes below are meant for Config_4, the only sensor config used for model development: heatmaps of 256
-range bins x 16 Doppler bins, 0.0237 m per range bin (a 6.07 m span) and 0.2 s per frame. The physical range
-resolution is a coarser 0.042 m, the bins are an oversampled grid. Other configs have other bin sizes, so
-the same numbers would mean something else.
-
-The input is what `make_windows` produces: log1p of the raw heatmap, shape (B, T, 1, R, D), with zero velocity
-at Doppler bin 0 (the axis is not centred, which is why nothing here rolls or shifts along Doppler).
+Transforms use Config_4 units and run before input standardisation.
+The training loop keeps them out of validation and test batches.
 """
 
 import torch
 import torch.nn.functional as F
 
-RANGE_BIN_M = 0.0237  # Config_4 range bin spacing; 13 bins is about 0.3 m
+RANGE_BIN_M = 0.0237  # Config_4 range-bin spacing in metres; 13 bins is about 0.3 m.
 
 
 def _pick_one_per_group(b: int, enabled: list[str], conflicts: tuple[tuple[str, ...], ...],
                         device: torch.device) -> dict[str, torch.Tensor]:
-    """Decides, for every window, which of the enabled transforms may run.
+    """Choose which enabled transforms may run on each window.
 
-    Transforms in the same conflict group must not run on the same window. When two or more of a group are enabled,
-    each window gets exactly one of them, chosen uniformly at random. Other transforms run on every window.
+    When multiple transforms from a conflict group are enabled, allow exactly
+    one per window, chosen uniformly. Transforms outside these groups stay eligible.
 
     Args:
-        b: Number of windows.
-        enabled: Names of the transforms that are switched on.
-        conflicts: Groups of names that must not be combined on one window.
-        device: Device of the masks.
+        b: Number of windows in the batch.
+        enabled: Names of enabled transforms.
+        conflicts: Groups of transforms that must not run together on one window.
+        device: Device on which to create the masks.
 
     Returns:
-        For each enabled name, a bool tensor of shape (B,): True where that transform runs.
+        A boolean mask of shape (B,) for each enabled transform. True permits
+        the transform; its own random sampling may still leave a window unchanged.
     """
     allowed = {name: torch.ones(b, dtype=torch.bool, device=device) for name in enabled}
     for group in conflicts:
@@ -46,20 +39,12 @@ def _pick_one_per_group(b: int, enabled: list[str], conflicts: tuple[tuple[str, 
 
 
 class HeatmapAugment:
-    """Random augmentation of a batch of heatmap windows, applied in this order.
+    """Reverse time, shift range, vary the noise floor and add heatmap noise.
 
-    1. `time_reverse`: plays a window backwards.
-    2. `range_shift_bins`: moves the whole scene along range, as if the sensor were mounted higher or lower.
-    3. `floor_jitter`: adds a smooth random baseline along range, as the noise floor differs between setups.
-    4. `noise`: adds Gaussian noise in standardised input units.
-
-    Conflicts (`CONFLICTS`): `range_shift_bins` and `floor_jitter` both mimic a different setup, so they are not
-    stacked on one window. If both are on, each window gets one of them, chosen at random.
-
-    There is no frame masking on purpose: lying is annotated in runs of only 1 to 5 frames and `any_lying` labels a
-    window from as few as one, so hiding frames would often erase the evidence while the label stays `lying`.
-    `floor_jitter` is meant for the raw heatmap. Do not combine it with `range_normalise`, which removes the floor
-    that the jitter varies.
+    Range shifts and floor jitter are alternatives on each window. Floor jitter
+    operates in raw units, so it must not follow range normalisation. Time reversal
+    requires order-independent labels. Frames are never masked because one lying
+    frame can determine an any_lying window label.
     """
 
     CONFLICTS: tuple[tuple[str, ...], ...] = (("range_shift_bins", "floor_jitter"),)
@@ -72,21 +57,19 @@ class HeatmapAugment:
         floor_knots: int = 8,
         noise: float = 0.0,
     ) -> None:
-        """Stores the settings.
+        """Set transform sizes for Config_4 heatmaps; zero disables a numeric transform.
 
         Args:
-            range_shift_bins: Largest shift in range bins; each window gets a uniform random shift in
-                [-n, n], fractional shifts included. One bin is 0.0237 m, so 13 bins is about 0.3 m.
-                0 turns it off.
-            floor_jitter: Std of the baseline added to the raw heatmap, in raw heatmap units (the floor of an
-                empty room varies by roughly 100-180 units across range and recordings). 0 turns it off.
-            time_reverse: Play each window backwards with probability 0.5. Only valid when the label does not
-                depend on the order of the frames, which holds for the `any_lying` label rule but not for `last`.
-            floor_knots: Number of random values the baseline is interpolated between along range.
-            noise: Gaussian noise std, relative to the training input std.
+            range_shift_bins: Maximum absolute shift, sampled uniformly per window.
+                Fractional shifts are interpolated; one bin spans 0.0237 metres.
+            floor_jitter: Standard deviation of smooth baseline noise in raw heatmap units.
+            time_reverse: Reverse each window with probability 0.5. The configured
+                pipeline permits this only with the any_lying label rule.
+            floor_knots: Number of random baseline values interpolated along range.
+            noise: Gaussian noise standard deviation relative to the training input scale.
 
         Raises:
-            ValueError: If a setting is negative or `floor_knots` is below 2.
+            ValueError: If a size is negative or floor_knots is below two.
         """
         if min(range_shift_bins, floor_jitter, noise) < 0:
             raise ValueError("augmentation sizes must not be negative")
@@ -100,22 +83,22 @@ class HeatmapAugment:
         self._input_std = torch.ones(1)
 
     def set_input_std(self, std: torch.Tensor) -> None:
-        """Scale noise before standardisation to preserve its standardised magnitude."""
+        """Store the training input scale so added noise has the requested magnitude."""
         self._input_std = std.detach().clone()
 
     @property
     def active(self) -> bool:
-        """Whether any transform is switched on."""
+        """Whether at least one transform is enabled."""
         return bool(self.range_shift_bins or self.floor_jitter or self.time_reverse or self.noise)
 
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
-        """Augments a batch.
+        """Apply enabled transforms to a heatmap batch without editing the input in place.
 
         Args:
-            x: Windows of shape (B, T, 1, R, D), log1p of the raw heatmaps.
+            x: Log1p heatmaps of shape (B, T, 1, R, D), before standardisation.
 
         Returns:
-            A tensor of the same shape; `x` itself is not modified.
+            Augmented heatmaps with the same shape.
         """
         enabled = [n for n in ("time_reverse", "range_shift_bins", "floor_jitter") if getattr(self, n)]
         run = _pick_one_per_group(len(x), enabled, self.CONFLICTS, x.device)
@@ -130,15 +113,15 @@ class HeatmapAugment:
         return x
 
     def _reverse(self, x: torch.Tensor) -> torch.Tensor:
+        """Reverse the frame order of each window with probability 0.5."""
         flip = torch.rand(len(x), device=x.device) < 0.5
         return torch.where(flip.view(-1, 1, 1, 1, 1), x.flip(1), x)
 
     def _shift(self, x: torch.Tensor, run: torch.Tensor) -> torch.Tensor:
-        """Shifts every window along range by its own random amount, linearly interpolated.
+        """Shift permitted windows along range using linear interpolation.
 
-        Bins that the shift uncovers are filled with the window's median per Doppler bin, which is the noise
-        floor (a person covers only a few of the 256 range bins). Nothing wraps around. Windows where `run` is False
-        are not shifted.
+        Fill exposed bins with the window's median for each Doppler bin; do not
+        wrap values around. A False entry in run gives that window a zero shift.
         """
         B, T, C, R, D = x.shape
         delta = (torch.rand(B, device=x.device) * 2 - 1) * self.range_shift_bins * run
@@ -153,7 +136,10 @@ class HeatmapAugment:
         return (1 - weight) * padded.gather(3, first) + weight * padded.gather(3, second)
 
     def _jitter(self, x: torch.Tensor, run: torch.Tensor) -> torch.Tensor:
-        """Adds a smooth random baseline along range to the raw heatmap, and takes log1p again. Not on windows where `run` is False."""
+        """Add a smooth random range baseline in raw units, then apply log1p again.
+
+        Windows with run=False receive a zero baseline.
+        """
         B, _, _, R, _ = x.shape
         knots = torch.randn(B, 1, self.floor_knots, device=x.device) * self.floor_jitter * run.view(B, 1, 1)
         baseline = F.interpolate(knots, size=R, mode="linear", align_corners=True).view(B, 1, 1, R, 1)
@@ -161,19 +147,30 @@ class HeatmapAugment:
 
 
 
-RANGE_MAX_M = 4.85  # Config_4 range limit; points moved beyond it are dropped, as the sensor would not report them
-GHOST_CONE_DEG = 60.0  # ghost points appear within this angle of the boresight
+RANGE_MAX_M = 4.85  # Config_4 range limit in metres; discard points moved beyond it.
+GHOST_CONE_DEG = 60.0  # Maximum ghost-point angle from the sensor's forward axis.
 
 
 def _rotations(b: int, tilt: float | torch.Tensor, yaw: float | torch.Tensor, device: torch.device) -> torch.Tensor:
-    """One rotation matrix per window: a yaw about the boresight (y), then small tilts about z and x. Shape (B, 3, 3).
+    """Return random rotation matrices of shape (B, 3, 3) for sensor-frame points.
 
-    `tilt` and `yaw` are limits in degrees: one number for all windows, or a tensor of shape (B,) with one per window."""
+    Args:
+        b: Number of windows.
+        tilt: Maximum absolute angles about x and z, in degrees.
+        yaw: Maximum absolute angle about the sensor's forward axis y, in degrees.
+        device: Device on which to create the matrices.
+
+    Returns:
+        Matrices applying x tilt, then z tilt, then y yaw to column vectors.
+        Each limit may be a scalar or a tensor with one value per window.
+    """
 
     def angle(limit_deg: float | torch.Tensor) -> torch.Tensor:
+        """Sample one angle per window in radians within the supplied degree limit."""
         return (torch.rand(b, device=device) * 2 - 1) * limit_deg * torch.pi / 180
 
     def stack(rows: list[list[torch.Tensor]]) -> torch.Tensor:
+        """Assemble batches of scalar entries into rotation matrices."""
         return torch.stack([torch.stack(r, dim=-1) for r in rows], dim=-2)
 
     one, zero = torch.ones(b, device=device), torch.zeros(b, device=device)
@@ -188,26 +185,12 @@ def _rotations(b: int, tilt: float | torch.Tensor, yaw: float | torch.Tensor, de
 
 
 class PointAugment:
-    """Random augmentation of a batch of radar point clouds, applied in this order.
+    """Transform sensor-frame points, add false alarms, then drop and jitter points.
 
-    The points are in the sensor frame (see `data.windowing._window_points`): x, y, z in metres, with y along the
-    boresight. The sensor looks down at the floor, so y is the distance to the floor (median about 1.8 m in
-    Config_4 recordings) and the floor plane is x-z. z is NOT height above the floor.
-
-    1. `mirror`: flips x, swapping left and right.
-    2. `yaw_deg` and `tilt_deg`: rotate about the boresight (the person lying in another direction on the floor),
-       and tilt the sensor a few degrees (a mount that is not quite level).
-    3. `shift_m` and `height_m`: translate along the floor (x and z) and along the boresight (y), i.e. a sensor
-       that sits somewhere else. A point that ends up beyond the range limit is dropped, and the SNR of every
-       point is rescaled for its new range (power falls as R^-4, so 40*log10(r_old/r_new) dB).
-    4. `ghost_points`: adds false alarms in empty slots of the window.
-    5. `snr_jitter_db`: one random SNR offset per window.
-    6. `point_drop` and `jitter`: drop random points, then jitter the five standardised features.
-
-    Conflicts (`CONFLICTS`): `yaw_deg` and `mirror` both change which way a person lies, so they are not stacked on one
-    window. If both are on, each window gets one of them, chosen at random.
-
-    The sizes are for Config_4, the only sensor config used for model development.
+    The sensor points down: y is its forward axis and x-z is the floor plane;
+    z is not height above the floor. Geometry updates range-dependent SNR and
+    removes out-of-range points. Mirror and yaw are alternatives per window.
+    A single SNR offset is sampled per window before ghosts are added.
     """
 
     CONFLICTS: tuple[tuple[str, ...], ...] = (("yaw_deg", "mirror"),)
@@ -225,24 +208,24 @@ class PointAugment:
         point_drop: float = 0.0,
         jitter: float = 0.0,
     ) -> None:
-        """Stores the settings.
+        """Set Config_4 point transforms; zero or False disables a transform.
 
         Args:
-            shift_m: Each window is moved by a uniform random amount in [-n, n] metres along x and along z.
-            height_m: The same along y, the boresight.
-            yaw_deg: Each window is rotated about the boresight by a uniform random angle in [-n, n] degrees.
-                180 gives every direction. Changes which way a person lies, so it is only valid for labels that
-                do not depend on that (`windowing.collapse_lying=true`).
-            tilt_deg: Each window is tilted about x and about z by a uniform random angle in [-n, n] degrees.
-            mirror: Mirror half of the windows. Swaps left and right, so the same label restriction as `yaw_deg`.
-            ghost_points: Mean number of false-alarm points added per window (Poisson), into empty slots only.
-            snr_jitter_db: Std of one Gaussian SNR offset per window, in dB.
-            range_max_m: Points farther than this from the sensor after the move are dropped.
-            point_drop: Probability of dropping each real point.
-            jitter: Gaussian jitter std for x, y, z, doppler and snr, in standardised units.
+            shift_m: Maximum absolute translation along each floor axis, x and z.
+            height_m: Maximum absolute translation along the sensor's forward axis y.
+            yaw_deg: Maximum absolute rotation about y, in degrees. The configured
+                pipeline requires collapsed lying labels because orientation changes.
+            tilt_deg: Maximum absolute tilt about each of x and z, in degrees.
+            mirror: Flip x with probability 0.5; requires collapsed lying labels.
+            ghost_points: Mean Poisson count of false alarms added to empty slots.
+            snr_jitter_db: Standard deviation of one Gaussian SNR offset per window.
+            range_max_m: Sensor range limit; points beyond it are removed.
+            point_drop: Probability of independently removing each remaining point.
+            jitter: Gaussian noise standard deviation for x, y, z, Doppler and SNR,
+                relative to each feature's training scale.
 
         Raises:
-            ValueError: If a size is negative.
+            ValueError: If a transform size is negative or point_drop is outside [0, 1].
         """
         if min(shift_m, height_m, yaw_deg, tilt_deg, ghost_points, snr_jitter_db, jitter) < 0:
             raise ValueError("augmentation sizes must not be negative")
@@ -261,28 +244,36 @@ class PointAugment:
         self._input_std = torch.ones(5)
 
     def set_input_std(self, std: torch.Tensor) -> None:
-        """Set the training std of x, y, z, doppler and snr for scaled jitter."""
+        """Store training feature scales for x, y, z, Doppler and SNR jitter."""
         self._input_std = std.detach().clone()
 
     @property
     def active(self) -> bool:
-        """Whether any transform is switched on."""
+        """Whether at least one transform is enabled."""
         return bool(self.shift_m or self.height_m or self.yaw_deg or self.tilt_deg or self.mirror
                     or self.ghost_points or self.snr_jitter_db or self.point_drop or self.jitter)
 
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
-        """Augments a batch.
+        """Augment point windows without modifying the input tensor.
 
         Args:
-            x: Windows of shape (B, P, 7): x, y, z, doppler, snr, time, and a validity flag (0 for padding).
+            x: Windows (B, P, 7): x, y, z, Doppler, SNR, relative time and validity.
 
         Returns:
-            A tensor of the same shape; `x` itself is not modified. Dropped points become padding (all zeros).
+            A tensor of the same shape. Removed points become zero padding.
         """
         return self.apply_with_count(x)[0]
 
     def apply_with_count(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Augment points and return the real count after geometry/ghosts, before random dropping."""
+        """Augment points and keep the count before random point dropping.
+
+        Args:
+            x: Sensor-frame windows of shape (B, P, 7), before standardisation.
+
+        Returns:
+            Augmented windows and counts (B, 1) after geometry and ghost insertion,
+            before random dropping. PointNet uses these counts as a separate feature.
+        """
         B, P, _ = x.shape
         names = ("shift_m", "height_m", "yaw_deg", "tilt_deg", "mirror", "ghost_points", "snr_jitter_db")
         run = _pick_one_per_group(B, [n for n in names if getattr(self, n)], self.CONFLICTS, x.device)
@@ -324,7 +315,7 @@ class PointAugment:
         return out, n_points
 
     def _add_ghosts(self, x: torch.Tensor, on: torch.Tensor) -> torch.Tensor:
-        """Fills some empty slots with false alarms: random range and direction, low SNR, random time."""
+        """Fill available padding slots with low-SNR false alarms at random ranges and times."""
         B, P, _ = x.shape
         dev = x.device
         free = x[..., 6] < 0.5
@@ -336,9 +327,9 @@ class PointAugment:
         azimuth = torch.rand(B, P, device=dev) * 2 * torch.pi
         ghost = torch.stack([
             r * polar.sin() * azimuth.cos(), r * polar.cos(), r * polar.sin() * azimuth.sin(),
-            0.3 * torch.randn(B, P, device=dev),  # doppler
-            11 + 8 * torch.rand(B, P, device=dev),  # just above the detection threshold
-            torch.rand(B, P, device=dev),  # time within the window
+            0.3 * torch.randn(B, P, device=dev),  # Doppler velocity.
+            11 + 8 * torch.rand(B, P, device=dev),  # Low synthetic SNR.
+            torch.rand(B, P, device=dev),  # Relative time within the window.
             torch.ones(B, P, device=dev),
         ], dim=-1)
         return torch.where(add.unsqueeze(-1), ghost, x)

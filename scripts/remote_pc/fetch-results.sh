@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Copies result folders (report, figures, checkpoints, results.json) from the PC into ./results here.
-# Never deletes anything locally. Extra arguments go to rsync, e.g. -n for a dry run.
-#   scripts/remote_pc/fetch-results.sh [-n]
+# Copy remote reports, figures, checkpoints and result files into local results/.
+# Usage: scripts/remote_pc/fetch-results.sh [-n]
+# Extra arguments go to rsync. Existing matching files may be updated; none are deleted.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 require_pc

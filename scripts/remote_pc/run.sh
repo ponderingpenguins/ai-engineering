@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# Runs one command on the PC in the project folder and streams its output. Stops when the command ends
-# or when you press Ctrl-C. For long jobs use job.sh or train.sh, which keep running if you disconnect.
-#   scripts/remote_pc/run.sh uv run pytest -q
-#   scripts/remote_pc/run.sh nvidia-smi
+# Run a command in the remote checkout and stream its output to this terminal.
+# Usage: scripts/remote_pc/run.sh uv run pytest -q
+# For background work, use job.sh or train.sh; their keep-alive SSH connection must stay up.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 [ $# -gt 0 ] || die "usage: run.sh <command> [args...]"

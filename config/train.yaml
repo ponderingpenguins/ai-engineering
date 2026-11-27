@@ -1,20 +1,20 @@
-# Run settings shared by cv, tune and train-final. Model selects one models/<name>.yaml.
-model: rnn
-seed: 0  # model fitting, fold assignment, validation people and resampling
+# Shared model selection, fitting, cross-validation and tuning settings.
+model: rnn  # Load config/models/<name>.yaml.
+seed: 0  # Control fitting, fold assignment, validation-person selection and resampling.
 out_dir: results
 training:
   lr: 0.001
   weight_decay: 0.01
-  epochs: 30  # maximum with early stopping; exact count without validation
+  epochs: 30  # Maximum with usable validation data; exact count otherwise.
   batch_size: 32
-  patience: 5  # validation evaluations without improvement
-  evals_per_epoch: 1
-  validation: true  # hold out one training person for early stopping
-  class_weights: true  # inverse-frequency training loss; validation remains balanced
-  oversample_ratio: null  # null: off; (0, 1]: rare-class share of majority training windows
+  patience: 5  # Stop after this many validation evaluations without improvement.
+  evals_per_epoch: 1  # Desired evaluation frequency; converted to an integer batch interval.
+  validation: true  # For cv, hold out one training person for early stopping.
+  class_weights: true  # Use inverse-frequency training loss, validation weights are independent.
+  oversample_ratio: null  # null disables repeats, (0, 1] sets class size relative to the largest.
 cv:
-  folds: null  # null: leave one person out; integer: grouped k-fold
-  max_windows_per_person: null  # quick checks only; null keeps all windows
+  folds: null  # null: leave one person out, integer: grouped stratified k-fold.
+  max_windows_per_person: null  # Quick-check cap, null keeps all windows.
 tune:
-  grid: []  # dotted keys, e.g. [{model.arch.hidden: 64, training.lr: 0.0003}]
-  best_path: results/tuned.yaml  # tune writes this; train-final reads it
+  grid: []  # Candidate overrides, e.g. [{model.arch.hidden: 64, training.lr: 0.0003}].
+  best_path: results/tuned.yaml  # tune writes the winner here, train-final reads it in.

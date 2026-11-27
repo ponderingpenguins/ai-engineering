@@ -1,18 +1,8 @@
-"""Bake the raw floor-posture recordings into one Hugging Face dataset.
+"""Build a Hugging Face dataset from raw radar recordings and annotation CSVs.
 
-Besides the raw labels, hand annotations are joined in: `person`, `person_present`
-and `lying_annotation`, from the CSVs in data/annotations/.
-
-Run it:
-
-    python main.py bake [paths.raw_root=...] [--num-proc 4] [--overwrite] [--recording a --recording b]
-    python main.py bake --refresh-annotations [paths.annotations_dir=...]
-
-The module command `python -m data.bake` also remains available.
-
-Usage:
-    ds = load_from_disk("data/baked/floor_posture")
-    ds = ds.select_columns(["recording", "heatmap", "label_pose"])
+    python main.py bake [--num-proc 4] [--overwrite] [--recording NAME] ...
+    python main.py bake --refresh-annotations [key=value ...]
+The refresh command updates manual annotations without parsing raw recordings.
 """
 
 import argparse
@@ -40,36 +30,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 REPO = Path(__file__).resolve().parents[2]
-ALIGN_TOLERANCE = pd.Timedelta("2us")  # CSV rounding
+ALIGN_TOLERANCE = pd.Timedelta("2us")  # Allow for timestamp rounding in CSV exports.
 
 
-# --- labels ---------------------------------------------------------------
-# Label CSVs are messy: each recording ships a different set of tracks, the
-# manifest.json only lists some of them, and timestamps come in three flavours
-# (ISO strings, epoch-ns of local wall-clock, epoch-seconds shifted by the
-# timezone). Align by timestamp because frame and label row orders can differ.
+# Label loading and alignment.
+# Discover tracks from CSV files because recording manifests may omit some.
+# Match by timestamp because frame and label row orders can differ.
 
 def _label_files(rec_dir: Path) -> list[Path]:
-    """Lists the label CSV files of a recording.
-
-    Args:
-        rec_dir: Directory of one recording.
-
-    Returns:
-        The paths of `labels/*.csv`, sorted by name.
-    """
+    """Return the recording's labels/*.csv paths, sorted by filename."""
     return sorted((rec_dir / "labels").glob("*.csv"))
 
 
 def _kind(labels: pd.Series) -> str | None:
-    """Classifies a label track as boolean, numeric or string.
-
-    Args:
-        labels: The values of one label track, possibly containing missing values.
-
-    Returns:
-        "bool", "float" or "str", or None if every value is missing.
-    """
+    """Return bool, float or str for a label track, or None if all values are missing."""
     values = labels.dropna()
     if values.empty:
         return None
@@ -81,7 +55,10 @@ def _kind(labels: pd.Series) -> str | None:
 
 
 def _scan_label_kinds(recs: list[dict[str, Any]]) -> dict[str, str]:
-    """Track name -> 'bool' | 'float' | 'str', resolved across all recordings."""
+    """Choose a storage type for each label track across all recordings.
+
+    Tracks with mixed types or no non-missing values use string storage.
+    """
     seen: dict[str, set[str]] = {}
     for rec in recs:
         for path in _label_files(Path(rec["path"])):
@@ -96,16 +73,32 @@ def _scan_label_kinds(recs: list[dict[str, Any]]) -> dict[str, str]:
 
 
 def _local_time(timestamps: pd.Series) -> pd.Series | None:
-    """Timestamps on the frames' wall-clock, or None if they can't be trusted."""
+    """Convert reliable timestamps to the frames' local wall-clock time.
+
+    Accept timestamp strings and local epoch nanoseconds. Return None for
+    numeric epoch seconds, whose timezone offset cannot be trusted.
+    """
     if pd.api.types.is_numeric_dtype(timestamps):
-        if timestamps.iloc[0] > 1e17:  # epoch-ns of local wall-clock
+        if timestamps.iloc[0] > 1e17:  # Epoch nanoseconds representing local wall-clock time.
             return pd.to_datetime(timestamps, unit="ns").astype("datetime64[ns]")
-        return None  # epoch-seconds, shifted by the (DST-dependent) UTC offset
+        return None  # Numeric seconds have an unreliable timezone offset.
     return pd.to_datetime(timestamps).astype("datetime64[ns]")
 
 
 def _align_labels(rec_dir: Path, frame_ts: pd.Series) -> dict[str, pd.DataFrame]:
-    """Each track as a DataFrame(label, confidence) with one row per frame."""
+    """Match label timestamps to frames within ALIGN_TOLERANCE.
+
+    Args:
+        rec_dir: Recording directory containing label CSVs.
+        frame_ts: Frame timestamps in their stored row order.
+
+    Returns:
+        A mapping from track names to label/confidence tables in frame row order.
+        Tracks without reliable timestamps are skipped; unmatched values are missing.
+
+    Raises:
+        ValueError: If a label track has missing or duplicate timestamps.
+    """
     aligned: dict[str, pd.DataFrame] = {}
     frame_ts = pd.to_datetime(frame_ts).astype("datetime64[ns]")
     left = pd.DataFrame({"t": frame_ts.values, "i": np.arange(len(frame_ts))})
@@ -136,42 +129,27 @@ def _align_labels(rec_dir: Path, frame_ts: pd.Series) -> dict[str, pd.DataFrame]
 
 
 def _cast(value: Any, kind: str) -> Any:
-    """Converts a label value to the Python type of its track.
-
-    Args:
-        value: A single label value, possibly missing.
-        kind: One of "bool", "float" or "str", as returned by `_kind`.
-
-    Returns:
-        The converted value, or None if `value` is missing.
-    """
+    """Convert one label to its track type, returning None for a missing value."""
     if pd.isna(value):
         return None
     return {"bool": bool, "float": float, "str": str}[kind](value)
 
 
-# --- frames ---------------------------------------------------------------
+# Frame parsing and dataset storage.
 
 def _features(kinds: dict[str, str]) -> Features:
-    """Builds the Hugging Face schema of the baked dataset.
-
-    Args:
-        kinds: Maps each label track name to its kind ("bool", "float" or "str").
-
-    Returns:
-        The features, with a label column and a confidence column per track.
-    """
+    """Build the dataset schema, including label and confidence columns for each track."""
     columns: dict[str, Any] = {
         "recording": Value("string"),
         "room": Value("string"),
-        "frame_idx": Value("int32"),  # position in the recording; radar_frame_num wraps and repeats
+        "frame_idx": Value("int32"),  # Stored row order; radar_frame_num can wrap and repeat.
         "timestamp": Value("timestamp[us]"),
         "radar_frame_num": Value("int32"),
-        "image": Image(),  # camera JPEG, decoded lazily
-        "radar_payload": Value("binary"),  # raw TLV bytes, enough to re-parse anything
-        "heatmap": Sequence(Sequence(Value("uint16"))),  # (range_bins, doppler_bins), varies per recording
-        "heatmap_ok": Value("bool"),  # False for the few frames whose heatmap came back empty
-        "pointcloud": Sequence(Sequence(Value("float32"))),  # (n, 7): x y z doppler snr noise track
+        "image": Image(),  # Camera JPEG, decoded on access.
+        "radar_payload": Value("binary"),  # Raw radar bytes retained for later parsing.
+        "heatmap": Sequence(Sequence(Value("uint16"))),  # (range_bins, doppler_bins).
+        "heatmap_ok": Value("bool"),  # False when the parsed heatmap is empty.
+        "pointcloud": Sequence(Sequence(Value("float32"))),  # (N, 7): x, y, z, Doppler, SNR, noise, track.
         "n_points": Value("int32"),
         "n_tracks": Value("int32"),
         "n_heights": Value("int32"),
@@ -193,12 +171,19 @@ def _features(kinds: dict[str, str]) -> Features:
 
 
 def _rows(recordings: list[dict[str, Any]], kinds: dict[str, str]) -> Iterator[dict[str, Any]]:
-    """Generator for Dataset.from_generator; `recordings` is sharded across processes."""
+    """Yield parsed frames with timestamp-aligned labels for Dataset.from_generator.
+
+    The generator splits the recordings list between workers when multiprocessing
+    is enabled. Camera JPEGs and radar payloads are stored alongside parsed features.
+
+    Raises:
+        RuntimeError: If the parsed frame count differs from the manifest.
+    """
     from loguru import logger as loguru_logger
     from vt_radar.config.ti_config import ConfigFile
     from vt_radar.data.dataset import read_directory
 
-    loguru_logger.remove()  # the loader is chatty
+    loguru_logger.remove()  # Suppress per-frame loader output; this module logs per recording.
 
     for rec in recordings:
         rec_dir = Path(rec["path"])
@@ -207,7 +192,7 @@ def _rows(recordings: list[dict[str, Any]], kinds: dict[str, str]) -> Iterator[d
         cfg.parseCfg(str(cfg_path))
         s = cfg.sensor()
 
-        # read_directory swallows unreadable files, so check we got everything
+        # The reader skips unreadable files; check against the expected frame count.
         frames = list(read_directory(str(rec_dir), config=cfg))
         if len(frames) != rec["frames"]:
             raise RuntimeError(f"{rec['recording']}: read {len(frames)} frames, manifest says {rec['frames']}")
@@ -245,7 +230,7 @@ def _rows(recordings: list[dict[str, Any]], kinds: dict[str, str]) -> Iterator[d
             }
             for track, kind in kinds.items():
                 df = labels.get(track)
-                if df is None:  # this recording has no such track
+                if df is None:  # This recording has no such label track.
                     row[f"label_{track}"] = row[f"label_{track}_confidence"] = None
                     continue
                 row[f"label_{track}"] = _cast(df["label"].iloc[i], kind)
@@ -254,18 +239,17 @@ def _rows(recordings: list[dict[str, Any]], kinds: dict[str, str]) -> Iterator[d
 
 
 def _recordings(root: Path, only: list[str]) -> list[dict[str, Any]]:
-    """Lists the recordings that are present on disk.
+    """List manifest recordings whose directories are present on disk.
 
     Args:
-        root: Root of the raw dataset, containing MANIFEST.csv and `data/`.
-        only: Recording names to keep. Empty means every recording.
+        root: Raw dataset root containing MANIFEST.csv and data/.
+        only: Recording names to keep; an empty list selects all available recordings.
 
     Returns:
-        One dict per recording with its name, room, path and frame count. Recordings
-        whose folder is missing (for example in another zip part) are skipped.
+        Recording name, room, path and frame count for each available recording.
 
     Raises:
-        ValueError: If a name in `only` is not in MANIFEST.csv.
+        ValueError: If a requested name is absent from MANIFEST.csv.
     """
     manifest = pd.read_csv(root / "MANIFEST.csv")
     if only:
@@ -284,14 +268,17 @@ def _recordings(root: Path, only: list[str]) -> list[dict[str, Any]]:
 
 
 def bake_dataset(cfg: DataConfig, *, num_proc: int = 4, overwrite: bool = False, recordings: list[str] | None = None) -> None:
-    """Bakes the raw recordings into a Hugging Face dataset and saves it to disk.
+    """Parse raw recordings, join manual annotations and save the baked dataset.
 
     Args:
-        cfg: Dataset paths and annotation configuration.
+        cfg: Raw, annotation and output paths, resolved from the repository root.
+        num_proc: Maximum number of recording-parsing workers.
+        overwrite: Whether to remove an existing output before rebuilding it.
+        recordings: Recording names to bake; None or an empty list selects all.
 
     Raises:
-        SystemExit: If the output exists and `overwrite` is False, or no
-            recordings are found.
+        ValueError: If num_proc is not positive or a recording name is unknown.
+        SystemExit: If the output exists without overwrite, or no recordings are found.
     """
     if num_proc < 1:
         raise ValueError("--num-proc must be positive")
@@ -310,7 +297,7 @@ def bake_dataset(cfg: DataConfig, *, num_proc: int = 4, overwrite: bool = False,
     kinds = _scan_label_kinds(recs)
     logger.info("%d recordings, label tracks: %s", len(recs), kinds)
 
-    cache = out.parent / f".{out.name}_cache"  # keep HF's build cache next to the output, not in ~/.cache
+    cache = out.parent / f".{out.name}_cache"  # Keep the build cache beside the output.
     ds = Dataset.from_generator(
         _rows,
         features=_features(kinds),
@@ -325,10 +312,17 @@ def bake_dataset(cfg: DataConfig, *, num_proc: int = 4, overwrite: bool = False,
 
 
 def refresh_annotations(cfg: DataConfig) -> None:
-    """Refresh hand annotations in an existing bake without reading raw recordings.
+    """Update manual labels in an existing bake without parsing raw recordings.
 
-    Write a sibling copy and release Arrow memory maps before renaming directories
-    (required on Windows). Existing recovery folders are never overwritten.
+    Save a sibling copy and release Arrow memory maps before renaming directories,
+    as required on Windows. Restore the original if installing the copy fails.
+
+    Args:
+        cfg: Baked dataset and annotation paths, resolved from the repository root.
+
+    Raises:
+        FileNotFoundError: If there is no baked dataset.
+        FileExistsError: If a temporary or backup recovery directory already exists.
     """
     out = REPO / cfg.paths.baked_dir
     temporary = out.with_name(f".{out.name}.refresh_tmp")
@@ -347,7 +341,7 @@ def refresh_annotations(cfg: DataConfig) -> None:
             ds.save_to_disk(str(temporary))
         finally:
             del ds
-            gc.collect()  # close Arrow memory maps before touching the source folder
+            gc.collect()  # Release Arrow memory maps before renaming folders on Windows.
     except BaseException:
         if temporary.exists():
             shutil.rmtree(temporary)
@@ -364,7 +358,7 @@ def refresh_annotations(cfg: DataConfig) -> None:
 
 
 def main() -> None:
-    """main function"""
+    """Parse bake flags and data overrides, then build or refresh the dataset."""
     parser = argparse.ArgumentParser(description="Bake raw recordings and join source annotations.")
     parser.add_argument("--num-proc", type=int, default=4, help="parallel workers (default: 4)")
     parser.add_argument("--overwrite", action="store_true", help="replace an existing baked dataset")

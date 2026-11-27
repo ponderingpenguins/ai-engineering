@@ -1,8 +1,7 @@
-"""The results of a run, as records.
+"""Structured results for cross-validation, tuning and final training.
 
-`CrossValidator` builds them, the report and the loss curves read them, and `results.json` stores them. Only the
-conversion to and from plain values (`to_dict`, `from_dict`) knows about the stored file, so a key is spelled
-in one place.
+Reports and plots read these records; to_dict and from_dict handle JSON conversion.
+Cross-validation uses results.json; final training uses final.json.
 """
 
 from dataclasses import asdict, dataclass, field
@@ -10,12 +9,12 @@ from typing import Any
 
 from training.fitting import History
 
-Setting = dict[str, Any]  # one hyperparameter setting of the tuning grid
+Setting = dict[str, Any]  # One candidate's dotted configuration overrides.
 
 
 @dataclass
 class InnerFold:
-    """One inner fold of tuning: how a setting did on one validation person."""
+    """Validation loss, epoch and macro F1 for one candidate on one held-out person."""
 
     val_group: str
     best_epoch: int | None
@@ -25,48 +24,50 @@ class InnerFold:
 
 @dataclass
 class Candidate:
-    """One setting of the grid with its inner results."""
+    """One grid setting and its scores across inner validation folds."""
 
     setting: Setting
-    score: float  # mean class-balanced validation loss over the inner folds (lower is better)
-    epochs: int  # median best epoch of the inner folds
+    score: float  # Mean weighted inner validation loss; lower is better.
+    epochs: int  # Median best inner epoch, rounded up.
     folds: list[InnerFold] = field(default_factory=list)
     macro_f1: float | None = None
     predicted_classes: dict[str, int] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> "Candidate":
+        """Restore a candidate and its inner-fold records from plain values."""
         return cls(**{**values, "folds": [InnerFold(**f) for f in values["folds"]]})
 
 
 @dataclass
 class Tuning:
-    """The outcome of tuning one outer fold."""
+    """Winning setting, epoch count and candidate results for one outer fold."""
 
-    setting: Setting  # the winning setting
-    epochs: int  # median best epoch of the winner's inner folds
-    score: float  # the winner's mean class-balanced validation loss over its inner folds (lower is better)
-    candidates: list[Candidate] = field(default_factory=list)  # every setting with its inner results
+    setting: Setting  # Winning overrides for this outer fold.
+    epochs: int  # Winner's median best inner epoch, rounded up.
+    score: float  # Winner's mean weighted inner validation loss.
+    candidates: list[Candidate] = field(default_factory=list)  # Every candidate and its inner results.
 
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> "Tuning":
+        """Restore the winning setting and all candidate records from plain values."""
         return cls(**{**values, "candidates": [Candidate.from_dict(c) for c in values["candidates"]]})
 
 
 @dataclass
 class BestSetting:
-    """The setting to use for the final model, chosen over all outer folds."""
+    """Final training choice, selected by wins across the outer folds."""
 
     setting: Setting
     epochs: int
-    wins: int  # outer folds that this setting won
-    of_folds: int  # outer folds in all
-    mean_val_loss: float  # mean validation loss of its wins
+    wins: int  # Number of outer folds won by this setting.
+    of_folds: int  # Total number of outer folds.
+    mean_val_loss: float  # Mean inner validation loss for the folds it won.
 
 
 @dataclass
 class FoldResult:
-    """One outer fold: who was held out, what was trained on, how it scored."""
+    """People, sample counts, metrics, history and checkpoint for one outer fold."""
 
     fold: int
     test_groups: list[str]
@@ -80,13 +81,14 @@ class FoldResult:
     metrics: dict[str, float | None] = field(default_factory=dict)
     per_class: dict[str, dict[str, Any]] = field(default_factory=dict)
     history: History | None = None  # None for models that do not train iteratively
-    tuning: Tuning | None = None  # None without tuning
-    checkpoint: str | None = None  # path relative to the run folder
+    tuning: Tuning | None = None  # None when tuning was not requested.
+    checkpoint: str | None = None  # Path relative to the run directory.
     train_seconds: float = 0.0
     predict_seconds: float = 0.0
 
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> "FoldResult":
+        """Restore a fold result, including its optional training and tuning histories."""
         history, tuning = values["history"], values["tuning"]
         return cls(**{**values,
                       "history": History(**history) if history else None,
@@ -95,7 +97,7 @@ class FoldResult:
 
 @dataclass
 class Pooled:
-    """The score over the held-out predictions of all folds together: the headline number."""
+    """Metrics computed once over all outer folds' held-out predictions."""
 
     n: int
     metrics: dict[str, float | None]
@@ -105,20 +107,21 @@ class Pooled:
 
 @dataclass
 class RunResults:
-    """A cross-validation run."""
+    """A complete cross-validation run, including optional nested tuning results."""
 
-    config: dict[str, Any] | None  # the run configuration as plain values, saved with the results
+    config: dict[str, Any] | None  # Run settings and data metadata as plain values.
     folds: list[FoldResult]
     pooled: Pooled
-    per_person: dict[str, dict[str, Any]] = field(default_factory=dict)  # n, then recall and support per class
-    tuned: BestSetting | None = None  # set when the run tuned
+    per_person: dict[str, dict[str, Any]] = field(default_factory=dict)  # Counts and flattened scores by person.
+    tuned: BestSetting | None = None  # Overall winner when nested tuning was used.
 
     def to_dict(self) -> dict[str, Any]:
-        """Plain values, ready for JSON."""
+        """Return nested plain values ready for JSON serialisation."""
         return asdict(self)
 
     @classmethod
     def from_dict(cls, values: dict[str, Any]) -> "RunResults":
+        """Restore nested run records from the results.json schema."""
         tuned = values["tuned"]
         return cls(config=values["config"],
                    folds=[FoldResult.from_dict(f) for f in values["folds"]],
@@ -129,7 +132,7 @@ class RunResults:
 
 @dataclass
 class FinalResult:
-    """The final model of a full run: trained on every person, so it has no held-out score."""
+    """Training metadata for a model fitted on all selected people, without a test score."""
 
     config: dict[str, Any] | None
     n_windows: int
@@ -137,8 +140,8 @@ class FinalResult:
     train_classes: dict[str, int]
     train_seconds: float
     history: History | None
-    checkpoint: str | None  # file name inside the run folder
+    checkpoint: str | None  # Filename inside the run directory.
 
     def to_dict(self) -> dict[str, Any]:
-        """Plain values, ready for JSON."""
+        """Return nested plain values ready for JSON serialisation."""
         return asdict(self)

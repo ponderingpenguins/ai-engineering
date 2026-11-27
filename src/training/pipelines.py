@@ -1,7 +1,7 @@
-"""Explicit CV, tuning and final-training pipelines from a RunConfig to saved results.
+"""Run cv, tune and train-final from validated settings to saved outputs.
 
-`main.py` only reads the command line and turns errors into exit codes. Everything between a valid `RunConfig`
-and the results on disk lives here, so tests can run it on a small dataset.
+Load baked data, select and denoise frames, build windows and start the chosen workflow.
+The command-line parser in main.py calls these functions.
 """
 
 import json
@@ -30,13 +30,16 @@ logger = logging.getLogger(__name__)
 
 
 def tuned_model_config(cfg: RunConfig, root: Path) -> tuple[RunConfig, dict[str, Any]]:
-    """The model config with the setting saved by a tuning run applied, for `train-final`.
+    """Load and apply the saved tuning winner for train-final.
+
+    Returns:
+        Updated run settings and the saved tuning metadata.
 
     Raises:
-        ValueError: If the model cannot be tuned, the tuned file is missing, or it
-            was tuned for a different model or window specification than the current settings.
+        ValueError: If the model cannot be tuned, the tuned file is missing,
+            or saved settings conflict with the requested model or windows.
     """
-    hyperparameter_names(cfg)  # raises for a model that has nothing to tune, so there is no tuned setting
+    hyperparameter_names(cfg)  # Reject the baseline, which has no tunable parameters.
     try:
         tuned = load_tuned(root / cfg.tune.best_path)
     except FileNotFoundError as e:
@@ -46,6 +49,8 @@ def tuned_model_config(cfg: RunConfig, root: Path) -> tuple[RunConfig, dict[str,
 
 @dataclass
 class _PreparedData:
+    """Window arrays, saved configuration metadata and output naming for one run."""
+
     x: np.ndarray
     y: np.ndarray
     groups: np.ndarray
@@ -57,7 +62,7 @@ class _PreparedData:
 
 def _prepare_data(cfg: RunConfig, root: Path) -> _PreparedData:
     """Load and preprocess baked frames, then build and describe labelled windows."""
-    path = root / cfg.paths.baked_dir  # absolute paths pass through unchanged
+    path = root / cfg.paths.baked_dir  # Absolute paths pass through unchanged.
     if not path.is_dir():
         raise ValueError(f"No baked dataset at {path}.\nBuild it with: python main.py bake")
     ds = preprocess_dataset(cast(Dataset, load_from_disk(str(path))), cfg.selection, cfg.denoising)
@@ -84,6 +89,7 @@ def _prepare_data(cfg: RunConfig, root: Path) -> _PreparedData:
 
 def _cross_validator(cfg: RunConfig, root: Path, data: _PreparedData,
                      tuner: Tuner | None = None) -> CrossValidator:
+    """Check split feasibility and construct the configured cross-validation runner."""
     splitter = GroupKFoldSplitter(cfg.cv.folds, cfg.seed)
     splitter.n_splits(data.groups)
     return CrossValidator(
@@ -94,13 +100,13 @@ def _cross_validator(cfg: RunConfig, root: Path, data: _PreparedData,
 
 
 def run_cv(cfg: RunConfig, root: Path) -> RunResults:
-    """Cross-validate the configured model on held-out people."""
+    """Cross-validate the configured model on held-out people and save the results."""
     data = _prepare_data(cfg, root)
     return _cross_validator(cfg, root, data).cross_validate(data.x, data.y, data.groups)
 
 
 def run_tune(cfg: RunConfig, root: Path) -> RunResults:
-    """Tune within each outer training fold and save the winning setting."""
+    """Tune inside each outer training fold, evaluate refits and save the overall winner."""
     if not cfg.tune.grid:
         raise ValueError("tune requires a non-empty tune.grid")
     validate_grid(cfg.tune.grid, hyperparameter_names(cfg))
@@ -110,6 +116,7 @@ def run_tune(cfg: RunConfig, root: Path) -> RunResults:
     data = _prepare_data(cfg, root)
 
     def make_candidate(setting: dict[str, Any]) -> FitConfig:
+        """Construct a fresh model and training settings from one validated candidate."""
         candidate = with_setting(cfg, setting)
         return FitConfig(build_model(candidate.model), candidate.training,
                          build_augment(candidate.model), candidate.seed)
@@ -124,7 +131,11 @@ def run_tune(cfg: RunConfig, root: Path) -> RunResults:
 
 
 def run_train_final(cfg: RunConfig, root: Path) -> FinalResult:
-    """Fit the saved tuned setting on all windows, without any CV or validation split."""
+    """Train the saved tuning winner on all selected windows and save final artifacts.
+
+    Use its chosen epoch count without a validation or test split. Return final
+    training metadata; no held-out performance score is produced.
+    """
     cfg, tuned = tuned_model_config(cfg, root)
     logger.info("full run with the tuned setting %s for %d epochs", tuned["setting"], tuned["epochs"])
     data = _prepare_data(cfg, root)
