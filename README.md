@@ -10,7 +10,6 @@ Requires Python 3.12+, `uv`, and `git-lfs` (`apt install git-lfs` or `brew insta
 git lfs install && git lfs pull
 uv sync
 source .venv/bin/activate
-uv pip install -e ./data/raw/floor_posture_dataset/recorder
 ```
 
 Optional Jupyter kernel for notebooks under `notebooks/`:
@@ -76,6 +75,7 @@ Every workflow runs through `main.py`. Pass `--help` after any subcommand for it
 
 | Command                             | Purpose                                                                                                                                                           |
 | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `python main.py record`           | Record live TI mmWave radar and optional webcam frames to HDF5 chunks (`--cfg-file`, `--camera-port`, `--out-dir`).                                               |
 | `python main.py bake`             | Build `data/baked/floor_posture` from raw recordings (`--num-proc`, `--overwrite`, `--recording`) or update annotations only (`--refresh-annotations`). |
 | `python main.py annotate`         | Launch the local camera-video lying annotation server (`--port`, `--csv`, `--lan`, `--no-browser`).                                                       |
 | `python main.py audit`            | Compare reviewed lying annotations against raw `label_pose` (`--csv`, `--out`, `--port`).                                                                 |
@@ -203,8 +203,8 @@ Use `status.sh` to check GPU/job state and `stop.sh` to terminate running jobs. 
 ## Repository Layout
 
 ```text
-main.py                 CLI entry point (bake, annotate, audit, cv, tune, train-final, report)
-config/                 YAML defaults (data.yaml, train.yaml, models/<name>.yaml) -> config/README.md
+main.py                 CLI entry point (record, bake, annotate, audit, cv, tune, train-final, report)
+config/                 YAML defaults (data.yaml, train.yaml, models/<name>.yaml) and TI radar cfgs (radar/) -> config/README.md
 data/                   raw/ (Git LFS), annotations/ (tracked CSVs), baked/ (gitignored)
 src/
   config/               Typed config dataclasses, YAML/CLI loaders, and cross-field validation
@@ -213,6 +213,7 @@ src/
   training/             Fitting engine, person-grouped splitting, CV, nested tuning, and pipelines
   evaluation/           Metrics, results.json schema, loss plots, report builder, annotation audit
   annotation_tool/      Local web UI for marking lying intervals from camera frames
+  vt_radar/             TI mmWave radar recorder, TLV parser, and HDF5 replay toolkit -> src/vt_radar/README.md
 scripts/                remote_pc/ (GPU runner scripts), viewer/ (Config 4 HTML viewer), archive/
 notebooks/              exploration/, labelling/, archive/
 docs/                   modeling.md, data_notes/, dev_notes/, report/, slides/

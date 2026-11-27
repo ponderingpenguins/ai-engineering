@@ -12,6 +12,7 @@ Runtime configuration combines typed Python dataclasses in `src/config/`, YAML d
 | `config/train.yaml`, `src/config/training.py`       | Active model selection, random seed, output directory, optimiser loop, CV, and tuning settings (`RunConfig`).          |
 | `config/models/<name>.yaml`, `src/config/models.py` | Per-model architecture and batch-augmentation settings (`rnn`, `pointnet`, `baseline`) and `MODEL_SCHEMAS`.      |
 | `src/config/loader.py`                                | Public loaders (`load_data_config`, `load_run_config`) and validators (`check_data_config`, `check_run_config`). |
+| `config/radar/`                                       | Bundled TI mmWave sensor `.cfg` profiles used with `python main.py record --cfg-file ...`.                       |
 
 
 

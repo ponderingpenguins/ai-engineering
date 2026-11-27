@@ -9,11 +9,20 @@ authors = [
 requires-python = ">=3.12"
 dependencies = [
     "matplotlib>=3.9",
-    "vt-radar-recorder",
     "datasets>=5.0.1",
     "omegaconf>=2.3.1",
     "ultralytics>=8.4.165",
     "scikit-learn>=1.9.1",
+    "loguru>=0.7.0",
+    "numpy>=1.26,<2",  # pandas 2.2.x breaks on numpy 2.x when reading HDF5 recordings
+    "pandas>=2.2,<3",
+    "pyserial>=3.5",
+    "tabulate>=0.9.0",
+    "h5py>=3.10.0",
+    "tables>=3.9.0",
+    "opencv-python-headless>=4.5.0",
+    "scipy>=1.7.0",
+    "halo>=0.0.31",
 ]
 
 [project.optional-dependencies]
@@ -32,18 +41,6 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
-
-[tool.uv.sources]
-vt-radar-recorder = { path = "data/raw/floor_posture_dataset/recorder", editable = true }
-
-# setuptools' default editable-install mode (a MetaPathFinder import hook)
-# isn't understood by static analyzers (Pylance/Pyright, PyCharm, mypy...),
-# so vt_radar shows as unresolved even though it imports fine at runtime.
-# "compat" mode falls back to a plain .pth path entry, which every tool
-# resolves the same way `uv sync` does for the whole team.
-
-[tool.uv]
-config-settings-package = { vt-radar-recorder = { editable_mode = "compat" } }
 
 [dependency-groups]
 dev = [
